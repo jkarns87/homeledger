@@ -2,6 +2,9 @@ import { McpServer } from '@modelcontextprotocol/server';
 import type { Repository } from '@homeledger/core';
 import { registerApplianceTools } from './tools/appliances.js';
 import { registerMaintenanceTools } from './tools/maintenance.js';
+import { registerEventTools } from './tools/events.js';
+import { registerResources } from './resources.js';
+import { registerPrompts } from './prompts.js';
 
 export interface ServerDeps {
   repo: Repository;
@@ -18,5 +21,8 @@ export function buildServer(deps: ServerDeps): McpServer {
   });
   registerApplianceTools(server, deps);
   registerMaintenanceTools(server, deps);
+  registerEventTools(server, deps);
+  registerResources(server, deps);
+  registerPrompts(server, deps);
   return server;
 }
