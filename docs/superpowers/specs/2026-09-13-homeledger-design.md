@@ -28,29 +28,29 @@ Demo household: the author's real home and appliances, with fictional household 
 
 ## 2. Constraints that shaped the design
 
-| Constraint                                                                                                                                                                                                                | Source                            | Consequence                                                                                      |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Hackathon minimum MCP spec 2025-11-25; must be "imported and actually called at runtime"                                                                                                                                  | Devpost rules                     | Real server, real calls, tests prove it                                                          |
-| Alexa+ client speaks the 2025-era handshake (`initialize`, `protocolVersion: 2025-03-26`), Streamable HTTP only, tools refreshed on deploy, <500 ms round trip target                                                     | Alexa+ MCP Toolkit docs           | Session-capable transport; stable tool signatures; fast tools                                    |
-| MCP 2026-07-28 removed sessions and `initialize`, replaced server-initiated elicitation with multi round-trip requests (MRTR)                                                                                             | MCP changelog                     | Handlers written once in MRTR style; legacy shim serves old clients                              |
-| TypeScript SDK v2 implements 2026-07-28, serves legacy clients, and its input-required legacy shim delivers real elicitation over a session                                                                               | ts.sdk.modelcontextprotocol.io/v2 | SDK v2 with sessions enabled                                                                     |
-| AgentCore Runtime: container on `0.0.0.0:8000/mcp`, ARM64, stateful mode required for pre-2026 elicitation, microVM affinity on `Mcp-Session-Id`, idle timeout configurable 60 s to 8 h                                   | AgentCore docs                    | Stateful mode, idle timeout 30 min, Terraform-managed runtime                                    |
-| Strands TypeScript SDK peer-depends on `@modelcontextprotocol/sdk` ^1.25 (v1 client) with an `elicitationCallback`; no progress notification support                                                                      | npm registry, Strands docs        | Strands is a legacy client; elicitation works through the shim; progress tapped at the transport |
-| Ring Partner API is read-mostly: webhooks for button press and human/vehicle motion, snapshot from recordings only (no on-demand), watermark on media, sensors and dynamic scopes in early access, no community libraries | Ring developer docs, rules        | Event-driven design, snapshot after event, sensors behind a flag                                 |
-| Alexa+ visual foundations: 768×480 base canvas, 1.667 scale on Echo Show 8/15, dark card #14181E, light card #FFFFFF, widgets as single HTML files with `hostContext`                                                     | Alexa+ design guide               | Simulator frame and widget format                                                                |
+| Constraint | Source | Consequence |
+|---|---|---|
+| Hackathon minimum MCP spec 2025-11-25; must be "imported and actually called at runtime" | Devpost rules | Real server, real calls, tests prove it |
+| Alexa+ client speaks the 2025-era handshake (`initialize`, `protocolVersion: 2025-03-26`), Streamable HTTP only, tools refreshed on deploy, <500 ms round trip target | Alexa+ MCP Toolkit docs | Session-capable transport; stable tool signatures; fast tools |
+| MCP 2026-07-28 removed sessions and `initialize`, replaced server-initiated elicitation with multi round-trip requests (MRTR) | MCP changelog | Handlers written once in MRTR style; legacy shim serves old clients |
+| TypeScript SDK v2 implements 2026-07-28, serves legacy clients, and its input-required legacy shim delivers real elicitation over a session | ts.sdk.modelcontextprotocol.io/v2 | SDK v2 with sessions enabled |
+| AgentCore Runtime: container on `0.0.0.0:8000/mcp`, ARM64, stateful mode required for pre-2026 elicitation, microVM affinity on `Mcp-Session-Id`, idle timeout configurable 60 s to 8 h | AgentCore docs | Stateful mode, idle timeout 30 min, Terraform-managed runtime |
+| Strands TypeScript SDK peer-depends on `@modelcontextprotocol/sdk` ^1.25 (v1 client) with an `elicitationCallback`; no progress notification support | npm registry, Strands docs | Strands is a legacy client; elicitation works through the shim; progress tapped at the transport |
+| Ring Partner API is read-mostly: webhooks for button press and human/vehicle motion, snapshot from recordings only (no on-demand), watermark on media, sensors and dynamic scopes in early access, no community libraries | Ring developer docs, rules | Event-driven design, snapshot after event, sensors behind a flag |
+| Alexa+ visual foundations: 768×480 base canvas, 1.667 scale on Echo Show 8/15, dark card #14181E, light card #FFFFFF, widgets as single HTML files with `hostContext` | Alexa+ design guide | Simulator frame and widget format |
 
 ## 3. System overview
 
 One pnpm monorepo. TypeScript everywhere. Node 22.
 
-| Package             | Responsibility                                                                                           | Runtime                                           |
-| ------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `packages/core`     | Domain types, Zod schemas, DynamoDB repository, Knowledge Base retrieval, Ring API client, ID generation | Library                                           |
-| `apps/mcp-server`   | MCP server: tools, resources, prompts, widgets; SDK v2 with sessions; ARM64 container                    | AgentCore Runtime, stateful, Cognito JWT          |
-| `apps/events`       | Ring account-link endpoint, webhook receiver, EventBridge handlers, WebSocket push                       | API Gateway HTTP + WebSocket, Lambda, EventBridge |
-| `apps/simulator`    | Next.js Echo Show simulation, Strands agent, MCP Apps host, proactive channel, debug drawer              | Amplify Hosting                                   |
-| `skills/homeledger` | Agent Skill (`SKILL.md`): seed, run, test, deploy                                                        | Claude Code, Kiro                                 |
-| `infra`             | Terraform root and modules; GitHub Actions                                                               | AWS, one account, one region                      |
+| Package | Responsibility | Runtime |
+|---|---|---|
+| `packages/core` | Domain types, Zod schemas, DynamoDB repository, Knowledge Base retrieval, Ring API client, ID generation | Library |
+| `apps/mcp-server` | MCP server: tools, resources, prompts, widgets; SDK v2 with sessions; ARM64 container | AgentCore Runtime, stateful, Cognito JWT |
+| `apps/events` | Ring account-link endpoint, webhook receiver, EventBridge handlers, WebSocket push | API Gateway HTTP + WebSocket, Lambda, EventBridge |
+| `apps/simulator` | Next.js Echo Show simulation, Strands agent, MCP Apps host, proactive channel, debug drawer | Amplify Hosting |
+| `skills/homeledger` | Agent Skill (`SKILL.md`): seed, run, test, deploy | Claude Code, Kiro |
+| `infra` | Terraform root and modules; GitHub Actions | AWS, one account, one region |
 
 ### Data flows
 
@@ -75,16 +75,16 @@ One pnpm monorepo. TypeScript everywhere. Node 22.
 
 ### 4.2 Tools
 
-| Tool              | Input                                        | Output (structured)                                                     | Widget                       | Notes                                                                                                                                             |
-| ----------------- | -------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list_appliances` | `room?`, `category?`                         | `appliances[] {id, name, brand, model, room, category, warrantyStatus}` | `ui://homeledger/appliances` | Text names at most five; full list in structured content                                                                                          |
-| `get_appliance`   | `applianceId`                                | appliance + `lastMaintenance[]`, `nextDue[]`, `manual {docId, title}`   | `ui://homeledger/appliance`  |                                                                                                                                                   |
-| `ask_manual`      | `question`, `applianceId?`                   | `passages[] {text, docTitle, page, score}` (max 3)                      | none                         | Retrieval only; the client model composes the answer, as Alexa+ would. Metadata filter on `applianceId` when present                              |
-| `maintenance_due` | `horizonDays?` (default 30)                  | `items[] {applianceId, applianceName, taskType, dueAt, overdue}`        | `ui://homeledger/calendar`   | GSI query on `nextDueAt`                                                                                                                          |
-| `log_maintenance` | `applianceId`, `taskType`, `date?`, `notes?` | `{logged, nextDueAt}`                                                   | none                         | Recomputes `MAINT#` item                                                                                                                          |
-| `book_service`    | `applianceId`, `issue`, `preferredWindow?`   | `{visitId, provider, windowStart, windowEnd, status}`                   | `ui://homeledger/visit`      | Elicits provider (≤5 enum), window (enum), confirm (boolean). Progress 0→3 during a simulated availability check (bounded delay). Writes `VISIT#` |
-| `recent_events`   | `sinceHours?` (default 24)                   | `events[] {type, deviceName, at, summary, visitId?}`                    | none                         | Visits and alerts                                                                                                                                 |
-| `get_visit`       | `visitId`                                    | visit + `snapshotUrl?` (presigned, short TTL) + `description?`          | `ui://homeledger/visit`      |                                                                                                                                                   |
+| Tool | Input | Output (structured) | Widget | Notes |
+|---|---|---|---|---|
+| `list_appliances` | `room?`, `category?` | `appliances[] {id, name, brand, model, room, category, warrantyStatus}` | `ui://homeledger/appliances` | Text names at most five; full list in structured content |
+| `get_appliance` | `applianceId` | appliance + `lastMaintenance[]`, `nextDue[]`, `manual {docId, title}` | `ui://homeledger/appliance` | |
+| `ask_manual` | `question`, `applianceId?` | `passages[] {text, docTitle, page, score}` (max 3) | none | Retrieval only; the client model composes the answer, as Alexa+ would. Metadata filter on `applianceId` when present |
+| `maintenance_due` | `horizonDays?` (default 30) | `items[] {applianceId, applianceName, taskType, dueAt, overdue}` | `ui://homeledger/calendar` | GSI query on `nextDueAt` |
+| `log_maintenance` | `applianceId`, `taskType`, `date?`, `notes?` | `{logged, nextDueAt}` | none | Recomputes `MAINT#` item |
+| `book_service` | `applianceId`, `issue`, `preferredWindow?` | `{visitId, provider, windowStart, windowEnd, status}` | `ui://homeledger/visit` | Elicits provider (≤5 enum), window (enum), confirm (boolean). Progress 0→3 during a simulated availability check (bounded delay). Writes `VISIT#` |
+| `recent_events` | `sinceHours?` (default 24) | `events[] {type, deviceName, at, summary, visitId?}` | none | Visits and alerts |
+| `get_visit` | `visitId` | visit + `snapshotUrl?` (presigned, short TTL) + `description?` | `ui://homeledger/visit` | |
 
 Provider options for `book_service` come from a static, clearly labeled sample marketplace in `packages/core` (per category, three to five providers). This is the one simulated data source and the README says so.
 
@@ -111,16 +111,16 @@ Tool handler p95 under 1.5 s locally, under 3 s through AgentCore cold. Knowledg
 
 DynamoDB table `homeledger`, on-demand capacity, `PK = HH#<householdId>`.
 
-| SK                          | Attributes                                                                                                                                                                                                                              |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `APPL#<applId>`             | `name, brand, model, serial, room, category, purchasedAt, warrantyUntil, manualDocId, templates[] {taskType, intervalDays}`                                                                                                             |
-| `MAINT#<applId>#<taskType>` | `lastDoneAt, nextDueAt, notes`; `GSI1PK = HH#<hh>#DUE`, `GSI1SK = nextDueAt`                                                                                                                                                            |
-| `LOG#<ts>#<id>`             | `applianceId, taskType, doneAt, notes`                                                                                                                                                                                                  |
-| `DOC#<docId>`               | `title, s3Key, pages, applianceId, kbSync {status, at}`                                                                                                                                                                                 |
-| `VISIT#<visitId>`           | `providerId, providerName, category, applianceId, issue, windowStart, windowEnd, status (scheduled\|arrived\|completed\|missed), ringEventIds[], snapshotKey, description, arrivedAt`; `GSI2PK = HH#<hh>#VISIT`, `GSI2SK = windowStart` |
-| `EVENT#<ts>#<eventId>`      | `type, subType, deviceId, deviceName, at, rawS3Key`; conditional put on `eventId` for idempotency                                                                                                                                       |
-| `ALERT#<alertId>`           | `sensorType, deviceName, at, maintenanceTaskRef, status`                                                                                                                                                                                |
-| `DEVICE#<ringDeviceId>`     | `name, kind, online, lastSeenAt`                                                                                                                                                                                                        |
+| SK | Attributes |
+|---|---|
+| `APPL#<applId>` | `name, brand, model, serial, room, category, purchasedAt, warrantyUntil, manualDocId, templates[] {taskType, intervalDays}` |
+| `MAINT#<applId>#<taskType>` | `lastDoneAt, nextDueAt, notes`; `GSI1PK = HH#<hh>#DUE`, `GSI1SK = nextDueAt` |
+| `LOG#<ts>#<id>` | `applianceId, taskType, doneAt, notes` |
+| `DOC#<docId>` | `title, s3Key, pages, applianceId, kbSync {status, at}` |
+| `VISIT#<visitId>` | `providerId, providerName, category, applianceId, issue, windowStart, windowEnd, status (scheduled\|arrived\|completed\|missed), ringEventIds[], snapshotKey, description, arrivedAt`; `GSI2PK = HH#<hh>#VISIT`, `GSI2SK = windowStart` |
+| `EVENT#<ts>#<eventId>` | `type, subType, deviceId, deviceName, at, rawS3Key`; conditional put on `eventId` for idempotency |
+| `ALERT#<alertId>` | `sensorType, deviceName, at, maintenanceTaskRef, status` |
+| `DEVICE#<ringDeviceId>` | `name, kind, online, lastSeenAt` |
 
 IDs are prefixed and stable: `appl_`, `visit_`, `doc_`, `alert_`, `evt_`.
 
@@ -191,29 +191,29 @@ Local: Docker Compose with DynamoDB Local; server on `:8000/mcp`; MCP Inspector;
 
 ## 11. Timeline
 
-| Window       | Milestone                                                                                                                                                                                                                           |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sep 13–15    | Ring developer account + ID verification; staging-trial ticket; order doorbell, two 2nd-gen contact sensors, one 2nd-gen flood/freeze; Alexa developer account; AWS credit form; Bedrock model access; spec and plan                |
-| Sep 16–22    | Monorepo; core; server with `list_appliances`, `get_appliance`, `maintenance_due`, `log_maintenance`, `recent_events`; DynamoDB; Inspector; Terraform baseline; first AgentCore deploy; legacy-shim spike (decides A vs fallback C) |
-| Sep 23–29    | `book_service` with elicitation and progress on both client generations; Knowledge Base and manuals; `ask_manual`; simulator MVP (frame, agent, transcript, debug drawer)                                                           |
-| Sep 30–Oct 6 | Ring link, webhook, correlator, snapshot + vision, WebSocket push, proactive card; widgets; doorbell installed                                                                                                                      |
-| Oct 7–13     | Sensors if granted; end-to-end tests; load smoke; Agent Skill; README; friction log consolidation                                                                                                                                   |
-| Oct 14–20    | Video script, record, edit; feedback form; feature requests; dry-run submission by Oct 18                                                                                                                                           |
-| Oct 22       | Final submission                                                                                                                                                                                                                    |
+| Window | Milestone |
+|---|---|
+| Sep 13–15 | Ring developer account + ID verification; staging-trial ticket; order doorbell, two 2nd-gen contact sensors, one 2nd-gen flood/freeze; Alexa developer account; AWS credit form; Bedrock model access; spec and plan |
+| Sep 16–22 | Monorepo; core; server with `list_appliances`, `get_appliance`, `maintenance_due`, `log_maintenance`, `recent_events`; DynamoDB; Inspector; Terraform baseline; first AgentCore deploy; legacy-shim spike (decides A vs fallback C) |
+| Sep 23–29 | `book_service` with elicitation and progress on both client generations; Knowledge Base and manuals; `ask_manual`; simulator MVP (frame, agent, transcript, debug drawer) |
+| Sep 30–Oct 6 | Ring link, webhook, correlator, snapshot + vision, WebSocket push, proactive card; widgets; doorbell installed |
+| Oct 7–13 | Sensors if granted; end-to-end tests; load smoke; Agent Skill; README; friction log consolidation |
+| Oct 14–20 | Video script, record, edit; feedback form; feature requests; dry-run submission by Oct 18 |
+| Oct 22 | Final submission |
 
 ## 12. Risks and fallbacks
 
-| Risk                                                      | Mitigation                                                                             |
-| --------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Ring approval or ID verification lag                      | Start Sep 13; develop on Playground meanwhile                                          |
-| Staging webhooks need a support-provisioned trial         | File ticket Sep 13 (documented known gap)                                              |
-| TAKE encryption blocks partner media on the demo doorbell | Verify setting in week 1; disable for the demo device                                  |
-| SDK v2 sessionful legacy path misbehaves on AgentCore     | Week-1 spike; fallback to SDK v1.x (architecture C) with identical transport semantics |
-| Sensors early access not granted                          | Feature flag; fixtures; doorbell-only video                                            |
-| Amplify SSR friction with Next 15                         | Vercel                                                                                 |
-| Bedrock model access or region gaps                       | Request in week 0; choose a region with Nova, Claude, AgentCore, S3 Vectors            |
-| Terraform provider coverage for S3 Vectors or AgentCore   | Pin provider; AWSCC or CLI fallback                                                    |
-| Strands lacks progress notifications                      | Transport tap for the drawer; Inspector demonstrates progress natively                 |
+| Risk | Mitigation |
+|---|---|
+| Ring approval or ID verification lag | Start Sep 13; develop on Playground meanwhile |
+| Staging webhooks need a support-provisioned trial | File ticket Sep 13 (documented known gap) |
+| TAKE encryption blocks partner media on the demo doorbell | Verify setting in week 1; disable for the demo device |
+| SDK v2 sessionful legacy path misbehaves on AgentCore | Week-1 spike; fallback to SDK v1.x (architecture C) with identical transport semantics |
+| Sensors early access not granted | Feature flag; fixtures; doorbell-only video |
+| Amplify SSR friction with Next 15 | Vercel |
+| Bedrock model access or region gaps | Request in week 0; choose a region with Nova, Claude, AgentCore, S3 Vectors |
+| Terraform provider coverage for S3 Vectors or AgentCore | Pin provider; AWSCC or CLI fallback |
+| Strands lacks progress notifications | Transport tap for the drawer; Inspector demonstrates progress natively |
 
 ## 13. References
 

@@ -7,7 +7,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 ## Design phase (2026-09-13)
 
 ### FL-001 · Alexa+ · MCP Toolkit access is gated, and the request path is not discoverable
-
 - **Expected:** The MCP Toolkit quickstart reads as self-serve: install `@alexa-ai/cli`, run `alexa-ai new mcp`, deploy, test in the web simulator.
 - **Actual:** The docs home says the Category SDK and MCP Toolkit are "available to select partners only." The development-stages page says "you request access to the Private Preview" and links no form. The Alexa+ for Builders landing page has no request button. An established skill developer (AnyList) reported a rejected request. The Devpost organizer wrote that entrants "will have no way to actually call Alexa+ anyway."
 - **Impact:** A day of reading three pages that disagree about whether a developer can start. No way to test against the real client.
@@ -16,7 +15,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open. Asked on the Devpost forum whether hackathon entrants can get dev-stage access.
 
 ### FL-002 · Alexa+ · Authentication docs contradict each other and the MCP spec
-
 - **Expected:** One documented location for OAuth protected-resource metadata and a spec-conformant 401.
 - **Actual:** The quickstart says to host metadata at `/.well-known/oauth-authorization-server`; the account-linking page says `/.well-known/oauth-protected-resource`. The auth page says 401 responses carry no `WWW-Authenticate` header and that Dynamic Client Registration, Client ID Metadata Documents, and OIDC are all unsupported, which is the opposite of the MCP 2025-11-25 authorization guidance the hackathon links.
 - **Impact:** Cannot tell which discovery path a real Alexa+ client would follow.
@@ -25,7 +23,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open. Feature request filed.
 
 ### FL-003 · Alexa+ · Client lifecycle example negotiates an older protocol than the docs claim
-
 - **Expected:** The MCP Toolkit overview says the client supports 2025-11-25 features.
 - **Actual:** The lifecycle page's `initialize` example sends `protocolVersion: "2025-03-26"` with only `roots.listChanged` as a capability. Elicitation did not exist until 2025-06-18.
 - **Impact:** Unclear whether a certified add-on can ever receive an elicitation request from Alexa+.
@@ -34,7 +31,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open.
 
 ### FL-004 · Hackathon rules · "Agent Skill" is undefined
-
 - **Expected:** The Alexa+ track definition ("a working Agent Skill or a self-hosted MCP server") would define the term or link a spec.
 - **Actual:** The rules never define it. The resources page links the MCP Apps "Build with Agent Skills" page, which contains four `SKILL.md` folders in the agentskills.io format. Amazon's own device and Alexa+ skills use the same format.
 - **Impact:** An hour of cross-referencing to decide what artifact would satisfy Stage 1.
@@ -43,7 +39,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Resolved by decision.
 
 ### FL-005 · MCP spec · The hackathon's minimum version and the current version disagree on fundamentals
-
 - **Expected:** Implementing the linked 2025-11-25 Streamable HTTP page would be current.
 - **Actual:** The 2026-07-28 revision removed protocol sessions and the `Mcp-Session-Id` header, removed the `initialize` handshake, replaced server-initiated elicitation with multi round-trip requests, removed SSE resumability, and moved tasks into an extension. The TypeScript SDK v2 (stable line) implements 2026-07-28; v1.x is in maintenance.
 - **Impact:** A server written to the hackathon's linked pages is a legacy server on day one.
@@ -52,7 +47,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Resolved by decision; spike pending.
 
 ### FL-006 · MCP TypeScript SDK · Sessionful legacy support is documented as a compatibility posture, not a path
-
 - **Expected:** A documented way to serve legacy clients with sessions and server-initiated elicitation.
 - **Actual:** The legacy-clients page presents `legacy: 'stateless'` (no sessions, `GET` and `DELETE` answer 405) and `legacy: 'reject'`. Keeping sessions means routing with `isLegacyRequest` to a hand-wired `NodeStreamableHTTPServerTransport` with `sessionIdGenerator`, described as a way to "preserve existing sessionful 2025 deployments." The input-required page separately says the legacy shim pushes real elicitation "over the session." The two pages do not reference each other.
 - **Impact:** The only configuration in which Strands (a v1 client) receives elicitation is the one the docs treat as legacy-preservation.
@@ -61,7 +55,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open; spike pending.
 
 ### FL-007 · MCP tasks extension · Specified, no runtime
-
 - **Expected:** The 2025-11-25 experimental tasks feature, or its extension successor, would be usable for a long-running booking demo.
 - **Actual:** Tasks moved to the `io.modelcontextprotocol/tasks` extension in July 2026 and no language SDK provides a runtime yet.
 - **Impact:** Dropped the "long-running task" showcase; replaced with elicitation plus progress notifications.
@@ -70,7 +63,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Resolved by decision.
 
 ### FL-008 · AgentCore CLI · TypeScript scaffolding does not cover the MCP protocol
-
 - **Expected:** `agentcore add agent --language TypeScript --protocol MCP` would scaffold a Node MCP server, since the CLI itself is an npm package.
 - **Actual:** The frameworks doc restricts TypeScript to the Strands and VercelAI frameworks, and every MCP example is Python with FastMCP. Bring-your-own-container is not described in the CLI docs.
 - **Impact:** No first-party path from a TypeScript MCP server to AgentCore Runtime through the CLI.
@@ -79,7 +71,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Resolved by decision. Feature request filed.
 
 ### FL-009 · AgentCore Runtime · Protocol contract references a superseded MCP revision
-
 - **Expected:** The MCP protocol contract page would describe the current wire protocol.
 - **Actual:** The contract and the stateful-features guide link the 2025-11-25 and 2025-03-26 spec pages and center on `Mcp-Session-Id`, which the current revision removed. A tip acknowledges MRTR for 2026-07-28 but every example is session-based.
 - **Impact:** Had to reconcile three documents to decide stateful versus stateless.
@@ -88,7 +79,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Resolved by decision.
 
 ### FL-010 · Strands TypeScript · MCP client is a v1 client with no progress notifications
-
 - **Expected:** The current Strands TypeScript SDK would consume a current MCP server and surface progress.
 - **Actual:** `@strands-agents/sdk` 1.17.0 peer-depends on `@modelcontextprotocol/sdk` ^1.25 (the 2025-era client). Its MCP docs state progress notifications are not yet supported.
 - **Impact:** Strands cannot see multi round-trip results; it needs the legacy branch. Progress cannot reach the UI through Strands.
@@ -97,7 +87,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open. Feature request filed.
 
 ### FL-011 · Ring · Early-access programs have no documented request path
-
 - **Expected:** The release notes announcing sensor support and dynamic scopes (Aug 24) would say how to request early access.
 - **Actual:** "Available through the Ring Developer Early Access Program" with no form, email, console toggle, or thread. Partner-initiated OAuth is "by invitation only" with no process. The community announcement threads do not mention it either.
 - **Impact:** Sensor events, which the Ring track's home-automation priority points at, cannot be planned with confidence.
@@ -106,7 +95,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open. Asked on the Ring developer community.
 
 ### FL-012 · Ring · Staging webhooks require a support-provisioned trial
-
 - **Expected:** A staging app with a linked test account would receive motion webhooks.
 - **Actual:** Community thread confirms `motion_detected` never fires and history returns 403 until a Protect trial is manually provisioned by support ticket; Ring staff call it a known gap.
 - **Impact:** Adds a ticket and unknown lead time to the critical path.
@@ -115,7 +103,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open; ticket filed.
 
 ### FL-013 · Ring · No on-demand snapshot, and Playground events do not match documented webhook types
-
 - **Expected:** A "who is at the door" flow could request a current frame when an event arrives.
 - **Actual:** Snapshots come only from recordings (`at_timestamp` or `latest_in_range`); a forum thread confirms there is no live-snapshot API. The Playground simulates "Package" events, but the documented `motion_detected.sub_type` values are `motion`, `human`, `vehicle`, `other_motion`; no package sub-type is documented.
 - **Impact:** A few seconds of lag between event and image; fixtures recorded from the Playground may not match production payloads.
@@ -124,7 +111,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open.
 
 ### FL-014 · Ring · TAKE encryption's effect on the Partner API is undocumented
-
 - **Expected:** The end-to-end encryption announcement would state what partner apps lose.
 - **Actual:** Amazon's developer news says TAKE "limits what integrations can access" without naming endpoints or behavior.
 - **Impact:** Cannot tell in advance whether the demo doorbell will serve snapshots and clips.
@@ -133,7 +119,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Open.
 
 ### FL-015 · Devpost · Prize details page returns 404; office hours schedule absent
-
 - **Expected:** `/details/prizes` and a posted office-hours schedule, both referenced on the landing page.
 - **Actual:** The prizes URL returns 404; prizes are only in the rules. The landing page says office hours are "posted on the hackathon landing page" and none are listed. The Alexa+ Store page returned 503 during research.
 - **Impact:** Minor; time spent hunting.
@@ -142,7 +127,6 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Status:** Reported.
 
 ### FL-016 · Terraform · S3 Vectors support for Knowledge Bases is recent and unverified in the pinned provider
-
 - **Expected:** `aws_bedrockagent_knowledge_base` with `storage_configuration.type = "S3_VECTORS"` in the current provider.
 - **Actual:** Support arrived through a recent pull request; native S3 Vectors bucket and index resources may lag.
 - **Impact:** Possible one-time manual step for the vector index.
