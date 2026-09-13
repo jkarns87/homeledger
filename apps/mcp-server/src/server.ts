@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import type { Repository } from '@homeledger/core';
 import { registerApplianceTools } from './tools/appliances.js';
+import { registerMaintenanceTools } from './tools/maintenance.js';
 
 export interface ServerDeps {
   repo: Repository;
@@ -16,5 +17,6 @@ export function buildServer(deps: ServerDeps): McpServer {
       'HomeLedger is the household operating record: appliances, warranties, manuals, maintenance, service visits, and door and sensor events. Speak results plainly; never read identifiers aloud.'
   });
   registerApplianceTools(server, deps);
+  registerMaintenanceTools(server, deps);
   return server;
 }
