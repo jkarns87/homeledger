@@ -97,15 +97,18 @@ homeledger/
 ### Task 1: Monorepo scaffold
 
 **Files:**
+
 - Create: `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, `.npmrc`, `.nvmrc`, `.gitignore`, `.env.example`, `LICENSE`, `README.md`, `docker-compose.yml`
 - Create: `packages/core/package.json`, `packages/core/tsconfig.json`, `packages/core/vitest.config.ts`, `packages/core/src/index.ts`, `packages/core/test/index.test.ts`
 
 **Interfaces:**
+
 - Produces: workspace commands `pnpm -r typecheck`, `pnpm -r test`, `pnpm -r build`; package `@homeledger/core` importable by `apps/*`.
 
 - [ ] **Step 1: Write the root workspace files**
 
 `package.json`:
+
 ```json
 {
   "name": "homeledger",
@@ -129,13 +132,15 @@ homeledger/
 ```
 
 `pnpm-workspace.yaml`:
+
 ```yaml
 packages:
-  - "packages/*"
-  - "apps/*"
+  - 'packages/*'
+  - 'apps/*'
 ```
 
 `tsconfig.base.json`:
+
 ```json
 {
   "compilerOptions": {
@@ -155,17 +160,20 @@ packages:
 ```
 
 `.npmrc`:
+
 ```
 auto-install-peers=true
 strict-peer-dependencies=false
 ```
 
 `.nvmrc`:
+
 ```
 22
 ```
 
 `.gitignore`:
+
 ```
 node_modules/
 dist/
@@ -180,6 +188,7 @@ coverage/
 ```
 
 `.env.example`:
+
 ```
 AWS_REGION=us-east-1
 HOUSEHOLD_ID=hh_harlow
@@ -189,13 +198,14 @@ HOMELEDGER_DEV_TOOLS=1
 ```
 
 `docker-compose.yml`:
+
 ```yaml
 services:
   dynamodb:
     image: amazon/dynamodb-local:latest
-    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    command: ['-jar', 'DynamoDBLocal.jar', '-inMemory', '-sharedDb']
     ports:
-      - "8000:8000"
+      - '8000:8000'
 ```
 
 Note: DynamoDB Local and the MCP server both default to port 8000. Locally the server runs on `PORT=8010` (Task 7 reads `PORT`); in the container it is 8000 because AgentCore requires it.
@@ -203,7 +213,8 @@ Note: DynamoDB Local and the MCP server both default to port 8000. Locally the s
 `LICENSE`: the MIT license text with `Copyright (c) 2026 Joseph Karns`.
 
 `README.md`:
-```markdown
+
+````markdown
 # HomeLedger
 
 The household's operating record, exposed to an assistant through an MCP server.
@@ -224,7 +235,9 @@ docker compose up -d           # DynamoDB Local on :8000
 cp .env.example .env
 pnpm -r test
 ```
-```
+````
+
+````
 
 - [ ] **Step 2: Write the core package skeleton and its first test**
 
@@ -253,9 +266,10 @@ pnpm -r test
     "vitest": "^3.2.0"
   }
 }
-```
+````
 
 `packages/core/tsconfig.json`:
+
 ```json
 {
   "extends": "../../tsconfig.base.json",
@@ -265,17 +279,20 @@ pnpm -r test
 ```
 
 `packages/core/vitest.config.ts`:
+
 ```ts
 import { defineConfig } from 'vitest/config';
 export default defineConfig({ test: { include: ['test/**/*.test.ts'], environment: 'node' } });
 ```
 
 `packages/core/src/index.ts`:
+
 ```ts
 export const CORE_VERSION = '0.1.0';
 ```
 
 `packages/core/test/index.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { CORE_VERSION } from '../src/index.js';
@@ -306,16 +323,19 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 2: Domain schemas, IDs, and maintenance math
 
 **Files:**
+
 - Create: `packages/core/src/ids.ts`, `packages/core/src/domain/schemas.ts`, `packages/core/src/domain/maintenance.ts`
 - Modify: `packages/core/src/index.ts`
 - Test: `packages/core/test/ids.test.ts`, `packages/core/test/schemas.test.ts`, `packages/core/test/maintenance.test.ts`
 
 **Interfaces:**
+
 - Produces: `newId(prefix: IdPrefix): string`; Zod schemas `ApplianceSchema`, `MaintenanceItemSchema`, `LogEntrySchema`, `DocSchema`, `VisitSchema`, `EventSchema`, `AlertSchema`, `DeviceSchema`, `HouseholdSchema` and their inferred types (`Appliance`, `MaintenanceItem`, `LogEntry`, `Doc`, `Visit`, `Event`, `Alert`, `Device`, `Household`); `computeNextDue(lastDoneAt: string, intervalDays: number): string`; `isOverdue(nextDueAt: string, now: string): boolean`.
 
 - [ ] **Step 1: Write the failing ID test**
 
 `packages/core/test/ids.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { newId } from '../src/ids.js';
@@ -340,6 +360,7 @@ Expected: FAIL, cannot find module `../src/ids.js`.
 - [ ] **Step 3: Implement IDs**
 
 `packages/core/src/ids.ts`:
+
 ```ts
 import { randomBytes } from 'node:crypto';
 
@@ -372,6 +393,7 @@ Expected: PASS (2 tests).
 - [ ] **Step 5: Write the failing schema and maintenance tests**
 
 `packages/core/test/schemas.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { ApplianceSchema, VisitSchema } from '../src/domain/schemas.js';
@@ -394,15 +416,47 @@ describe('schemas', () => {
     expect(parsed.templates[0]?.intervalDays).toBe(90);
   });
   it('rejects an appliance id with the wrong prefix', () => {
-    expect(() => ApplianceSchema.parse({ id: 'visit_abcdefghijklmnop', name: 'x', brand: 'x', model: 'x', serial: null, room: 'x', category: 'other', purchasedAt: null, warrantyUntil: null, manualDocId: null, templates: [] })).toThrow();
+    expect(() =>
+      ApplianceSchema.parse({
+        id: 'visit_abcdefghijklmnop',
+        name: 'x',
+        brand: 'x',
+        model: 'x',
+        serial: null,
+        room: 'x',
+        category: 'other',
+        purchasedAt: null,
+        warrantyUntil: null,
+        manualDocId: null,
+        templates: []
+      })
+    ).toThrow();
   });
   it('rejects a visit with an unknown status', () => {
-    expect(() => VisitSchema.parse({ id: 'visit_abcdefghijklmnop', providerId: 'p1', providerName: 'A', category: 'plumbing', applianceId: 'appl_abcdefghijklmnop', issue: 'leak', windowStart: '2026-09-20T13:00:00Z', windowEnd: '2026-09-20T15:00:00Z', status: 'lost', ringEventIds: [], snapshotKey: null, description: null, arrivedAt: null, createdAt: '2026-09-13T00:00:00Z' })).toThrow();
+    expect(() =>
+      VisitSchema.parse({
+        id: 'visit_abcdefghijklmnop',
+        providerId: 'p1',
+        providerName: 'A',
+        category: 'plumbing',
+        applianceId: 'appl_abcdefghijklmnop',
+        issue: 'leak',
+        windowStart: '2026-09-20T13:00:00Z',
+        windowEnd: '2026-09-20T15:00:00Z',
+        status: 'lost',
+        ringEventIds: [],
+        snapshotKey: null,
+        description: null,
+        arrivedAt: null,
+        createdAt: '2026-09-13T00:00:00Z'
+      })
+    ).toThrow();
   });
 });
 ```
 
 `packages/core/test/maintenance.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { computeNextDue, isOverdue } from '../src/domain/maintenance.js';
@@ -426,6 +480,7 @@ Expected: FAIL on missing modules `../src/domain/schemas.js` and `../src/domain/
 - [ ] **Step 7: Implement schemas and maintenance math**
 
 `packages/core/src/domain/schemas.ts`:
+
 ```ts
 import * as z from 'zod/v4';
 
@@ -546,6 +601,7 @@ export type ApplianceCategoryValue = z.infer<typeof ApplianceCategory>;
 ```
 
 `packages/core/src/domain/maintenance.ts`:
+
 ```ts
 const DAY_MS = 86_400_000;
 
@@ -567,6 +623,7 @@ export function isOverdue(nextDueAt: string, now: string): boolean {
 ```
 
 Update `packages/core/src/index.ts`:
+
 ```ts
 export const CORE_VERSION = '0.1.0';
 export * from './ids.js';
@@ -593,13 +650,16 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 3: Repository interface, key builders, and in-memory implementation
 
 **Files:**
+
 - Create: `packages/core/src/repo/keys.ts`, `packages/core/src/repo/repository.ts`, `packages/core/src/repo/memory.ts`
 - Modify: `packages/core/src/index.ts`
 - Test: `packages/core/test/keys.test.ts`, `packages/core/test/repository.contract.ts`, `packages/core/test/memory.test.ts`
 
 **Interfaces:**
+
 - Consumes: schemas and types from Task 2.
 - Produces:
+
   ```ts
   export interface Repository {
     getHousehold(): Promise<Household | null>;
@@ -627,12 +687,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   }
   export function createMemoryRepository(householdId: string): Repository;
   ```
+
   Key builders: `pk(householdId)`, `sk.appliance(id)`, `sk.maintenance(applianceId, taskType)`, `sk.log(createdAt, id)`, `sk.doc(id)`, `sk.visit(id)`, `sk.event(at, id)`, `sk.alert(id)`, `sk.device(ringDeviceId)`, `sk.household()`, `gsi1.due(householdId)`, `gsi2.visit(householdId)`.
   The contract test file exports `runRepositoryContract(name: string, make: () => Promise<Repository>)` so Task 4 reuses every assertion against DynamoDB.
 
 - [ ] **Step 1: Write the failing key-builder test**
 
 `packages/core/test/keys.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { gsi1, gsi2, pk, sk } from '../src/repo/keys.js';
@@ -659,6 +721,7 @@ Expected: FAIL, cannot find module `../src/repo/keys.js`.
 - [ ] **Step 3: Implement key builders**
 
 `packages/core/src/repo/keys.ts`:
+
 ```ts
 export const pk = (householdId: string) => `HH#${householdId}`;
 
@@ -686,8 +749,21 @@ Expected: PASS.
 - [ ] **Step 5: Write the repository interface and the shared contract test**
 
 `packages/core/src/repo/repository.ts`:
+
 ```ts
-import type { Alert, Appliance, ApplianceCategoryValue, Device, Doc, Event, Household, LogEntry, MaintenanceItem, TaskTypeValue, Visit } from '../domain/schemas.js';
+import type {
+  Alert,
+  Appliance,
+  ApplianceCategoryValue,
+  Device,
+  Doc,
+  Event,
+  Household,
+  LogEntry,
+  MaintenanceItem,
+  TaskTypeValue,
+  Visit
+} from '../domain/schemas.js';
 
 export interface Repository {
   getHousehold(): Promise<Household | null>;
@@ -716,6 +792,7 @@ export interface Repository {
 ```
 
 `packages/core/test/repository.contract.ts` (imported by memory and dynamo tests; not itself a test file):
+
 ```ts
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Repository } from '../src/repo/repository.js';
@@ -795,7 +872,9 @@ export function runRepositoryContract(name: string, make: () => Promise<Reposito
     it('lists maintenance due within a horizon, overdue first', async () => {
       await repo.putMaintenance(maintenance());
       await repo.putMaintenance(maintenance({ taskType: 'inspection', intervalDays: 365, lastDoneAt: '2025-10-01', nextDueAt: '2026-10-01' }));
-      await repo.putMaintenance(maintenance({ applianceId: 'appl_bbbbbbbbbbbbbbbb', taskType: 'clean', intervalDays: 30, lastDoneAt: '2026-09-10', nextDueAt: '2026-12-10' }));
+      await repo.putMaintenance(
+        maintenance({ applianceId: 'appl_bbbbbbbbbbbbbbbb', taskType: 'clean', intervalDays: 30, lastDoneAt: '2026-09-10', nextDueAt: '2026-12-10' })
+      );
       const due = await repo.listMaintenanceDue(30, '2026-09-13');
       expect(due.map(m => m.taskType)).toEqual(['filter_change', 'inspection']);
     });
@@ -818,8 +897,22 @@ export function runRepositoryContract(name: string, make: () => Promise<Reposito
     });
 
     it('appends and lists logs newest first', async () => {
-      await repo.appendLog({ id: 'log_aaaaaaaaaaaaaaaa', applianceId: 'appl_aaaaaaaaaaaaaaaa', taskType: 'filter_change', doneAt: '2026-06-01', notes: null, createdAt: '2026-06-01T12:00:00.000Z' });
-      await repo.appendLog({ id: 'log_bbbbbbbbbbbbbbbb', applianceId: 'appl_aaaaaaaaaaaaaaaa', taskType: 'filter_change', doneAt: '2026-09-13', notes: 'MERV 11', createdAt: '2026-09-13T12:00:00.000Z' });
+      await repo.appendLog({
+        id: 'log_aaaaaaaaaaaaaaaa',
+        applianceId: 'appl_aaaaaaaaaaaaaaaa',
+        taskType: 'filter_change',
+        doneAt: '2026-06-01',
+        notes: null,
+        createdAt: '2026-06-01T12:00:00.000Z'
+      });
+      await repo.appendLog({
+        id: 'log_bbbbbbbbbbbbbbbb',
+        applianceId: 'appl_aaaaaaaaaaaaaaaa',
+        taskType: 'filter_change',
+        doneAt: '2026-09-13',
+        notes: 'MERV 11',
+        createdAt: '2026-09-13T12:00:00.000Z'
+      });
       const logs = await repo.listLogs('appl_aaaaaaaaaaaaaaaa', 10);
       expect(logs.map(l => l.doneAt)).toEqual(['2026-09-13', '2026-06-01']);
     });
@@ -830,6 +923,7 @@ export function runRepositoryContract(name: string, make: () => Promise<Reposito
 - [ ] **Step 6: Write the memory repository test**
 
 `packages/core/test/memory.test.ts`:
+
 ```ts
 import { createMemoryRepository } from '../src/repo/memory.js';
 import { runRepositoryContract } from './repository.contract.js';
@@ -845,8 +939,21 @@ Expected: FAIL, cannot find module `../src/repo/memory.js`.
 - [ ] **Step 8: Implement the in-memory repository**
 
 `packages/core/src/repo/memory.ts`:
+
 ```ts
-import type { Alert, Appliance, ApplianceCategoryValue, Device, Doc, Event, Household, LogEntry, MaintenanceItem, TaskTypeValue, Visit } from '../domain/schemas.js';
+import type {
+  Alert,
+  Appliance,
+  ApplianceCategoryValue,
+  Device,
+  Doc,
+  Event,
+  Household,
+  LogEntry,
+  MaintenanceItem,
+  TaskTypeValue,
+  Visit
+} from '../domain/schemas.js';
 import { isOverdue } from '../domain/maintenance.js';
 import type { Repository } from './repository.js';
 
@@ -866,30 +973,49 @@ export function createMemoryRepository(_householdId: string): Repository {
   const devices = new Map<string, Device>();
 
   return {
-    async getHousehold() { return household; },
-    async putHousehold(h) { household = h; },
-    async putAppliance(a) { appliances.set(a.id, a); },
-    async getAppliance(id) { return appliances.get(id) ?? null; },
+    async getHousehold() {
+      return household;
+    },
+    async putHousehold(h) {
+      household = h;
+    },
+    async putAppliance(a) {
+      appliances.set(a.id, a);
+    },
+    async getAppliance(id) {
+      return appliances.get(id) ?? null;
+    },
     async listAppliances(filter) {
       return [...appliances.values()]
         .filter(a => (filter?.room ? a.room === filter.room : true))
         .filter(a => (filter?.category ? a.category === filter.category : true))
         .sort((x, y) => x.name.localeCompare(y.name));
     },
-    async putMaintenance(m) { maintenance.set(`${m.applianceId}#${m.taskType}`, m); },
-    async getMaintenance(applianceId: string, taskType: TaskTypeValue) { return maintenance.get(`${applianceId}#${taskType}`) ?? null; },
+    async putMaintenance(m) {
+      maintenance.set(`${m.applianceId}#${m.taskType}`, m);
+    },
+    async getMaintenance(applianceId: string, taskType: TaskTypeValue) {
+      return maintenance.get(`${applianceId}#${taskType}`) ?? null;
+    },
     async listMaintenanceDue(horizonDays, now) {
       const limit = addDays(now.slice(0, 10), horizonDays);
-      return [...maintenance.values()]
-        .filter(m => m.nextDueAt <= limit)
-        .sort((x, y) => x.nextDueAt.localeCompare(y.nextDueAt));
+      return [...maintenance.values()].filter(m => m.nextDueAt <= limit).sort((x, y) => x.nextDueAt.localeCompare(y.nextDueAt));
     },
-    async appendLog(e) { logs.push(e); },
+    async appendLog(e) {
+      logs.push(e);
+    },
     async listLogs(applianceId, limit) {
-      return logs.filter(l => l.applianceId === applianceId).sort((x, y) => y.createdAt.localeCompare(x.createdAt)).slice(0, limit);
+      return logs
+        .filter(l => l.applianceId === applianceId)
+        .sort((x, y) => y.createdAt.localeCompare(x.createdAt))
+        .slice(0, limit);
     },
-    async putDoc(d) { docs.set(d.id, d); },
-    async getDoc(id) { return docs.get(id) ?? null; },
+    async putDoc(d) {
+      docs.set(d.id, d);
+    },
+    async getDoc(id) {
+      return docs.get(id) ?? null;
+    },
     async putEvent(e) {
       if (events.has(e.ringEventId)) return 'duplicate';
       events.set(e.ringEventId, e);
@@ -898,18 +1024,30 @@ export function createMemoryRepository(_householdId: string): Repository {
     async listEvents(sinceIso) {
       return [...events.values()].filter(e => e.at >= sinceIso).sort((x, y) => y.at.localeCompare(x.at));
     },
-    async putVisit(v) { visits.set(v.id, v); },
-    async getVisit(id) { return visits.get(id) ?? null; },
+    async putVisit(v) {
+      visits.set(v.id, v);
+    },
+    async getVisit(id) {
+      return visits.get(id) ?? null;
+    },
     async listVisitsInWindow(fromIso, toIso) {
       return [...visits.values()].filter(v => v.windowStart <= toIso && v.windowEnd >= fromIso).sort((x, y) => x.windowStart.localeCompare(y.windowStart));
     },
     async listVisitsSince(sinceIso) {
       return [...visits.values()].filter(v => v.windowStart >= sinceIso).sort((x, y) => x.windowStart.localeCompare(y.windowStart));
     },
-    async putAlert(a) { alerts.push(a); },
-    async listAlerts(sinceIso) { return alerts.filter(a => a.at >= sinceIso).sort((x, y) => y.at.localeCompare(x.at)); },
-    async putDevice(d) { devices.set(d.ringDeviceId, d); },
-    async listDevices() { return [...devices.values()].sort((x, y) => x.name.localeCompare(y.name)); }
+    async putAlert(a) {
+      alerts.push(a);
+    },
+    async listAlerts(sinceIso) {
+      return alerts.filter(a => a.at >= sinceIso).sort((x, y) => y.at.localeCompare(x.at));
+    },
+    async putDevice(d) {
+      devices.set(d.ringDeviceId, d);
+    },
+    async listDevices() {
+      return [...devices.values()].sort((x, y) => x.name.localeCompare(y.name));
+    }
   };
 }
 
@@ -919,6 +1057,7 @@ export { isOverdue };
 Note: `filter((a: Appliance) => ...)` type annotations are unnecessary because `Repository` types the returns; the `category` filter compares to `ApplianceCategoryValue`.
 
 Update `packages/core/src/index.ts`:
+
 ```ts
 export const CORE_VERSION = '0.1.0';
 export * from './ids.js';
@@ -948,19 +1087,29 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 4: DynamoDB repository, table helper, and seed data
 
 **Files:**
+
 - Create: `packages/core/src/repo/dynamo.ts`, `packages/core/src/repo/table.ts`, `packages/core/src/seed/household.ts`
 - Modify: `packages/core/src/index.ts`
 - Test: `packages/core/test/dynamo.test.ts`, `packages/core/test/seed.test.ts`
 
 **Interfaces:**
+
 - Consumes: `Repository`, key builders, schemas, `runRepositoryContract`.
 - Produces:
+
   ```ts
-  export function createDynamoRepository(opts: { tableName: string; householdId: string; client?: DynamoDBDocumentClient; endpoint?: string; region?: string }): Repository;
+  export function createDynamoRepository(opts: {
+    tableName: string;
+    householdId: string;
+    client?: DynamoDBDocumentClient;
+    endpoint?: string;
+    region?: string;
+  }): Repository;
   export async function ensureTable(opts: { tableName: string; endpoint: string; region?: string }): Promise<void>; // test/local only
   export async function seedRepository(repo: Repository, householdId: string, today: string): Promise<{ applianceIds: string[] }>;
   export const SEED_APPLIANCES: Array<Omit<Appliance, 'id' | 'manualDocId'> & { lastDone: Partial<Record<TaskTypeValue, string>> }>;
   ```
+
   Table shape (must match Terraform in Task 11): `PK` (S, hash), `SK` (S, range); GSI1 `GSI1PK` (S) / `GSI1SK` (S); GSI2 `GSI2PK` (S) / `GSI2SK` (S); all attributes projected.
 
 - [ ] **Step 1: Start DynamoDB Local**
@@ -971,6 +1120,7 @@ Expected: `400` (DynamoDB Local answers with 400 to a bare GET, which proves it 
 - [ ] **Step 2: Write the failing DynamoDB contract test**
 
 `packages/core/test/dynamo.test.ts`:
+
 ```ts
 import { describe, it } from 'vitest';
 import { createDynamoRepository } from '../src/repo/dynamo.js';
@@ -980,7 +1130,9 @@ import { runRepositoryContract } from './repository.contract.js';
 const endpoint = process.env.DYNAMO_ENDPOINT;
 
 if (!endpoint) {
-  describe.skip('Repository contract: dynamo (set DYNAMO_ENDPOINT to run)', () => { it('skipped', () => {}); });
+  describe.skip('Repository contract: dynamo (set DYNAMO_ENDPOINT to run)', () => {
+    it('skipped', () => {});
+  });
 } else {
   let n = 0;
   runRepositoryContract('dynamo', async () => {
@@ -1001,6 +1153,7 @@ Expected: FAIL, cannot find module `../src/repo/dynamo.js`.
 - [ ] **Step 4: Implement the table helper**
 
 `packages/core/src/repo/table.ts`:
+
 ```ts
 import { CreateTableCommand, DynamoDBClient, waitUntilTableExists } from '@aws-sdk/client-dynamodb';
 
@@ -1023,8 +1176,22 @@ export async function ensureTable(opts: { tableName: string; endpoint: string; r
         { AttributeName: 'SK', KeyType: 'RANGE' }
       ],
       GlobalSecondaryIndexes: [
-        { IndexName: 'GSI1', KeySchema: [{ AttributeName: 'GSI1PK', KeyType: 'HASH' }, { AttributeName: 'GSI1SK', KeyType: 'RANGE' }], Projection: { ProjectionType: 'ALL' } },
-        { IndexName: 'GSI2', KeySchema: [{ AttributeName: 'GSI2PK', KeyType: 'HASH' }, { AttributeName: 'GSI2SK', KeyType: 'RANGE' }], Projection: { ProjectionType: 'ALL' } }
+        {
+          IndexName: 'GSI1',
+          KeySchema: [
+            { AttributeName: 'GSI1PK', KeyType: 'HASH' },
+            { AttributeName: 'GSI1SK', KeyType: 'RANGE' }
+          ],
+          Projection: { ProjectionType: 'ALL' }
+        },
+        {
+          IndexName: 'GSI2',
+          KeySchema: [
+            { AttributeName: 'GSI2PK', KeyType: 'HASH' },
+            { AttributeName: 'GSI2SK', KeyType: 'RANGE' }
+          ],
+          Projection: { ProjectionType: 'ALL' }
+        }
       ]
     })
   );
@@ -1035,6 +1202,7 @@ export async function ensureTable(opts: { tableName: string; endpoint: string; r
 - [ ] **Step 5: Implement the DynamoDB repository**
 
 `packages/core/src/repo/dynamo.ts`:
+
 ```ts
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
@@ -1063,9 +1231,12 @@ export function createDynamoRepository(opts: {
 }): Repository {
   const doc =
     opts.client ??
-    DynamoDBDocumentClient.from(new DynamoDBClient({ region: opts.region ?? process.env.AWS_REGION ?? 'us-east-1', ...(opts.endpoint ? { endpoint: opts.endpoint } : {}) }), {
-      marshallOptions: { removeUndefinedValues: true }
-    });
+    DynamoDBDocumentClient.from(
+      new DynamoDBClient({ region: opts.region ?? process.env.AWS_REGION ?? 'us-east-1', ...(opts.endpoint ? { endpoint: opts.endpoint } : {}) }),
+      {
+        marshallOptions: { removeUndefinedValues: true }
+      }
+    );
   const T = opts.tableName;
   const P = pk(opts.householdId);
 
@@ -1091,11 +1262,19 @@ export function createDynamoRepository(opts: {
   };
 
   return {
-    async getHousehold() { return get<Household>(sk.household()); },
-    async putHousehold(h) { await put(sk.household(), 'household', h); },
+    async getHousehold() {
+      return get<Household>(sk.household());
+    },
+    async putHousehold(h) {
+      await put(sk.household(), 'household', h);
+    },
 
-    async putAppliance(a) { await put(sk.appliance(a.id), 'appliance', a); },
-    async getAppliance(id) { return get<Appliance>(sk.appliance(id)); },
+    async putAppliance(a) {
+      await put(sk.appliance(a.id), 'appliance', a);
+    },
+    async getAppliance(id) {
+      return get<Appliance>(sk.appliance(id));
+    },
     async listAppliances(filter) {
       const all = await queryPrefix<Appliance>('APPL#');
       return all
@@ -1107,7 +1286,9 @@ export function createDynamoRepository(opts: {
     async putMaintenance(m) {
       await put(sk.maintenance(m.applianceId, m.taskType), 'maintenance', m, { GSI1PK: gsi1.due(opts.householdId), GSI1SK: m.nextDueAt });
     },
-    async getMaintenance(applianceId: string, taskType: TaskTypeValue) { return get<MaintenanceItem>(sk.maintenance(applianceId, taskType)); },
+    async getMaintenance(applianceId: string, taskType: TaskTypeValue) {
+      return get<MaintenanceItem>(sk.maintenance(applianceId, taskType));
+    },
     async listMaintenanceDue(horizonDays, now) {
       const limit = addDays(now.slice(0, 10), horizonDays);
       const out = await doc.send(
@@ -1122,14 +1303,20 @@ export function createDynamoRepository(opts: {
       return (out.Items ?? []).map(i => strip<MaintenanceItem>(i) as MaintenanceItem);
     },
 
-    async appendLog(e) { await put(sk.log(e.createdAt, e.id), 'log', e); },
+    async appendLog(e) {
+      await put(sk.log(e.createdAt, e.id), 'log', e);
+    },
     async listLogs(applianceId, limit) {
       const all = await queryPrefix<LogEntry>('LOG#', { forward: false });
       return all.filter(l => l.applianceId === applianceId).slice(0, limit);
     },
 
-    async putDoc(d) { await put(sk.doc(d.id), 'doc', d); },
-    async getDoc(id) { return get<Doc>(sk.doc(id)); },
+    async putDoc(d) {
+      await put(sk.doc(d.id), 'doc', d);
+    },
+    async getDoc(id) {
+      return get<Doc>(sk.doc(id));
+    },
 
     async putEvent(e) {
       try {
@@ -1162,7 +1349,9 @@ export function createDynamoRepository(opts: {
     async putVisit(v) {
       await put(sk.visit(v.id), 'visit', v, { GSI2PK: gsi2.visit(opts.householdId), GSI2SK: v.windowStart });
     },
-    async getVisit(id) { return get<Visit>(sk.visit(id)); },
+    async getVisit(id) {
+      return get<Visit>(sk.visit(id));
+    },
     async listVisitsInWindow(fromIso, toIso) {
       const out = await doc.send(
         new QueryCommand({
@@ -1189,13 +1378,17 @@ export function createDynamoRepository(opts: {
       return (out.Items ?? []).map(i => strip<Visit>(i) as Visit);
     },
 
-    async putAlert(a) { await put(sk.alert(a.id), 'alert', a); },
+    async putAlert(a) {
+      await put(sk.alert(a.id), 'alert', a);
+    },
     async listAlerts(sinceIso) {
       const all = await queryPrefix<Alert>('ALERT#');
       return all.filter(a => a.at >= sinceIso).sort((x, y) => y.at.localeCompare(x.at));
     },
 
-    async putDevice(d) { await put(sk.device(d.ringDeviceId), 'device', d); },
+    async putDevice(d) {
+      await put(sk.device(d.ringDeviceId), 'device', d);
+    },
     async listDevices() {
       const all = await queryPrefix<Device>('DEVICE#');
       return all.sort((x, y) => x.name.localeCompare(y.name));
@@ -1212,6 +1405,7 @@ Expected: PASS (5 contract tests against DynamoDB Local).
 - [ ] **Step 7: Write the failing seed test**
 
 `packages/core/test/seed.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { createMemoryRepository } from '../src/repo/memory.js';
@@ -1238,6 +1432,7 @@ Expected: FAIL, cannot find module `../src/seed/household.js`.
 - [ ] **Step 9: Implement the seed**
 
 `packages/core/src/seed/household.ts`. Replace brand, model, and dates with the real appliances before recording the video; the household and people names stay fictional.
+
 ```ts
 import type { Appliance, TaskTypeValue } from '../domain/schemas.js';
 import { computeNextDue } from '../domain/maintenance.js';
@@ -1248,38 +1443,80 @@ type SeedAppliance = Omit<Appliance, 'id' | 'manualDocId'> & { lastDone: Partial
 
 export const SEED_APPLIANCES: SeedAppliance[] = [
   {
-    name: 'Furnace', brand: 'Carrier', model: '59SC5A060E17', serial: null, room: 'Basement', category: 'hvac',
-    purchasedAt: '2019-10-01', warrantyUntil: '2029-10-01',
-    templates: [{ taskType: 'filter_change', intervalDays: 90 }, { taskType: 'inspection', intervalDays: 365 }],
+    name: 'Furnace',
+    brand: 'Carrier',
+    model: '59SC5A060E17',
+    serial: null,
+    room: 'Basement',
+    category: 'hvac',
+    purchasedAt: '2019-10-01',
+    warrantyUntil: '2029-10-01',
+    templates: [
+      { taskType: 'filter_change', intervalDays: 90 },
+      { taskType: 'inspection', intervalDays: 365 }
+    ],
     lastDone: { filter_change: '2026-06-01', inspection: '2025-10-15' }
   },
   {
-    name: 'Water heater', brand: 'Rheem', model: 'XG50T12HE40U0', serial: null, room: 'Basement', category: 'water_heater',
-    purchasedAt: '2021-03-12', warrantyUntil: '2033-03-12',
-    templates: [{ taskType: 'flush', intervalDays: 365 }, { taskType: 'inspection', intervalDays: 180 }],
+    name: 'Water heater',
+    brand: 'Rheem',
+    model: 'XG50T12HE40U0',
+    serial: null,
+    room: 'Basement',
+    category: 'water_heater',
+    purchasedAt: '2021-03-12',
+    warrantyUntil: '2033-03-12',
+    templates: [
+      { taskType: 'flush', intervalDays: 365 },
+      { taskType: 'inspection', intervalDays: 180 }
+    ],
     lastDone: { flush: '2025-09-01', inspection: '2026-03-01' }
   },
   {
-    name: 'Washer', brand: 'LG', model: 'WM4000HWA', serial: null, room: 'Laundry', category: 'laundry',
-    purchasedAt: '2022-05-20', warrantyUntil: '2023-05-20',
+    name: 'Washer',
+    brand: 'LG',
+    model: 'WM4000HWA',
+    serial: null,
+    room: 'Laundry',
+    category: 'laundry',
+    purchasedAt: '2022-05-20',
+    warrantyUntil: '2023-05-20',
     templates: [{ taskType: 'clean', intervalDays: 30 }],
     lastDone: { clean: '2026-08-20' }
   },
   {
-    name: 'Dishwasher', brand: 'Bosch', model: 'SHPM88Z75N', serial: null, room: 'Kitchen', category: 'kitchen',
-    purchasedAt: '2020-11-02', warrantyUntil: '2021-11-02',
+    name: 'Dishwasher',
+    brand: 'Bosch',
+    model: 'SHPM88Z75N',
+    serial: null,
+    room: 'Kitchen',
+    category: 'kitchen',
+    purchasedAt: '2020-11-02',
+    warrantyUntil: '2021-11-02',
     templates: [{ taskType: 'clean', intervalDays: 30 }],
     lastDone: { clean: '2026-09-01' }
   },
   {
-    name: 'Refrigerator', brand: 'Samsung', model: 'RF28R7351SG', serial: null, room: 'Kitchen', category: 'kitchen',
-    purchasedAt: '2020-11-02', warrantyUntil: '2021-11-02',
+    name: 'Refrigerator',
+    brand: 'Samsung',
+    model: 'RF28R7351SG',
+    serial: null,
+    room: 'Kitchen',
+    category: 'kitchen',
+    purchasedAt: '2020-11-02',
+    warrantyUntil: '2021-11-02',
     templates: [{ taskType: 'replace_part', intervalDays: 180 }],
     lastDone: { replace_part: '2026-04-10' }
   },
   {
-    name: 'Sump pump', brand: 'Zoeller', model: 'M53', serial: null, room: 'Basement', category: 'plumbing',
-    purchasedAt: '2018-04-01', warrantyUntil: '2021-04-01',
+    name: 'Sump pump',
+    brand: 'Zoeller',
+    model: 'M53',
+    serial: null,
+    room: 'Basement',
+    category: 'plumbing',
+    purchasedAt: '2018-04-01',
+    warrantyUntil: '2021-04-01',
     templates: [{ taskType: 'test', intervalDays: 90 }],
     lastDone: { test: '2026-07-01' }
   }
@@ -1294,7 +1531,14 @@ export async function seedRepository(repo: Repository, householdId: string, toda
     await repo.putAppliance({ ...rest, id, manualDocId: null });
     for (const t of seed.templates) {
       const last = lastDone[t.taskType] ?? today;
-      await repo.putMaintenance({ applianceId: id, taskType: t.taskType, intervalDays: t.intervalDays, lastDoneAt: last, nextDueAt: computeNextDue(last, t.intervalDays), notes: null });
+      await repo.putMaintenance({
+        applianceId: id,
+        taskType: t.taskType,
+        intervalDays: t.intervalDays,
+        lastDoneAt: last,
+        nextDueAt: computeNextDue(last, t.intervalDays),
+        notes: null
+      });
     }
     applianceIds.push(id);
   }
@@ -1303,6 +1547,7 @@ export async function seedRepository(repo: Repository, householdId: string, toda
 ```
 
 Update `packages/core/src/index.ts` to add:
+
 ```ts
 export { createDynamoRepository } from './repo/dynamo.js';
 export { ensureTable } from './repo/table.js';
@@ -1328,27 +1573,36 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 5: MCP server package, server factory, voice helpers, appliance tools
 
 **Files:**
+
 - Create: `apps/mcp-server/package.json`, `apps/mcp-server/tsconfig.json`, `apps/mcp-server/vitest.config.ts`, `apps/mcp-server/src/server.ts`, `apps/mcp-server/src/voice.ts`, `apps/mcp-server/src/tools/appliances.ts`
 - Test: `apps/mcp-server/test/harness.ts`, `apps/mcp-server/test/voice.test.ts`, `apps/mcp-server/test/tools.test.ts`
 
 **Interfaces:**
+
 - Consumes: `Repository`, `createMemoryRepository`, `seedRepository`, schemas from `@homeledger/core`.
 - Produces:
+
   ```ts
-  export interface ServerDeps { repo: Repository; now: () => string; devTools: boolean }
-  export function buildServer(deps: ServerDeps): McpServer;          // src/server.ts
-  export function speakList(items: string[], noun: string): string;   // src/voice.ts
-  export function hasJson(text: string): boolean;                     // src/voice.ts
+  export interface ServerDeps {
+    repo: Repository;
+    now: () => string;
+    devTools: boolean;
+  }
+  export function buildServer(deps: ServerDeps): McpServer; // src/server.ts
+  export function speakList(items: string[], noun: string): string; // src/voice.ts
+  export function hasJson(text: string): boolean; // src/voice.ts
   export function registerApplianceTools(server: McpServer, deps: ServerDeps): void;
   // test/harness.ts
   export async function modernClient(deps?: Partial<ServerDeps>): Promise<{ client: Client; deps: ServerDeps; close: () => Promise<void> }>;
   export async function seededDeps(): Promise<ServerDeps>;
   ```
+
   Tool registration order, fixed for the life of the project: `list_appliances`, `get_appliance`, `ask_manual` (Plan 2), `maintenance_due`, `log_maintenance`, `book_service` (Plan 2), `recent_events`, `get_visit` (Plan 4), then dev tools when `devTools` is true.
 
 - [ ] **Step 1: Write the package files**
 
 `apps/mcp-server/package.json`:
+
 ```json
 {
   "name": "@homeledger/mcp-server",
@@ -1383,6 +1637,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 `apps/mcp-server/tsconfig.json`:
+
 ```json
 {
   "extends": "../../tsconfig.base.json",
@@ -1392,6 +1647,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 `apps/mcp-server/vitest.config.ts`:
+
 ```ts
 import { defineConfig } from 'vitest/config';
 export default defineConfig({ test: { include: ['test/**/*.test.ts'], environment: 'node', testTimeout: 15000 } });
@@ -1403,6 +1659,7 @@ Expected: resolves the four `@modelcontextprotocol/*` v2 packages and the v1 `@m
 - [ ] **Step 2: Write the failing voice tests**
 
 `apps/mcp-server/test/voice.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { hasJson, speakList } from '../src/voice.js';
@@ -1433,6 +1690,7 @@ Expected: FAIL, cannot find module `../src/voice.js`.
 - [ ] **Step 4: Implement voice helpers**
 
 `apps/mcp-server/src/voice.ts`:
+
 ```ts
 export const VOICE_MAX_ITEMS = 5;
 
@@ -1467,6 +1725,7 @@ Expected: PASS (2 tests). If the seven-item case fails on wording, fix `speakLis
 - [ ] **Step 6: Write the harness and the failing appliance-tool tests**
 
 `apps/mcp-server/test/harness.ts`:
+
 ```ts
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createMcpHandler } from '@modelcontextprotocol/server';
@@ -1501,13 +1760,16 @@ export async function modernClient(over: Partial<ServerDeps> = {}) {
 ```
 
 `apps/mcp-server/test/tools.test.ts`:
+
 ```ts
 import { afterEach, describe, expect, it } from 'vitest';
 import { hasJson } from '../src/voice.js';
 import { modernClient } from './harness.js';
 
 let close: () => Promise<void> = async () => {};
-afterEach(async () => { await close(); });
+afterEach(async () => {
+  await close();
+});
 
 describe('tools/list', () => {
   it('lists tools in the fixed order with output schemas', async () => {
@@ -1577,6 +1839,7 @@ Expected: FAIL, cannot find module `../src/server.js`.
 - [ ] **Step 8: Implement the server factory and appliance tools**
 
 `apps/mcp-server/src/server.ts`:
+
 ```ts
 import { McpServer } from '@modelcontextprotocol/server';
 import type { Repository } from '@homeledger/core';
@@ -1601,6 +1864,7 @@ export function buildServer(deps: ServerDeps): McpServer {
 ```
 
 `apps/mcp-server/src/tools/appliances.ts`:
+
 ```ts
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
@@ -1638,9 +1902,25 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
     async ({ room, category }) => {
       const today = deps.now().slice(0, 10);
       const rows = await deps.repo.listAppliances({ room, category });
-      const appliances = rows.map(a => ({ id: a.id, name: a.name, brand: a.brand, model: a.model, room: a.room, category: a.category, warrantyStatus: warrantyStatus(a.warrantyUntil, today) }));
+      const appliances = rows.map(a => ({
+        id: a.id,
+        name: a.name,
+        brand: a.brand,
+        model: a.model,
+        room: a.room,
+        category: a.category,
+        warrantyStatus: warrantyStatus(a.warrantyUntil, today)
+      }));
       return {
-        content: [{ type: 'text', text: speakList(appliances.map(a => a.name), 'appliance') }],
+        content: [
+          {
+            type: 'text',
+            text: speakList(
+              appliances.map(a => a.name),
+              'appliance'
+            )
+          }
+        ],
         structuredContent: { appliances }
       };
     }
@@ -1654,7 +1934,9 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
       inputSchema: z.object({ applianceId: z.string() }),
       outputSchema: z.object({
         appliance: ApplianceSummary.extend({ serial: z.string().nullable(), purchasedAt: z.string().nullable(), warrantyUntil: z.string().nullable() }),
-        maintenance: z.array(z.object({ taskType: TaskType, intervalDays: z.number(), lastDoneAt: z.string().nullable(), nextDueAt: z.string(), overdue: z.boolean() }))
+        maintenance: z.array(
+          z.object({ taskType: TaskType, intervalDays: z.number(), lastDoneAt: z.string().nullable(), nextDueAt: z.string(), overdue: z.boolean() })
+        )
       }),
       annotations: { readOnlyHint: true }
     },
@@ -1665,15 +1947,40 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
       const maintenance = [];
       for (const t of a.templates) {
         const m = await deps.repo.getMaintenance(a.id, t.taskType);
-        if (m) maintenance.push({ taskType: m.taskType, intervalDays: m.intervalDays, lastDoneAt: m.lastDoneAt, nextDueAt: m.nextDueAt, overdue: isOverdue(m.nextDueAt, today) });
+        if (m)
+          maintenance.push({
+            taskType: m.taskType,
+            intervalDays: m.intervalDays,
+            lastDoneAt: m.lastDoneAt,
+            nextDueAt: m.nextDueAt,
+            overdue: isOverdue(m.nextDueAt, today)
+          });
       }
       const status = warrantyStatus(a.warrantyUntil, today);
-      const warrantyText = status === 'active' ? `under warranty until ${speakDate(a.warrantyUntil!)}` : status === 'expired' ? 'out of warranty' : 'warranty unknown';
-      const dueText = maintenance.length === 0 ? 'No maintenance scheduled.' : speakList(maintenance.map(m => `${m.taskType.replace('_', ' ')} ${m.overdue ? 'overdue since' : 'due'} ${speakDate(m.nextDueAt)}`), 'task');
+      const warrantyText =
+        status === 'active' ? `under warranty until ${speakDate(a.warrantyUntil!)}` : status === 'expired' ? 'out of warranty' : 'warranty unknown';
+      const dueText =
+        maintenance.length === 0
+          ? 'No maintenance scheduled.'
+          : speakList(
+              maintenance.map(m => `${m.taskType.replace('_', ' ')} ${m.overdue ? 'overdue since' : 'due'} ${speakDate(m.nextDueAt)}`),
+              'task'
+            );
       return {
         content: [{ type: 'text', text: `${a.name}, ${a.brand} ${a.model} in the ${a.room}, ${warrantyText}. ${dueText}` }],
         structuredContent: {
-          appliance: { id: a.id, name: a.name, brand: a.brand, model: a.model, room: a.room, category: a.category, warrantyStatus: status, serial: a.serial, purchasedAt: a.purchasedAt, warrantyUntil: a.warrantyUntil },
+          appliance: {
+            id: a.id,
+            name: a.name,
+            brand: a.brand,
+            model: a.model,
+            room: a.room,
+            category: a.category,
+            warrantyStatus: status,
+            serial: a.serial,
+            purchasedAt: a.purchasedAt,
+            warrantyUntil: a.warrantyUntil
+          },
           maintenance
         }
       };
@@ -1701,24 +2008,29 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 6: Maintenance tools
 
 **Files:**
+
 - Create: `apps/mcp-server/src/tools/maintenance.ts`
 - Modify: `apps/mcp-server/src/server.ts`
 - Test: `apps/mcp-server/test/maintenance.test.ts`, `apps/mcp-server/test/tools.test.ts` (tool order assertion)
 
 **Interfaces:**
+
 - Consumes: `ServerDeps`, `speakList`, `speakDate`, `isOverdue`, `computeNextDue`, `newId`.
 - Produces: `registerMaintenanceTools(server, deps)`; tools `maintenance_due` (`{ horizonDays?: number }` → `{ items: Array<{ applianceId, applianceName, taskType, nextDueAt, overdue }> }`) and `log_maintenance` (`{ applianceId, taskType, date?, notes? }` → `{ logged: boolean; nextDueAt: string }`).
 
 - [ ] **Step 1: Write the failing tests**
 
 `apps/mcp-server/test/maintenance.test.ts`:
+
 ```ts
 import { afterEach, describe, expect, it } from 'vitest';
 import { hasJson } from '../src/voice.js';
 import { modernClient } from './harness.js';
 
 let close: () => Promise<void> = async () => {};
-afterEach(async () => { await close(); });
+afterEach(async () => {
+  await close();
+});
 
 async function furnaceId(client: Awaited<ReturnType<typeof modernClient>>['client']) {
   const list = await client.callTool({ name: 'list_appliances', arguments: { category: 'hvac' } });
@@ -1755,11 +2067,16 @@ describe('log_maintenance', () => {
     const h = await modernClient();
     close = h.close;
     const id = await furnaceId(h.client);
-    const r = await h.client.callTool({ name: 'log_maintenance', arguments: { applianceId: id, taskType: 'filter_change', date: '2026-09-13', notes: 'MERV 11' } });
+    const r = await h.client.callTool({
+      name: 'log_maintenance',
+      arguments: { applianceId: id, taskType: 'filter_change', date: '2026-09-13', notes: 'MERV 11' }
+    });
     expect(r.structuredContent).toEqual({ logged: true, nextDueAt: '2026-12-12' });
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe('Logged the furnace filter change for September 13. Next one is due December 12.');
     const after = await h.client.callTool({ name: 'get_appliance', arguments: { applianceId: id } });
-    const m = (after.structuredContent as { maintenance: Array<{ taskType: string; nextDueAt: string; lastDoneAt: string | null }> }).maintenance.find(x => x.taskType === 'filter_change');
+    const m = (after.structuredContent as { maintenance: Array<{ taskType: string; nextDueAt: string; lastDoneAt: string | null }> }).maintenance.find(
+      x => x.taskType === 'filter_change'
+    );
     expect(m).toMatchObject({ lastDoneAt: '2026-09-13', nextDueAt: '2026-12-12' });
     const logs = await h.deps.repo.listLogs(id, 5);
     expect(logs[0]?.notes).toBe('MERV 11');
@@ -1776,6 +2093,7 @@ describe('log_maintenance', () => {
 ```
 
 Update the order assertion in `apps/mcp-server/test/tools.test.ts`:
+
 ```ts
 expect(tools.map(t => t.name)).toEqual(['list_appliances', 'get_appliance', 'maintenance_due', 'log_maintenance']);
 ```
@@ -1788,6 +2106,7 @@ Expected: FAIL on `maintenance_due` not found and on the tool-order assertion.
 - [ ] **Step 3: Implement maintenance tools**
 
 `apps/mcp-server/src/tools/maintenance.ts`:
+
 ```ts
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
@@ -1813,8 +2132,17 @@ export function registerMaintenanceTools(server: McpServer, deps: ServerDeps): v
       const today = deps.now().slice(0, 10);
       const rows = await deps.repo.listMaintenanceDue(horizonDays ?? 30, today);
       const names = new Map((await deps.repo.listAppliances()).map(a => [a.id, a.name] as const));
-      const items = rows.map(m => ({ applianceId: m.applianceId, applianceName: names.get(m.applianceId) ?? 'Unknown appliance', taskType: m.taskType, nextDueAt: m.nextDueAt, overdue: isOverdue(m.nextDueAt, today) }));
-      const spoken = speakList(items.map(i => `${i.applianceName} ${taskWords(i.taskType)}${i.overdue ? ', overdue since ' : ', due '}${speakDate(i.nextDueAt)}`), 'task');
+      const items = rows.map(m => ({
+        applianceId: m.applianceId,
+        applianceName: names.get(m.applianceId) ?? 'Unknown appliance',
+        taskType: m.taskType,
+        nextDueAt: m.nextDueAt,
+        overdue: isOverdue(m.nextDueAt, today)
+      }));
+      const spoken = speakList(
+        items.map(i => `${i.applianceName} ${taskWords(i.taskType)}${i.overdue ? ', overdue since ' : ', due '}${speakDate(i.nextDueAt)}`),
+        'task'
+      );
       return { content: [{ type: 'text', text: spoken }], structuredContent: { items } };
     }
   );
@@ -1824,7 +2152,15 @@ export function registerMaintenanceTools(server: McpServer, deps: ServerDeps): v
     {
       title: 'Log maintenance',
       description: 'Record that a maintenance task was completed today or on a given date. Advances the next due date.',
-      inputSchema: z.object({ applianceId: z.string(), taskType: TaskType, date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), notes: z.string().max(500).optional() }),
+      inputSchema: z.object({
+        applianceId: z.string(),
+        taskType: TaskType,
+        date: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        notes: z.string().max(500).optional()
+      }),
       outputSchema: z.object({ logged: z.boolean(), nextDueAt: z.string() }),
       annotations: { idempotentHint: false }
     },
@@ -1838,7 +2174,9 @@ export function registerMaintenanceTools(server: McpServer, deps: ServerDeps): v
       await deps.repo.appendLog({ id: newId('log'), applianceId, taskType, doneAt, notes: notes ?? null, createdAt: deps.now() });
       await deps.repo.putMaintenance({ applianceId, taskType, intervalDays: template.intervalDays, lastDoneAt: doneAt, nextDueAt, notes: notes ?? null });
       return {
-        content: [{ type: 'text', text: `Logged the ${a.name.toLowerCase()} ${taskWords(taskType)} for ${speakDate(doneAt)}. Next one is due ${speakDate(nextDueAt)}.` }],
+        content: [
+          { type: 'text', text: `Logged the ${a.name.toLowerCase()} ${taskWords(taskType)} for ${speakDate(doneAt)}. Next one is due ${speakDate(nextDueAt)}.` }
+        ],
         structuredContent: { logged: true, nextDueAt }
       };
     }
@@ -1847,6 +2185,7 @@ export function registerMaintenanceTools(server: McpServer, deps: ServerDeps): v
 ```
 
 Update `apps/mcp-server/src/server.ts` to register in order:
+
 ```ts
 import { registerApplianceTools } from './tools/appliances.js';
 import { registerMaintenanceTools } from './tools/maintenance.js';
@@ -1873,34 +2212,79 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 7: recent_events tool, resources, and the seasonal prompt
 
 **Files:**
+
 - Create: `apps/mcp-server/src/tools/events.ts`, `apps/mcp-server/src/resources.ts`, `apps/mcp-server/src/prompts.ts`
 - Modify: `apps/mcp-server/src/server.ts`
 - Test: `apps/mcp-server/test/events.test.ts`, `apps/mcp-server/test/resources.test.ts`, `apps/mcp-server/test/tools.test.ts` (order)
 
 **Interfaces:**
+
 - Consumes: `ServerDeps`, `Repository.listVisitsSince`, `listEvents`, `listAlerts`, `listAppliances`.
 - Produces: `registerEventTools(server, deps)` with tool `recent_events` (`{ sinceHours?: number }` → `{ events: Array<{ kind: 'visit'|'door'|'alert', at, deviceName, summary, visitId: string|null }> }`); `registerResources(server, deps)` exposing `homeledger://household`, `homeledger://appliances`, `homeledger://maintenance/schedule` (JSON, `application/json`); `registerPrompts(server, deps)` exposing `seasonal-checklist` with argument `season` (enum spring, summer, fall, winter).
 
 - [ ] **Step 1: Write the failing tests**
 
 `apps/mcp-server/test/events.test.ts`:
+
 ```ts
 import { afterEach, describe, expect, it } from 'vitest';
 import { hasJson } from '../src/voice.js';
 import { modernClient } from './harness.js';
 
 let close: () => Promise<void> = async () => {};
-afterEach(async () => { await close(); });
+afterEach(async () => {
+  await close();
+});
 
 describe('recent_events', () => {
   it('merges visits, door events, and alerts newest first within the window', async () => {
     const h = await modernClient();
     close = h.close;
     const applianceId = (await h.deps.repo.listAppliances({ category: 'water_heater' }))[0]!.id;
-    await h.deps.repo.putVisit({ id: 'visit_aaaaaaaaaaaaaaaa', providerId: 'p1', providerName: 'Reliable Plumbing', category: 'plumbing', applianceId, issue: 'leak', windowStart: '2026-09-13T13:00:00.000Z', windowEnd: '2026-09-13T15:00:00.000Z', status: 'scheduled', ringEventIds: [], snapshotKey: null, description: null, arrivedAt: null, createdAt: '2026-09-12T10:00:00.000Z' });
-    await h.deps.repo.putEvent({ id: 'evt_aaaaaaaaaaaaaaaa', ringEventId: 'r1', type: 'button_press', subType: null, deviceId: 'd1', deviceName: 'Front Door', at: '2026-09-13T09:30:00.000Z', rawS3Key: null });
-    await h.deps.repo.putAlert({ id: 'alert_aaaaaaaaaaaaaaaa', sensorType: 'freeze', deviceName: 'Garage sensor', at: '2026-09-13T03:00:00.000Z', maintenanceRef: null, status: 'open' });
-    await h.deps.repo.putEvent({ id: 'evt_bbbbbbbbbbbbbbbb', ringEventId: 'r0', type: 'motion_detected', subType: 'human', deviceId: 'd1', deviceName: 'Front Door', at: '2026-09-11T09:30:00.000Z', rawS3Key: null });
+    await h.deps.repo.putVisit({
+      id: 'visit_aaaaaaaaaaaaaaaa',
+      providerId: 'p1',
+      providerName: 'Reliable Plumbing',
+      category: 'plumbing',
+      applianceId,
+      issue: 'leak',
+      windowStart: '2026-09-13T13:00:00.000Z',
+      windowEnd: '2026-09-13T15:00:00.000Z',
+      status: 'scheduled',
+      ringEventIds: [],
+      snapshotKey: null,
+      description: null,
+      arrivedAt: null,
+      createdAt: '2026-09-12T10:00:00.000Z'
+    });
+    await h.deps.repo.putEvent({
+      id: 'evt_aaaaaaaaaaaaaaaa',
+      ringEventId: 'r1',
+      type: 'button_press',
+      subType: null,
+      deviceId: 'd1',
+      deviceName: 'Front Door',
+      at: '2026-09-13T09:30:00.000Z',
+      rawS3Key: null
+    });
+    await h.deps.repo.putAlert({
+      id: 'alert_aaaaaaaaaaaaaaaa',
+      sensorType: 'freeze',
+      deviceName: 'Garage sensor',
+      at: '2026-09-13T03:00:00.000Z',
+      maintenanceRef: null,
+      status: 'open'
+    });
+    await h.deps.repo.putEvent({
+      id: 'evt_bbbbbbbbbbbbbbbb',
+      ringEventId: 'r0',
+      type: 'motion_detected',
+      subType: 'human',
+      deviceId: 'd1',
+      deviceName: 'Front Door',
+      at: '2026-09-11T09:30:00.000Z',
+      rawS3Key: null
+    });
     const r = await h.client.callTool({ name: 'recent_events', arguments: { sinceHours: 24 } });
     const sc = r.structuredContent as { events: Array<{ kind: string; at: string; summary: string; visitId: string | null }> };
     expect(sc.events.map(e => e.kind)).toEqual(['visit', 'door', 'alert']);
@@ -1919,12 +2303,15 @@ describe('recent_events', () => {
 ```
 
 `apps/mcp-server/test/resources.test.ts`:
+
 ```ts
 import { afterEach, describe, expect, it } from 'vitest';
 import { modernClient } from './harness.js';
 
 let close: () => Promise<void> = async () => {};
-afterEach(async () => { await close(); });
+afterEach(async () => {
+  await close();
+});
 
 describe('resources', () => {
   it('lists the three household resources and reads them as JSON', async () => {
@@ -1957,6 +2344,7 @@ describe('prompts', () => {
 ```
 
 Update the order assertion in `apps/mcp-server/test/tools.test.ts`:
+
 ```ts
 expect(tools.map(t => t.name)).toEqual(['list_appliances', 'get_appliance', 'maintenance_due', 'log_maintenance', 'recent_events']);
 ```
@@ -1969,6 +2357,7 @@ Expected: FAIL on `recent_events`, resources, prompts, and order.
 - [ ] **Step 3: Implement events tool**
 
 `apps/mcp-server/src/tools/events.ts`:
+
 ```ts
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
@@ -1998,11 +2387,38 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
       const since = new Date(new Date(deps.now()).getTime() - hours * 3_600_000).toISOString();
       const [visits, doors, alerts] = await Promise.all([deps.repo.listVisitsSince(since), deps.repo.listEvents(since), deps.repo.listAlerts(since)]);
       const events: z.infer<typeof EventRow>[] = [
-        ...visits.map(v => ({ kind: 'visit' as const, at: v.windowStart, deviceName: null, summary: `${v.providerName} ${v.status === 'scheduled' ? 'is scheduled' : v.status} for the ${v.issue}`, visitId: v.id })),
-        ...doors.map(e => ({ kind: 'door' as const, at: e.at, deviceName: e.deviceName, summary: e.type === 'button_press' ? `Someone rang the ${e.deviceName}` : `${e.subType === 'human' ? 'A person' : e.subType === 'vehicle' ? 'A vehicle' : 'Motion'} at the ${e.deviceName}`, visitId: null })),
-        ...alerts.map(a => ({ kind: 'alert' as const, at: a.at, deviceName: a.deviceName, summary: `${a.sensorType} alert from the ${a.deviceName}`, visitId: null }))
+        ...visits.map(v => ({
+          kind: 'visit' as const,
+          at: v.windowStart,
+          deviceName: null,
+          summary: `${v.providerName} ${v.status === 'scheduled' ? 'is scheduled' : v.status} for the ${v.issue}`,
+          visitId: v.id
+        })),
+        ...doors.map(e => ({
+          kind: 'door' as const,
+          at: e.at,
+          deviceName: e.deviceName,
+          summary:
+            e.type === 'button_press'
+              ? `Someone rang the ${e.deviceName}`
+              : `${e.subType === 'human' ? 'A person' : e.subType === 'vehicle' ? 'A vehicle' : 'Motion'} at the ${e.deviceName}`,
+          visitId: null
+        })),
+        ...alerts.map(a => ({
+          kind: 'alert' as const,
+          at: a.at,
+          deviceName: a.deviceName,
+          summary: `${a.sensorType} alert from the ${a.deviceName}`,
+          visitId: null
+        }))
       ].sort((x, y) => y.at.localeCompare(x.at));
-      const text = events.length === 0 ? `Nothing happened in the last ${hours} hours.` : speakList(events.map(e => e.summary), 'event');
+      const text =
+        events.length === 0
+          ? `Nothing happened in the last ${hours} hours.`
+          : speakList(
+              events.map(e => e.summary),
+              'event'
+            );
       return { content: [{ type: 'text', text }], structuredContent: { events } };
     }
   );
@@ -2012,6 +2428,7 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
 - [ ] **Step 4: Implement resources and prompts**
 
 `apps/mcp-server/src/resources.ts`:
+
 ```ts
 import type { McpServer } from '@modelcontextprotocol/server';
 import { isOverdue } from '@homeledger/core';
@@ -2020,22 +2437,38 @@ import type { ServerDeps } from './server.js';
 const json = (uri: string, value: unknown) => ({ contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(value, null, 2) }] });
 
 export function registerResources(server: McpServer, deps: ServerDeps): void {
-  server.registerResource('household', 'homeledger://household', { title: 'Household', description: 'Household name and timezone', mimeType: 'application/json' }, async uri =>
-    json(uri.href, (await deps.repo.getHousehold()) ?? {})
+  server.registerResource(
+    'household',
+    'homeledger://household',
+    { title: 'Household', description: 'Household name and timezone', mimeType: 'application/json' },
+    async uri => json(uri.href, (await deps.repo.getHousehold()) ?? {})
   );
-  server.registerResource('appliances', 'homeledger://appliances', { title: 'Appliances', description: 'Every appliance with warranty dates and maintenance templates', mimeType: 'application/json' }, async uri =>
-    json(uri.href, await deps.repo.listAppliances())
+  server.registerResource(
+    'appliances',
+    'homeledger://appliances',
+    { title: 'Appliances', description: 'Every appliance with warranty dates and maintenance templates', mimeType: 'application/json' },
+    async uri => json(uri.href, await deps.repo.listAppliances())
   );
-  server.registerResource('maintenance-schedule', 'homeledger://maintenance/schedule', { title: 'Maintenance schedule', description: 'All maintenance items ordered by next due date', mimeType: 'application/json' }, async uri => {
-    const today = deps.now().slice(0, 10);
-    const names = new Map((await deps.repo.listAppliances()).map(a => [a.id, a.name] as const));
-    const items = (await deps.repo.listMaintenanceDue(3650, today)).map(m => ({ ...m, applianceName: names.get(m.applianceId) ?? 'Unknown', overdue: isOverdue(m.nextDueAt, today) }));
-    return json(uri.href, items);
-  });
+  server.registerResource(
+    'maintenance-schedule',
+    'homeledger://maintenance/schedule',
+    { title: 'Maintenance schedule', description: 'All maintenance items ordered by next due date', mimeType: 'application/json' },
+    async uri => {
+      const today = deps.now().slice(0, 10);
+      const names = new Map((await deps.repo.listAppliances()).map(a => [a.id, a.name] as const));
+      const items = (await deps.repo.listMaintenanceDue(3650, today)).map(m => ({
+        ...m,
+        applianceName: names.get(m.applianceId) ?? 'Unknown',
+        overdue: isOverdue(m.nextDueAt, today)
+      }));
+      return json(uri.href, items);
+    }
+  );
 }
 ```
 
 `apps/mcp-server/src/prompts.ts`:
+
 ```ts
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
@@ -2073,6 +2506,7 @@ export function registerPrompts(server: McpServer, deps: ServerDeps): void {
 If `registerPrompt`'s `argsSchema` type rejects a `z.object`, pass the raw shape `{ season: z.enum([...]) }` instead and log the doc mismatch in `FRICTION-LOG.md`.
 
 Update `apps/mcp-server/src/server.ts`:
+
 ```ts
 import { registerApplianceTools } from './tools/appliances.js';
 import { registerMaintenanceTools } from './tools/maintenance.js';
@@ -2106,12 +2540,15 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 8: HTTP entrypoint with modern and legacy branches
 
 **Files:**
+
 - Create: `apps/mcp-server/src/app.ts`, `apps/mcp-server/src/legacy.ts`, `apps/mcp-server/src/deps.ts`, `apps/mcp-server/src/index.ts`
 - Test: `apps/mcp-server/test/legacy.test.ts`, `apps/mcp-server/test/http.test.ts`, `apps/mcp-server/test/legacy-detect.test.ts`
 
 **Interfaces:**
+
 - Consumes: `buildServer`, `ServerDeps`, `createMemoryRepository`, `createDynamoRepository`, `seedRepository`.
 - Produces:
+
   ```ts
   // src/legacy.ts
   export function isLegacyBody(body: unknown, headers: Record<string, string | string[] | undefined>): boolean;
@@ -2122,17 +2559,24 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   // src/deps.ts
   export async function depsFromEnv(env: NodeJS.ProcessEnv): Promise<ServerDeps>;
   ```
+
   Env contract: `PORT` (default 8000), `HOUSEHOLD_ID` (required), `TABLE_NAME` (DynamoDB when set), `DYNAMO_ENDPOINT` (optional, local), `MEMORY_REPO=1` (seeded in-memory store), `HOMELEDGER_DEV_TOOLS=1`, `ALLOWED_HOSTS` (comma-separated; default `localhost,127.0.0.1,0.0.0.0`).
 
 - [ ] **Step 1: Write the failing legacy-detection test**
 
 `apps/mcp-server/test/legacy-detect.test.ts`:
+
 ```ts
 import { describe, expect, it } from 'vitest';
 import { isInitializeBody, isLegacyBody } from '../src/legacy.js';
 
 const modernCall = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: { _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' } } };
-const legacyInit = { jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'Alexa+ MCP Client', version: '1.0.0' } } };
+const legacyInit = {
+  jsonrpc: '2.0',
+  id: 0,
+  method: 'initialize',
+  params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'Alexa+ MCP Client', version: '1.0.0' } }
+};
 const legacyCall = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_appliances', arguments: {} } };
 
 describe('legacy detection', () => {
@@ -2163,6 +2607,7 @@ Expected: FAIL, cannot find module `../src/legacy.js`.
 - [ ] **Step 3: Implement legacy detection and the sessionful router**
 
 `apps/mcp-server/src/legacy.ts`:
+
 ```ts
 import { randomUUID } from 'node:crypto';
 import type { RequestHandler } from 'express';
@@ -2240,6 +2685,7 @@ Expected: PASS (5 tests).
 - [ ] **Step 5: Write the failing HTTP tests (legacy v1 client and modern v2 client over a real socket)**
 
 `apps/mcp-server/test/http.test.ts`:
+
 ```ts
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
@@ -2287,6 +2733,7 @@ describe('modern client over HTTP', () => {
 ```
 
 `apps/mcp-server/test/legacy.test.ts`:
+
 ```ts
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
@@ -2358,6 +2805,7 @@ Expected: FAIL, cannot find module `../src/app.js`.
 - [ ] **Step 7: Implement the app, deps, and entrypoint**
 
 `apps/mcp-server/src/app.ts`:
+
 ```ts
 import { createMcpExpressApp } from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
@@ -2404,6 +2852,7 @@ export function createApp(deps: ServerDeps, opts: { allowedHosts?: string[] } = 
 Why `legacy: 'reject'` on the modern handler: legacy detection already routes every 2025-era request to the sessionful branch, so anything reaching the modern handler that still looks legacy is a bug, and a loud 400 is better than a silent stateless fallback. `GET` and `DELETE` always go to the legacy branch because only sessionful transports use them.
 
 `apps/mcp-server/src/deps.ts`:
+
 ```ts
 import { createDynamoRepository, createMemoryRepository, seedRepository } from '@homeledger/core';
 import type { ServerDeps } from './server.js';
@@ -2426,12 +2875,16 @@ export async function depsFromEnv(env: NodeJS.ProcessEnv): Promise<ServerDeps> {
 ```
 
 `apps/mcp-server/src/index.ts`:
+
 ```ts
 import { createApp } from './app.js';
 import { depsFromEnv } from './deps.js';
 
 const port = Number(process.env.PORT ?? 8000);
-const allowedHosts = (process.env.ALLOWED_HOSTS ?? 'localhost,127.0.0.1,0.0.0.0').split(',').map(s => s.trim()).filter(Boolean);
+const allowedHosts = (process.env.ALLOWED_HOSTS ?? 'localhost,127.0.0.1,0.0.0.0')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
 const deps = await depsFromEnv(process.env);
 const { app, close } = createApp(deps, { allowedHosts });
@@ -2465,19 +2918,27 @@ PORT=8010 HOUSEHOLD_ID=hh_harlow TABLE_NAME=homeledger DYNAMO_ENDPOINT=http://12
 
 In a second terminal: `npx @modelcontextprotocol/inspector`, connect Streamable HTTP to `http://127.0.0.1:8010/mcp`, call `maintenance_due`.
 Expected: the seeded overdue furnace filter appears. Add the seed one-liner as `pnpm --filter @homeledger/core seed:local` script (`packages/core/package.json`) so nobody types it twice:
+
 ```json
 "seed:local": "DYNAMO_ENDPOINT=http://127.0.0.1:8000 AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local AWS_REGION=us-east-1 tsx scripts/seed-local.ts"
 ```
+
 with `packages/core/scripts/seed-local.ts`:
+
 ```ts
 import { createDynamoRepository, ensureTable, seedRepository } from '../src/index.js';
 const endpoint = process.env.DYNAMO_ENDPOINT!;
 const tableName = process.env.TABLE_NAME ?? 'homeledger';
 const householdId = process.env.HOUSEHOLD_ID ?? 'hh_harlow';
-try { await ensureTable({ tableName, endpoint }); } catch (e) { if ((e as { name?: string }).name !== 'ResourceInUseException') throw e; }
+try {
+  await ensureTable({ tableName, endpoint });
+} catch (e) {
+  if ((e as { name?: string }).name !== 'ResourceInUseException') throw e;
+}
 const repo = createDynamoRepository({ tableName, householdId, endpoint });
 console.log(await seedRepository(repo, householdId, new Date().toISOString().slice(0, 10)));
 ```
+
 Add `tsx` to `packages/core` devDependencies.
 
 - [ ] **Step 10: Commit**
@@ -2494,18 +2955,21 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 9: Elicitation spike on both client generations (the architecture A gate)
 
 **Files:**
+
 - Create: `apps/mcp-server/src/tools/dev.ts`
 - Modify: `apps/mcp-server/src/server.ts`
 - Test: `apps/mcp-server/test/elicit-modern.test.ts`, `apps/mcp-server/test/elicit-legacy.test.ts`
 - Modify: `FRICTION-LOG.md` (spike outcome, whichever way it goes)
 
 **Interfaces:**
+
 - Consumes: `ServerDeps.devTools`, `createApp`, `seededDeps`.
 - Produces: `registerDevTools(server, deps)` with tool `echo_confirm` (`{ message: string }` → `{ confirmed: boolean; message: string }`), registered only when `deps.devTools` is true, always last in the tool list. This is the pattern `book_service` reuses in Plan 2: read answers first, ask only for what is missing.
 
 - [ ] **Step 1: Write the failing modern-client test**
 
 `apps/mcp-server/test/elicit-modern.test.ts`:
+
 ```ts
 import { afterEach, describe, expect, it } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -2514,20 +2978,28 @@ import { buildServer } from '../src/server.js';
 import { seededDeps } from './harness.js';
 
 let close: () => Promise<void> = async () => {};
-afterEach(async () => { await close(); });
+afterEach(async () => {
+  await close();
+});
 
 async function connect(answer: { action: 'accept'; content: { confirm: boolean } } | { action: 'decline' }) {
   const deps = await seededDeps();
   const handler = createMcpHandler(() => buildServer(deps));
   const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), { fetch: (url, init) => handler.fetch(new Request(url, init)) });
-  const client = new Client({ name: 'modern', version: '1.0.0' }, { capabilities: { elicitation: { form: {} } }, inputRequired: { maxRounds: 3 }, versionNegotiation: { mode: 'auto' } });
+  const client = new Client(
+    { name: 'modern', version: '1.0.0' },
+    { capabilities: { elicitation: { form: {} } }, inputRequired: { maxRounds: 3 }, versionNegotiation: { mode: 'auto' } }
+  );
   const seen: string[] = [];
   client.setRequestHandler('elicitation/create', async request => {
     seen.push(request.params.message);
     return answer;
   });
   await client.connect(transport);
-  close = async () => { await client.close(); await handler.close(); };
+  close = async () => {
+    await client.close();
+    await handler.close();
+  };
   return { client, seen };
 }
 
@@ -2551,7 +3023,10 @@ describe('echo_confirm over multi round-trip requests (2026-07-28)', () => {
     const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), { fetch: (url, init) => handler.fetch(new Request(url, init)) });
     const client = new Client({ name: 'modern', version: '1.0.0' }, { versionNegotiation: { mode: 'auto' } });
     await client.connect(transport);
-    close = async () => { await client.close(); await handler.close(); };
+    close = async () => {
+      await client.close();
+      await handler.close();
+    };
     const { tools } = await client.listTools();
     expect(tools.map(t => t.name)).not.toContain('echo_confirm');
   });
@@ -2561,6 +3036,7 @@ describe('echo_confirm over multi round-trip requests (2026-07-28)', () => {
 - [ ] **Step 2: Write the failing legacy-client test**
 
 `apps/mcp-server/test/elicit-legacy.test.ts`:
+
 ```ts
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
@@ -2614,6 +3090,7 @@ Expected: FAIL, tool `echo_confirm` not found.
 - [ ] **Step 4: Implement the dev tool**
 
 `apps/mcp-server/src/tools/dev.ts`:
+
 ```ts
 import { acceptedContent, inputRequired, type McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
@@ -2654,6 +3131,7 @@ export function registerDevTools(server: McpServer, deps: ServerDeps): void {
 ```
 
 Register it last in `apps/mcp-server/src/server.ts`:
+
 ```ts
 import { registerDevTools } from './tools/dev.js';
 // after registerPrompts(server, deps):
@@ -2665,8 +3143,9 @@ If `inputRequired.elicit` rejects a Zod `requestedSchema`, pass the equivalent J
 - [ ] **Step 5: Update the tool-order assertions now that a dev tool exists**
 
 The harness and the legacy test both run with `devTools: true`, so `echo_confirm` now appears last. Change the order assertion in `apps/mcp-server/test/tools.test.ts` and in `apps/mcp-server/test/legacy.test.ts` to:
+
 ```ts
-['list_appliances', 'get_appliance', 'maintenance_due', 'log_maintenance', 'recent_events', 'echo_confirm']
+['list_appliances', 'get_appliance', 'maintenance_due', 'log_maintenance', 'recent_events', 'echo_confirm'];
 ```
 
 - [ ] **Step 6: Run the spike**
@@ -2677,6 +3156,7 @@ Expected: PASS (27 tests). The legacy elicitation test is the architecture A gat
 - [ ] **Step 7: Record the outcome**
 
 Append to `FRICTION-LOG.md` under "Build phase" as `FL-017`, whichever way it went:
+
 - If both pass: state that the v2 legacy shim delivered `elicitation/create` over a `NodeStreamableHTTPServerTransport` session to a v1.x client, name the SDK versions from `pnpm ls @modelcontextprotocol/server @modelcontextprotocol/sdk`, and note anything that had to change from the documented code.
 - If the legacy test fails and cannot be made to pass within two hours: state the failing behavior verbatim, mark architecture A as fallen back to C for the legacy branch, and open a Plan 1 addendum task that swaps `apps/mcp-server/src/legacy.ts` to build its `McpServer` from `@modelcontextprotocol/sdk` 1.x (`McpServer` from `@modelcontextprotocol/sdk/server/mcp.js`, `StreamableHTTPServerTransport` from `@modelcontextprotocol/sdk/server/streamableHttp.js`) with the same tool registrations copied into a v1-flavoured `server-v1.ts`. The modern branch stays on v2 either way.
 
@@ -2694,15 +3174,18 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 10: ARM64 container and local run
 
 **Files:**
+
 - Create: `apps/mcp-server/Dockerfile`, `apps/mcp-server/.dockerignore`, `scripts/build-image.sh`
 - Modify: `README.md`
 
 **Interfaces:**
+
 - Produces: image `homeledger-mcp` listening on `0.0.0.0:8000/mcp`; `scripts/build-image.sh <ecr-repo-url> [tag]` builds `linux/arm64` and pushes; prints the pushed image URI on its last line.
 
 - [ ] **Step 1: Write the Dockerfile**
 
 `apps/mcp-server/Dockerfile` (build context is the repo root):
+
 ```dockerfile
 FROM --platform=linux/arm64 node:22-bookworm-slim AS build
 RUN corepack enable && corepack prepare pnpm@10.15.0 --activate
@@ -2726,6 +3209,7 @@ CMD ["node", "dist/index.js"]
 ```
 
 `apps/mcp-server/.dockerignore` (placed at the repo root as `.dockerignore` since the context is the root):
+
 ```
 node_modules
 **/node_modules
@@ -2744,17 +3228,21 @@ If `pnpm deploy --legacy` refuses because the lockfile was generated with `injec
 docker build --platform linux/arm64 -f apps/mcp-server/Dockerfile -t homeledger-mcp:dev .
 docker run --rm -p 8010:8000 -e HOUSEHOLD_ID=hh_harlow -e MEMORY_REPO=1 -e HOMELEDGER_DEV_TOOLS=1 homeledger-mcp:dev
 ```
+
 In another terminal:
+
 ```bash
 curl -s http://127.0.0.1:8010/healthz
 curl -s -X POST http://127.0.0.1:8010/mcp -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' -i | grep -i mcp-session-id
 ```
+
 Expected: `{"ok":true,"name":"homeledger"}` and an `Mcp-Session-Id` header on the initialize response. The second command is the exact handshake Alexa+'s docs show.
 
 - [ ] **Step 3: Write the image build-and-push script**
 
 `scripts/build-image.sh`:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -2766,12 +3254,14 @@ aws ecr get-login-password --region "$REGION" | docker login --username AWS --pa
 docker buildx build --platform linux/arm64 -f apps/mcp-server/Dockerfile -t "$REPO_URL:$TAG" -t "$REPO_URL:latest" --push .
 echo "$REPO_URL:$TAG"
 ```
+
 Run: `chmod +x scripts/build-image.sh`
 
 - [ ] **Step 4: Document local run in the README**
 
 Append to `README.md`:
-```markdown
+
+````markdown
 ## Run the MCP server locally
 
 ```bash
@@ -2782,6 +3272,7 @@ PORT=8010 HOUSEHOLD_ID=hh_harlow TABLE_NAME=homeledger DYNAMO_ENDPOINT=http://12
 AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local AWS_REGION=us-east-1 HOMELEDGER_DEV_TOOLS=1 pnpm dev
 npx @modelcontextprotocol/inspector                   # connect to http://127.0.0.1:8010/mcp
 ```
+````
 
 Container (what AgentCore runs):
 
@@ -2789,7 +3280,8 @@ Container (what AgentCore runs):
 docker build --platform linux/arm64 -f apps/mcp-server/Dockerfile -t homeledger-mcp:dev .
 docker run --rm -p 8010:8000 -e HOUSEHOLD_ID=hh_harlow -e MEMORY_REPO=1 homeledger-mcp:dev
 ```
-```
+
+````
 
 - [ ] **Step 5: Commit**
 
@@ -2798,16 +3290,18 @@ git add apps/mcp-server/Dockerfile .dockerignore scripts/build-image.sh README.m
 git commit -m "build: ARM64 container for the MCP server and ECR push script
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
-```
+````
 
 ---
 
 ### Task 11: Terraform for ECR, execution role, Cognito, DynamoDB, and the AgentCore runtime
 
 **Files:**
+
 - Create: `infra/versions.tf`, `infra/backend.tf`, `infra/variables.tf`, `infra/main.tf`, `infra/outputs.tf`, `infra/demo.tfvars.example`, `infra/README.md`
 
 **Interfaces:**
+
 - Consumes: the image URI from `scripts/build-image.sh` (Task 10) as `var.image_uri`.
 - Produces outputs: `ecr_repository_url`, `agent_runtime_arn`, `agent_runtime_invocation_url`, `cognito_token_url`, `cognito_client_id`, `cognito_client_secret` (sensitive), `cognito_discovery_url`, `table_name`.
 - Table shape must equal `ensureTable` in Task 4: `PK`/`SK`, `GSI1` on `GSI1PK`/`GSI1SK`, `GSI2` on `GSI2PK`/`GSI2SK`, all projected.
@@ -2821,11 +3315,13 @@ aws s3api create-bucket --bucket "homeledger-tfstate-$ACCOUNT_ID" --region $AWS_
 aws s3api put-bucket-versioning --bucket "homeledger-tfstate-$ACCOUNT_ID" --versioning-configuration Status=Enabled
 aws s3api put-public-access-block --bucket "homeledger-tfstate-$ACCOUNT_ID" --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 ```
+
 If the chosen region is `us-west-2`, add `--create-bucket-configuration LocationConstraint=us-west-2` to the first command. Terraform 1.10+ uses the S3 native lockfile (`use_lockfile = true`), so no DynamoDB lock table.
 
 - [ ] **Step 2: Write versions, backend, variables**
 
 `infra/versions.tf`:
+
 ```hcl
 terraform {
   required_version = ">= 1.10.0"
@@ -2846,6 +3342,7 @@ provider "aws" {
 ```
 
 `infra/backend.tf` (bucket name is passed at init time so the account id never lives in the repo):
+
 ```hcl
 terraform {
   backend "s3" {
@@ -2857,6 +3354,7 @@ terraform {
 ```
 
 `infra/variables.tf`:
+
 ```hcl
 variable "region" {
   type    = string
@@ -2892,6 +3390,7 @@ variable "allowed_hosts" {
 ```
 
 `infra/demo.tfvars.example`:
+
 ```hcl
 region       = "us-east-1"
 household_id = "hh_harlow"
@@ -2901,6 +3400,7 @@ image_uri    = "123456789012.dkr.ecr.us-east-1.amazonaws.com/homeledger-mcp:abc1
 - [ ] **Step 3: Write main.tf**
 
 `infra/main.tf`:
+
 ```hcl
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
@@ -3128,6 +3628,7 @@ resource "aws_bedrockagentcore_agent_runtime" "mcp" {
 ```
 
 `infra/outputs.tf`:
+
 ```hcl
 output "ecr_repository_url" { value = aws_ecr_repository.mcp.repository_url }
 output "table_name"         { value = aws_dynamodb_table.homeledger.name }
@@ -3146,7 +3647,8 @@ output "agent_runtime_invocation_url" {
 ```
 
 `infra/README.md`:
-```markdown
+
+````markdown
 # infra
 
 ```bash
@@ -3156,8 +3658,11 @@ terraform apply                                   # first pass: ECR, table, Cogn
 IMAGE=$(../scripts/build-image.sh "$(terraform output -raw ecr_repository_url)")
 terraform apply -var "image_uri=$IMAGE"           # second pass: creates the AgentCore runtime
 ```
+````
+
 Runtime updates: rebuild, then `terraform apply -var "image_uri=<new uri>"`.
-```
+
+````
 
 - [ ] **Step 4: Validate and apply the first pass**
 
@@ -3167,7 +3672,8 @@ terraform init -backend-config="bucket=homeledger-tfstate-$ACCOUNT_ID" -backend-
 terraform fmt -check && terraform validate
 terraform plan -out first.plan && terraform apply first.plan
 terraform output
-```
+````
+
 Expected: ECR, DynamoDB, Cognito pool/domain/resource server/client, and the IAM role exist; `agent_runtime_arn` is empty. If `validate` rejects an argument name on `aws_bedrockagentcore_agent_runtime` (for example `lifecycle_configuration`), open the provider doc in the registry for the installed version, rename to match, and log the delta in `FRICTION-LOG.md`.
 
 - [ ] **Step 5: Commit**
@@ -3184,10 +3690,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 12: Deploy to AgentCore and smoke-test both client generations
 
 **Files:**
+
 - Create: `scripts/smoke.ts`, `scripts/package.json`, `scripts/seed-remote.ts`
 - Modify: `FRICTION-LOG.md`, `README.md`
 
 **Interfaces:**
+
 - Consumes: Terraform outputs; the Cognito client-credentials flow; the invocation URL format `https://bedrock-agentcore.<region>.amazonaws.com/runtimes/<urlencoded-arn>/invocations?qualifier=DEFAULT`.
 - Produces: `pnpm smoke` exits 0 only when: a token is minted, a modern client lists five tools through AgentCore, a legacy client initializes with a session and completes `echo_confirm` through the shim, and every call finished under 3 seconds after the first.
 
@@ -3198,11 +3706,13 @@ IMAGE=$(./scripts/build-image.sh "$(cd infra && terraform output -raw ecr_reposi
 (cd infra && terraform apply -var "image_uri=$IMAGE")
 cd infra && terraform output agent_runtime_invocation_url && cd ..
 ```
+
 Expected: the runtime reaches READY (`aws bedrock-agentcore-control get-agent-runtime --agent-runtime-id <id>` shows `"status": "READY"`). If the container fails health checks, read `aws logs tail /aws/bedrock-agentcore/runtimes/homeledger_mcp-<id>-DEFAULT --follow` and fix `ALLOWED_HOSTS` first, since a Host-header rejection is the likeliest failure; log it.
 
 - [ ] **Step 2: Seed the real table**
 
 `scripts/package.json`:
+
 ```json
 {
   "name": "@homeledger/scripts",
@@ -3215,6 +3725,7 @@ Expected: the runtime reaches READY (`aws bedrock-agentcore-control get-agent-ru
 ```
 
 `scripts/seed-remote.ts`:
+
 ```ts
 import { createDynamoRepository, seedRepository } from '@homeledger/core';
 const tableName = process.env.TABLE_NAME ?? 'homeledger';
@@ -3222,19 +3733,25 @@ const householdId = process.env.HOUSEHOLD_ID ?? 'hh_harlow';
 const repo = createDynamoRepository({ tableName, householdId, region: process.env.AWS_REGION });
 console.log(await seedRepository(repo, householdId, new Date().toISOString().slice(0, 10)));
 ```
+
 Run: `pnpm install && AWS_REGION=us-east-1 pnpm --filter @homeledger/scripts seed:remote`
 Expected: prints six appliance ids.
 
 - [ ] **Step 3: Write the smoke script**
 
 `scripts/smoke.ts`:
+
 ```ts
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { Client as LegacyClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport as LegacyTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-const need = (k: string) => { const v = process.env[k]; if (!v) throw new Error(`${k} is required`); return v; };
+const need = (k: string) => {
+  const v = process.env[k];
+  if (!v) throw new Error(`${k} is required`);
+  return v;
+};
 const url = need('MCP_URL');
 const tokenUrl = need('COGNITO_TOKEN_URL');
 const clientId = need('COGNITO_CLIENT_ID');
@@ -3286,7 +3803,8 @@ console.log('token: ok');
   if (!transport.sessionId) throw new Error('legacy: no Mcp-Session-Id');
   console.log(`legacy session: ${transport.sessionId}`);
   const r = await timed('legacy echo_confirm (elicitation)', () => client.callTool({ name: 'echo_confirm', arguments: { message: 'smoke' } }));
-  if (JSON.stringify(r.structuredContent) !== JSON.stringify({ confirmed: true, message: 'smoke' })) throw new Error(`legacy elicitation result ${JSON.stringify(r.structuredContent)}`);
+  if (JSON.stringify(r.structuredContent) !== JSON.stringify({ confirmed: true, message: 'smoke' }))
+    throw new Error(`legacy elicitation result ${JSON.stringify(r.structuredContent)}`);
   await transport.terminateSession();
   await client.close();
 }
@@ -3306,7 +3824,9 @@ export COGNITO_CLIENT_ID=$(terraform output -raw cognito_client_id)
 export COGNITO_CLIENT_SECRET=$(terraform output -raw cognito_client_secret)
 cd .. && pnpm smoke
 ```
+
 Expected: `SMOKE OK` with every timed call after the two cold connects under 3000 ms. Three failure modes and what they mean:
+
 - `401` on connect: the JWT authorizer's `allowed_clients` does not match; check the token's `client_id` claim with `jwt.io` and the Terraform value.
 - `-32011` Accept header error: the client did not send `application/json, text/event-stream`; the SDK clients do, so this means a proxy stripped it.
 - `404 Session not found` on the legacy branch: AgentCore did not route the second request to the same microVM. Confirm the transport echoes `Mcp-Session-Id` (it does by default) and that the runtime is not in stateless mode; if AgentCore rewrites the header, the legacy session map cannot work and architecture C's fallback applies (see Task 9 Step 7).
@@ -3329,15 +3849,18 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 13: CI and deploy workflows
 
 **Files:**
+
 - Create: `.github/workflows/ci.yml`, `.github/workflows/deploy.yml`, `infra/github-oidc.tf`
 
 **Interfaces:**
+
 - Consumes: Terraform state and outputs; the ECR repository.
 - Produces: pull requests run typecheck and tests; pushes to `main` build the ARM64 image, push it, and apply Terraform with the new `image_uri`. AWS access is through GitHub OIDC; no static keys.
 
 - [ ] **Step 1: Add the OIDC provider and deploy role to Terraform**
 
 `infra/github-oidc.tf` (replace `OWNER/REPO` with the GitHub path of this repository):
+
 ```hcl
 variable "github_repo" {
   type    = string
@@ -3395,11 +3918,13 @@ resource "aws_iam_role_policy" "deploy_iam" {
 
 output "deploy_role_arn" { value = aws_iam_role.deploy.arn }
 ```
+
 Run: `cd infra && terraform apply -var "image_uri=$IMAGE"` and note `deploy_role_arn`. Store it as the GitHub Actions repository variable `AWS_DEPLOY_ROLE_ARN`, plus variables `AWS_REGION` and `TFSTATE_BUCKET`.
 
 - [ ] **Step 2: Write the CI workflow**
 
 `.github/workflows/ci.yml`:
+
 ```yaml
 name: ci
 on:
@@ -3412,7 +3937,7 @@ jobs:
     services:
       dynamodb:
         image: amazon/dynamodb-local:latest
-        ports: ["8000:8000"]
+        ports: ['8000:8000']
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -3430,6 +3955,7 @@ jobs:
 - [ ] **Step 3: Write the deploy workflow**
 
 `.github/workflows/deploy.yml`:
+
 ```yaml
 name: deploy
 on:
@@ -3454,7 +3980,7 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: "1.10.5" }
+        with: { terraform_version: '1.10.5' }
       - name: Terraform init
         working-directory: infra
         run: terraform init -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" -backend-config="region=${{ vars.AWS_REGION }}"
@@ -3479,6 +4005,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 git push -u origin main
 gh run watch
 ```
+
 Expected: `ci` green; `deploy` green with a new image tag on the runtime. Then re-run `pnpm smoke` locally against the updated runtime and expect `SMOKE OK`.
 
 ---
