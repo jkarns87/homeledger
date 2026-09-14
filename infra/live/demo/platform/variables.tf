@@ -56,5 +56,5 @@ variable "idle_session_timeout_seconds" {
 variable "allowed_hosts" {
   type        = string
   description = "Comma-separated Host header allowlist passed to the server as ALLOWED_HOSTS."
-  default     = "localhost,127.0.0.1,0.0.0.0"
+  default     = "localhost,127.0.0.1,0.0.0.0,bedrock-agentcore.us-east-1.amazonaws.com"
 }

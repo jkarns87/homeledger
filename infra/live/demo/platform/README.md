@@ -118,7 +118,7 @@ is not read automatically by the Actions workflow, which passes
 
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
-| <a name="input_allowed_hosts"></a> [allowed\_hosts](#input\_allowed\_hosts) | Comma-separated Host header allowlist passed to the server as ALLOWED\_HOSTS. | `string` | `"localhost,127.0.0.1,0.0.0.0"` | no |
+| <a name="input_allowed_hosts"></a> [allowed\_hosts](#input\_allowed\_hosts) | Comma-separated Host header allowlist passed to the server as ALLOWED\_HOSTS. | `string` | `"localhost,127.0.0.1,0.0.0.0,bedrock-agentcore.us-east-1.amazonaws.com"` | no |
 | <a name="input_env"></a> [env](#input\_env) | Deployment environment name. Only "demo" exists today; later layers (events, simulator) will live under infra/live/demo/ alongside this root. | `string` | `"demo"` | no |
 | <a name="input_household_id"></a> [household\_id](#input\_household\_id) | Household id seeded into the MCP server's environment as HOUSEHOLD\_ID. | `string` | `"hh_harlow"` | no |
 | <a name="input_idle_session_timeout_seconds"></a> [idle\_session\_timeout\_seconds](#input\_idle\_session\_timeout\_seconds) | Idle runtime session timeout passed to the AgentCore runtime, in seconds. | `number` | `1800` | no |
