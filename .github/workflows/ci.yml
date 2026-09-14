@@ -1,0 +1,73 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:latest
+        ports: ['8000:8000']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm --filter @homeledger/core test:dynamo
+      - run: pnpm build
+
+  terraform:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: '1.16.1' }
+
+      - name: terraform fmt
+        working-directory: infra
+        run: terraform fmt -check -recursive
+
+      - name: platform validate and test
+        working-directory: infra/live/demo/platform
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform test
+
+      - name: agentcore-runtime validate and test
+        working-directory: infra/modules/agentcore-runtime
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform test
+
+      - name: cognito-m2m validate and test
+        working-directory: infra/modules/cognito-m2m
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform test
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: tflint init
+        working-directory: infra
+        run: tflint --init
+
+      - name: tflint
+        working-directory: infra
+        run: tflint --recursive --config "$(pwd)/.tflint.hcl"
+
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra
+          severity: HIGH,CRITICAL
+          exit-code: '1'
