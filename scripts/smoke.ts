@@ -61,7 +61,17 @@ console.log('token: ok');
   const r = await timed('legacy echo_confirm (elicitation)', () => client.callTool({ name: 'echo_confirm', arguments: { message: 'smoke' } }));
   if (JSON.stringify(r.structuredContent) !== JSON.stringify({ confirmed: true, message: 'smoke' }))
     throw new Error(`legacy elicitation result ${JSON.stringify(r.structuredContent)}`);
-  await transport.terminateSession();
+  try {
+    await transport.terminateSession();
+  } catch (err) {
+    // AgentCore Runtime has been observed not to route this explicit DELETE
+    // termination call to the same microVM that served the session, even
+    // though every prior POST/GET on the session (including the elicitation
+    // round trip above) did route correctly — see FL-021. AgentCore manages
+    // session lifecycle itself via idle timeout, so an on-demand DELETE is
+    // best-effort cleanup, not part of the smoke contract; log and continue.
+    console.log(`legacy terminateSession: non-fatal - ${(err as Error).message}`);
+  }
   await client.close();
 }
 
