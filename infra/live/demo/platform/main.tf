@@ -9,6 +9,7 @@ locals {
 }
 
 # ---------- ECR ----------
+# trivy:ignore:AVD-AWS-0031 MUTABLE is deliberate: the deploy workflow re-pushes the same commit SHA tag on re-runs, which IMMUTABLE rejects; images are addressed by SHA tag in Terraform, never by :latest.
 resource "aws_ecr_repository" "mcp" {
   name                 = "${local.name_prefix}-mcp"
   image_tag_mutability = "MUTABLE"
