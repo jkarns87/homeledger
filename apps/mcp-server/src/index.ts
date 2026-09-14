@@ -15,8 +15,19 @@ const server = app.listen(port, '0.0.0.0', () => {
 
 const shutdown = async (signal: string) => {
   console.log(JSON.stringify({ msg: 'shutdown', signal }));
+  const forceExit = setTimeout(() => {
+    console.log(JSON.stringify({ msg: 'shutdown-timeout', signal }));
+    process.exit(1);
+  }, 10_000);
+  forceExit.unref();
+  // Stop accepting new connections first; the drain callback only fires once
+  // every open connection ends, which closing the legacy/modern transports
+  // below (open GET/SSE streams included) is what actually triggers.
+  server.close(() => {
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
   await close();
-  server.close(() => process.exit(0));
 };
 process.on('SIGINT', () => void shutdown('SIGINT'));
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
