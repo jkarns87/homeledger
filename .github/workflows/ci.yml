@@ -17,6 +17,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      # @homeledger/core is consumed by @homeledger/mcp-server via its published
+      # dist/ entry point (package.json main/types), not TS source directly, so
+      # a fresh checkout must build it before typecheck/test of mcp-server can
+      # resolve the module.
+      - run: pnpm --filter @homeledger/core build
       - run: pnpm format
       - run: pnpm typecheck
       - run: pnpm test
