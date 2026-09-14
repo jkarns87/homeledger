@@ -136,6 +136,7 @@ is not read automatically by the Actions workflow, which passes
 | <a name="output_cognito_client_secret_arn"></a> [cognito\_client\_secret\_arn](#output\_cognito\_client\_secret\_arn) | Secrets Manager ARN holding the Cognito client secret. |
 | <a name="output_cognito_discovery_url"></a> [cognito\_discovery\_url](#output\_cognito\_discovery\_url) | OIDC discovery URL for the Cognito user pool used as the AgentCore JWT authorizer. |
 | <a name="output_cognito_token_url"></a> [cognito\_token\_url](#output\_cognito\_token\_url) | OAuth2 client-credentials token endpoint. |
+| <a name="output_deployed_image_uri"></a> [deployed\_image\_uri](#output\_deployed\_image\_uri) | Image URI the runtime was last applied with; the PR plan job passes it back so plans never show a runtime destroy. |
 | <a name="output_ecr_repository_url"></a> [ecr\_repository\_url](#output\_ecr\_repository\_url) | URL of the ECR repository the MCP server image is pushed to. |
 | <a name="output_table_name"></a> [table\_name](#output\_table\_name) | Name of the DynamoDB table backing the HomeLedger repository. |
 <!-- END_TF_DOCS -->

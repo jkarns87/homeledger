@@ -82,6 +82,11 @@ run "runtime_created_with_image" {
     condition     = length(module.agentcore_runtime.agent_runtime_arn) > 0
     error_message = "agent_runtime_arn must be non-empty once image_uri is set"
   }
+
+  assert {
+    condition     = output.deployed_image_uri == "123456789012.dkr.ecr.us-east-1.amazonaws.com/homeledger-mcp:abc1234"
+    error_message = "deployed_image_uri must echo back the image_uri this run was applied with, so a PR plan job that reads it back as -var image_uri never plans a runtime destroy"
+  }
 }
 
 run "outputs_are_wired_and_non_empty" {

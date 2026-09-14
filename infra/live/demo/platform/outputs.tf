@@ -43,3 +43,8 @@ output "agent_runtime_invocation_url" {
   description = "HTTPS invocation URL for the AgentCore runtime's DEFAULT endpoint. Empty string until image_uri is set."
   value       = module.agentcore_runtime.invocation_url
 }
+
+output "deployed_image_uri" {
+  description = "Image URI the runtime was last applied with; the PR plan job passes it back so plans never show a runtime destroy."
+  value       = var.image_uri
+}
