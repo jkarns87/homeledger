@@ -28,3 +28,19 @@ jobs:
         env:
           TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
         run: aws s3api head-bucket --bucket "$TF_STATE_BUCKET"
+
+      # Informational: can the deploy role reach Bedrock and AgentCore right now?
+      # Never fails the job; read the step log.
+      - name: Bedrock and AgentCore reachable from the deploy role
+        continue-on-error: true
+        run: |
+          for M in us.amazon.nova-lite-v1:0 us.anthropic.claude-sonnet-4-6; do
+            echo "== converse $M"
+            aws bedrock-runtime converse --model-id "$M" \
+              --messages '[{"role":"user","content":[{"text":"Reply with the single word: ready"}]}]' \
+              --inference-config '{"maxTokens":5}' \
+              --query 'output.message.content[0].text' --output text || echo "FAILED: $M"
+          done
+          echo "== agentcore control plane"
+          aws bedrock-agentcore-control list-agent-runtimes \
+            --query 'agentRuntimes[].[agentRuntimeName,status]' --output text || echo "FAILED: list-agent-runtimes"
