@@ -70,9 +70,35 @@ jobs:
         working-directory: infra
         run: tflint --recursive --config "$(pwd)/.tflint.hcl"
 
-      - uses: aquasecurity/trivy-action@v0.36.0
+      # Scanned per directory, not as a single `scan-ref: infra`: trivy's
+      # Terraform-aware scan of the infra tree (or of infra/live/demo/platform
+      # alone) follows the cognito-m2m module reference but not the
+      # agentcore-runtime one, so the execution role's inline IAM policy is
+      # silently never evaluated by a tree-wide scan. Each reusable module
+      # scanned as its own root, on the other hand, is evaluated correctly
+      # (confirmed locally: `trivy config --severity LOW,MEDIUM,HIGH,CRITICAL
+      # infra/modules/agentcore-runtime` reports Target "." scanned, 0
+      # misconfigurations - a real evaluated result, not a skip).
+      - name: trivy (platform)
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
-          scan-ref: infra
+          scan-ref: infra/live/demo/platform
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: trivy (agentcore-runtime)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/modules/agentcore-runtime
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: trivy (cognito-m2m)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/modules/cognito-m2m
           severity: HIGH,CRITICAL
           exit-code: '1'
