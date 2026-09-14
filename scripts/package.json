@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "smoke": "tsx smoke.ts",
-    "seed:remote": "tsx seed-remote.ts"
+    "seed:remote": "tsx seed-remote.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@homeledger/core": "workspace:*",

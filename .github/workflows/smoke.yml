@@ -1,14 +1,6 @@
 name: smoke
 on:
   workflow_dispatch:
-  # Temporary bootstrap trigger: the workflow_dispatch API 404s ("workflow
-  # smoke.yml not found on the default branch") until this workflow has run
-  # at least once, on any branch, via any trigger. This push trigger exists
-  # only to get it into the repo's workflow catalog; it is removed again as
-  # soon as `gh workflow run smoke.yml` resolves.
-  push:
-    branches: [worktree-plan-1-foundation]
-    paths: ['.github/workflows/smoke.yml']
 
 permissions:
   id-token: write
