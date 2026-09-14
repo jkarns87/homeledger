@@ -1,0 +1,30 @@
+name: aws-oidc-check
+
+# Proves the GitHub -> AWS OIDC trust works: assumes the deploy role and prints the identity.
+# Runs on demand, and once when this file itself changes on main.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/aws-oidc-check.yml']
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  whoami:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assume the deploy role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      - name: Who am I
+        run: aws sts get-caller-identity
+      - name: State bucket is reachable
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: aws s3api head-bucket --bucket "$TF_STATE_BUCKET"
