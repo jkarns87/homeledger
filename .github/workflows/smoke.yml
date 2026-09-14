@@ -37,6 +37,7 @@ jobs:
           COGNITO_CLIENT_ID=$(terraform output -raw cognito_client_id)
           COGNITO_CLIENT_SECRET=$(terraform output -raw cognito_client_secret)
           TABLE_NAME=$(terraform output -raw table_name)
+          AGENT_RUNTIME_ARN=$(terraform output -raw agent_runtime_arn)
           echo "::add-mask::$COGNITO_CLIENT_SECRET"
           {
             echo "MCP_URL=$MCP_URL"
@@ -44,6 +45,7 @@ jobs:
             echo "COGNITO_CLIENT_ID=$COGNITO_CLIENT_ID"
             echo "COGNITO_CLIENT_SECRET=$COGNITO_CLIENT_SECRET"
             echo "TABLE_NAME=$TABLE_NAME"
+            echo "AGENT_RUNTIME_ARN=$AGENT_RUNTIME_ARN"
           } >> "$GITHUB_ENV"
 
       - uses: pnpm/action-setup@v4
@@ -59,3 +61,9 @@ jobs:
       - run: pnpm --filter @homeledger/scripts seed:remote
 
       - run: pnpm smoke
+
+      - name: Tail runtime logs
+        if: always()
+        run: |
+          RUNTIME_ID="${AGENT_RUNTIME_ARN##*/}"
+          aws logs tail "/aws/bedrock-agentcore/runtimes/${RUNTIME_ID}-DEFAULT" --since 30m --format short

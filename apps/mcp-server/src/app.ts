@@ -1,7 +1,7 @@
 import { createMcpExpressApp } from '@modelcontextprotocol/express';
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import type { RequestHandler } from 'express';
+import express, { type RequestHandler } from 'express';
 import { createLegacyRouter, isLegacyBody } from './legacy.js';
 import { buildServer, SERVER_INFO, type ServerDeps } from './server.js';
 
@@ -11,7 +11,7 @@ export function createApp(deps: ServerDeps, opts: { allowedHosts?: string[] } = 
   const modernNode = toNodeHandler(modern);
   const legacy = createLegacyRouter(build);
 
-  const app = createMcpExpressApp({ host: '0.0.0.0', allowedHosts: opts.allowedHosts ?? ['localhost', '127.0.0.1', '0.0.0.0'], jsonLimit: '1mb' });
+  const mcpApp = createMcpExpressApp({ host: '0.0.0.0', allowedHosts: opts.allowedHosts ?? ['localhost', '127.0.0.1', '0.0.0.0'], jsonLimit: '1mb' });
 
   const route: RequestHandler = async (req, res, next) => {
     try {
@@ -25,10 +25,29 @@ export function createApp(deps: ServerDeps, opts: { allowedHosts?: string[] } = 
     }
   };
 
-  app.get('/healthz', (_req, res) => {
+  mcpApp.get('/healthz', (_req, res) => {
     res.json({ ok: true, name: SERVER_INFO.name });
   });
-  app.all('/mcp', route);
+  mcpApp.all('/mcp', route);
+
+  // createMcpExpressApp registers its Host-header allowlist check ahead of any
+  // middleware added here, so it cannot be observed from inside mcpApp. Wrap it
+  // in an outer app whose first middleware logs the Host header of any request
+  // the inner app rejects (403, e.g. an unrecognized Host or Origin), so a
+  // rejection is diagnosable from the runtime's own logs instead of only the
+  // client-side "403 from runtime" error. One line per rejected request; no
+  // request or response bodies are logged.
+  const app = express();
+  app.disable('x-powered-by');
+  app.use((req, res, next) => {
+    res.on('finish', () => {
+      if (res.statusCode === 403) {
+        console.log(JSON.stringify({ msg: 'request-rejected', host: req.headers.host, path: req.path, status: res.statusCode }));
+      }
+    });
+    next();
+  });
+  app.use(mcpApp);
 
   return {
     app,
