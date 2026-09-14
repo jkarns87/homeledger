@@ -5,6 +5,7 @@ import { registerMaintenanceTools } from './tools/maintenance.js';
 import { registerEventTools } from './tools/events.js';
 import { registerResources } from './resources.js';
 import { registerPrompts } from './prompts.js';
+import { registerDevTools } from './tools/dev.js';
 
 export interface ServerDeps {
   repo: Repository;
@@ -24,5 +25,6 @@ export function buildServer(deps: ServerDeps): McpServer {
   registerEventTools(server, deps);
   registerResources(server, deps);
   registerPrompts(server, deps);
+  registerDevTools(server, deps);
   return server;
 }
