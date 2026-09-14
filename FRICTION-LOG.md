@@ -134,7 +134,7 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Source:** https://github.com/hashicorp/terraform-provider-aws/pull/45468 · https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-vectors-bedrock-kb.html
 - **Status:** Open; verify in week 1.
 
-## Build phase (2026-09-13)
+## Build phase (2026-09-13 – 2026-09-14)
 
 ### FL-017 · MCP SDK · Elicitation spike confirms architecture A with no code changes from the documented shape
 - **Expected:** A multi round-trip tool handler written once against `@modelcontextprotocol/server` (`inputRequired`/`acceptedContent`, keyed off `ctx.mcpReq.inputResponses`) would deliver `elicitation/create` to a 2026-07-28 client directly, and the SDK's documented legacy shim would deliver the same request to a 2025-era client over its `NodeStreamableHTTPServerTransport` session, without any transport- or era-specific handler code.
@@ -143,3 +143,11 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **Workaround / decision:** None needed. Architecture A stands as designed; no addendum task to build a v1-flavoured `server-v1.ts` fallback (architecture C) is opened.
 - **Source:** `apps/mcp-server/src/tools/dev.ts` · `apps/mcp-server/test/elicit-modern.test.ts` · `apps/mcp-server/test/elicit-legacy.test.ts` · `node_modules/@modelcontextprotocol/server/dist/createMcpHandler-CLhGwQTn.d.mts` (`ServerOptions.inputRequired`, `inputRequired`, `acceptedContent`) · `node_modules/@modelcontextprotocol/client/dist/index.d.mts` (`ClientOptions.inputRequired`, `.versionNegotiation`)
 - **Status:** Resolved. Spike passed; no further action.
+
+### FL-018 · Terraform CLI · `output -raw` exits 0 with a warning when the state has zero outputs, not just when one output is missing
+- **Expected:** The deploy workflow's bootstrap guard, `if ! terraform output -raw ecr_repository_url >/dev/null 2>&1; then <targeted apply>; fi`, would fail (non-zero exit) on a brand-new state that has never been applied, so the guard's `then` branch would run and create the ECR repository the image build depends on.
+- **Actual:** On a state with zero outputs defined at all (nothing has ever been applied), `terraform output -raw NAME` prints `Warning: No outputs found` to stderr and exits **0**, the same as a successful lookup — it does not exit non-zero the way it does when the state has *other* outputs but not the named one. Run 34882037117 hit exactly this: the guard's condition was true (`>/dev/null 2>&1` succeeded), so the bootstrap `terraform apply -target=aws_ecr_repository.mcp ...` was skipped entirely. Nothing was created — no ECR repository, no state object, no table. The next step, `REPO=$(terraform -chdir=infra/live/demo/platform output -raw ecr_repository_url)`, then also printed the same warning and captured an empty string, and `scripts/build-image.sh` failed immediately with `line 3: 1: usage` because `REPO_URL="${1:?usage: build-image.sh <ecr-repo-url> [tag]}"` saw an empty positional argument.
+- **Impact:** The entire first deploy run failed at "Build and push image" before any AWS resource existed; the apply job never reached `terraform apply` for the full plan.
+- **Workaround / decision:** Replaced the exit-code guard with a state-membership check, `if ! terraform state list 2>/dev/null | grep -qx 'aws_ecr_repository.mcp'; then <targeted apply>; fi`, which only depends on whether the resource is actually in state and is unaffected by `output`'s exit-code behavior. Also set `terraform_wrapper: false` on every `hashicorp/setup-terraform@v3` step in `deploy.yml` so later `$(terraform output -raw ...)` captures (image repo URL, invocation URL, Cognito values) are reading Terraform's own stdout directly rather than through the wrapper's JSON-log proxy.
+- **Source:** https://github.com/jkarns87/homeledger/actions/runs/34882037117 · https://developer.hashicorp.com/terraform/cli/commands/output
+- **Status:** Resolved.
