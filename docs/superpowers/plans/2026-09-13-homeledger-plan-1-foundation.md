@@ -21,7 +21,7 @@
 - Household ID comes from `HOUSEHOLD_ID` env; no request may override it.
 - Secrets never live in the repo. `.env` is gitignored; `.env.example` is committed.
 - AgentCore runtime: `server_protocol = "MCP"`, stateful, `idle_runtime_session_timeout = 1800`.
-- Commit after every task with a conventional-commit message and the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- Commit after every task with a conventional-commit message. No co-author trailers.
 - Any deviation from documented behavior gets an entry in `FRICTION-LOG.md` before the workaround is committed.
 
 ---
@@ -296,9 +296,7 @@ Expected: install succeeds; typecheck prints nothing; Vitest reports `1 passed`.
 
 ```bash
 git add -A
-git commit -m "chore: scaffold pnpm monorepo with core package
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "chore: scaffold pnpm monorepo with core package"
 ```
 
 ---
@@ -583,9 +581,7 @@ Expected: PASS (7 tests); typecheck clean.
 
 ```bash
 git add packages/core
-git commit -m "feat(core): domain schemas, prefixed ids, maintenance math
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(core): domain schemas, prefixed ids, maintenance math"
 ```
 
 ---
@@ -938,9 +934,7 @@ Expected: PASS (13 tests); typecheck clean.
 
 ```bash
 git add packages/core
-git commit -m "feat(core): repository interface, key builders, in-memory repository with shared contract tests
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(core): repository interface, key builders, in-memory repository with shared contract tests"
 ```
 
 ---
@@ -1318,9 +1312,7 @@ Expected: PASS in both runs; typecheck clean.
 
 ```bash
 git add packages/core
-git commit -m "feat(core): DynamoDB repository, table helper, and household seed
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(core): DynamoDB repository, table helper, and household seed"
 ```
 
 ---
@@ -1691,9 +1683,7 @@ Expected: PASS (7 tests); typecheck clean. If `registerTool`'s handler type reje
 
 ```bash
 git add apps/mcp-server pnpm-lock.yaml
-git commit -m "feat(mcp-server): server factory, voice helpers, list_appliances and get_appliance
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(mcp-server): server factory, voice helpers, list_appliances and get_appliance"
 ```
 
 ---
@@ -1863,9 +1853,7 @@ Expected: PASS (11 tests); typecheck clean.
 
 ```bash
 git add apps/mcp-server
-git commit -m "feat(mcp-server): maintenance_due and log_maintenance tools
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(mcp-server): maintenance_due and log_maintenance tools"
 ```
 
 ---
@@ -2096,9 +2084,7 @@ Expected: PASS (15 tests); typecheck clean.
 
 ```bash
 git add apps/mcp-server
-git commit -m "feat(mcp-server): recent_events tool, household resources, seasonal prompt
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(mcp-server): recent_events tool, household resources, seasonal prompt"
 ```
 
 ---
@@ -2484,9 +2470,7 @@ Add `tsx` to `packages/core` devDependencies.
 
 ```bash
 git add apps/mcp-server packages/core
-git commit -m "feat(mcp-server): HTTP entrypoint with modern stateless and legacy sessionful branches
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(mcp-server): HTTP entrypoint with modern stateless and legacy sessionful branches"
 ```
 
 ---
@@ -2684,9 +2668,7 @@ Append to `FRICTION-LOG.md` under "Build phase" as `FL-017`, whichever way it we
 
 ```bash
 git add apps/mcp-server FRICTION-LOG.md
-git commit -m "feat(mcp-server): echo_confirm dev tool proves elicitation on modern and legacy clients
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "feat(mcp-server): echo_confirm dev tool proves elicitation on modern and legacy clients"
 ```
 
 ---
@@ -2795,9 +2777,7 @@ docker run --rm -p 8010:8000 -e HOUSEHOLD_ID=hh_harlow -e MEMORY_REPO=1 homeledg
 
 ```bash
 git add apps/mcp-server/Dockerfile .dockerignore scripts/build-image.sh README.md .npmrc
-git commit -m "build: ARM64 container for the MCP server and ECR push script
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "build: ARM64 container for the MCP server and ECR push script"
 ```
 
 ---
@@ -3174,9 +3154,7 @@ Expected: ECR, DynamoDB, Cognito pool/domain/resource server/client, and the IAM
 
 ```bash
 git add infra
-git commit -m "infra: Terraform for ECR, DynamoDB, Cognito, execution role, and AgentCore runtime
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "infra: Terraform for ECR, DynamoDB, Cognito, execution role, and AgentCore runtime"
 ```
 
 ---
@@ -3319,9 +3297,7 @@ Append `FL-018` to `FRICTION-LOG.md` with the measured cold and warm timings, th
 
 ```bash
 git add scripts pnpm-lock.yaml package.json README.md FRICTION-LOG.md
-git commit -m "ops: remote seed and AgentCore smoke test for modern and legacy clients
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "ops: remote seed and AgentCore smoke test for modern and legacy clients"
 ```
 
 ---
@@ -3473,9 +3449,7 @@ jobs:
 
 ```bash
 git add .github infra/github-oidc.tf
-git commit -m "ci: test workflow with DynamoDB Local and OIDC deploy workflow to AgentCore
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "ci: test workflow with DynamoDB Local and OIDC deploy workflow to AgentCore"
 git push -u origin main
 gh run watch
 ```
