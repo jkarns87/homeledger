@@ -4,8 +4,7 @@ dist/
 *.tfstate
 *.tfstate.backup
 .terraform/
-.terraform.lock.hcl
-infra/demo.tfvars
+infra/**/demo.tfvars
 coverage/
 .DS_Store
 .claude/worktrees/
