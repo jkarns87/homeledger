@@ -1,0 +1,22 @@
+import { createApp } from './app.js';
+import { depsFromEnv } from './deps.js';
+
+const port = Number(process.env.PORT ?? 8000);
+const allowedHosts = (process.env.ALLOWED_HOSTS ?? 'localhost,127.0.0.1,0.0.0.0')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+const deps = await depsFromEnv(process.env);
+const { app, close } = createApp(deps, { allowedHosts });
+const server = app.listen(port, '0.0.0.0', () => {
+  console.log(JSON.stringify({ msg: 'listening', port, path: '/mcp', devTools: deps.devTools }));
+});
+
+const shutdown = async (signal: string) => {
+  console.log(JSON.stringify({ msg: 'shutdown', signal }));
+  await close();
+  server.close(() => process.exit(0));
+};
+process.on('SIGINT', () => void shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
