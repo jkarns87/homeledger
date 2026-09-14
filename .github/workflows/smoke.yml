@@ -1,0 +1,61 @@
+name: smoke
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    environment: demo
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      HOUSEHOLD_ID: hh_harlow
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: '1.16.1', terraform_wrapper: false }
+
+      - name: Terraform init
+        working-directory: infra/live/demo/platform
+        run: terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="region=$AWS_REGION"
+
+      - name: Export Terraform outputs
+        working-directory: infra/live/demo/platform
+        run: |
+          MCP_URL=$(terraform output -raw agent_runtime_invocation_url)
+          COGNITO_TOKEN_URL=$(terraform output -raw cognito_token_url)
+          COGNITO_CLIENT_ID=$(terraform output -raw cognito_client_id)
+          COGNITO_CLIENT_SECRET=$(terraform output -raw cognito_client_secret)
+          TABLE_NAME=$(terraform output -raw table_name)
+          echo "::add-mask::$COGNITO_CLIENT_SECRET"
+          {
+            echo "MCP_URL=$MCP_URL"
+            echo "COGNITO_TOKEN_URL=$COGNITO_TOKEN_URL"
+            echo "COGNITO_CLIENT_ID=$COGNITO_CLIENT_ID"
+            echo "COGNITO_CLIENT_SECRET=$COGNITO_CLIENT_SECRET"
+            echo "TABLE_NAME=$TABLE_NAME"
+          } >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter @homeledger/core build
+
+      - run: pnpm --filter @homeledger/scripts seed:remote
+
+      - run: pnpm smoke
