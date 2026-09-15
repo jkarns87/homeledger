@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FIXTURE_APPLIANCE_IDS, SAMPLE_MANUAL_PASSAGES, createFixtureRetriever } from '../src/retrieval/fixture.js';
-import { MAX_PASSAGES } from '../src/retrieval/retriever.js';
+import { MAX_PASSAGES, clampPassages } from '../src/retrieval/retriever.js';
 
 const retriever = createFixtureRetriever(SAMPLE_MANUAL_PASSAGES);
 
@@ -33,8 +33,35 @@ describe('fixture retriever', () => {
     expect(await retriever.retrieve({ question: 'how do I repaint the garage door' })).toEqual([]);
   });
 
-  it('orders by keyword hits then score', async () => {
-    const passages = await retriever.retrieve({ question: 'drain hose F21 washer' });
-    for (let i = 1; i < passages.length; i++) expect(passages[i - 1]!.score).toBeGreaterThanOrEqual(passages[i]!.score - 1);
+  it('ranks by keyword hit count first, then by score', async () => {
+    const passages = await retriever.retrieve({ question: 'drain filter clean monthly', applianceId: FIXTURE_APPLIANCE_IDS.washer });
+    expect(passages.length).toBeGreaterThan(0);
+    // Index 1 in SAMPLE_MANUAL_PASSAGES (score 0.81) matches all four keywords: drain, filter, clean, monthly.
+    // Index 0 (score 0.94) matches only drain. Correct ranking puts the multi-keyword match first.
+    expect(passages[0]?.text).toContain('Clean the drain pump filter every month');
+  });
+});
+
+describe('clampPassages', () => {
+  it('returns MAX_PASSAGES when undefined', () => {
+    expect(clampPassages(undefined)).toBe(MAX_PASSAGES);
+  });
+
+  it('clamps zero up to 1', () => {
+    expect(clampPassages(0)).toBe(1);
+  });
+
+  it('clamps negative numbers up to 1', () => {
+    expect(clampPassages(-5)).toBe(1);
+  });
+
+  it('clamps values above MAX_PASSAGES down to MAX_PASSAGES', () => {
+    expect(clampPassages(10)).toBe(MAX_PASSAGES);
+  });
+
+  it('passes through in-range values unchanged', () => {
+    expect(clampPassages(1)).toBe(1);
+    expect(clampPassages(2)).toBe(2);
+    expect(clampPassages(3)).toBe(3);
   });
 });

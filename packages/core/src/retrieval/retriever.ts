@@ -27,6 +27,7 @@ export interface ManualRetriever {
 /** Spec 4.2: ask_manual returns at most three passages. */
 export const MAX_PASSAGES = 3;
 
+/** Clamp a passage limit to [1, MAX_PASSAGES]; undefined yields MAX_PASSAGES. Used by Bedrock adapter to validate numberOfResults. */
 export function clampPassages(requested: number | undefined): number {
   if (requested === undefined) return MAX_PASSAGES;
   return Math.max(1, Math.min(MAX_PASSAGES, Math.trunc(requested)));
