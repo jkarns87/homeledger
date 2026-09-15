@@ -1,12 +1,17 @@
 import type { Appliance, TaskTypeValue } from '../domain/schemas.js';
 import { computeNextDue } from '../domain/maintenance.js';
-import { newId } from '../ids.js';
 import type { Repository } from '../repo/repository.js';
 
-type SeedAppliance = Omit<Appliance, 'id' | 'manualDocId'> & { lastDone: Partial<Record<TaskTypeValue, string>> };
+type SeedAppliance = Omit<Appliance, 'manualDocId'> & { lastDone: Partial<Record<TaskTypeValue, string>> };
 
+// Fixed ids (not `newId('appl')`) so re-running the seed is idempotent: the
+// same appliance always gets the same id, so `putAppliance`/`putMaintenance`
+// overwrite the same items instead of accumulating new ones on every run.
+// Each id is a mnemonic slug padded to the 16-char [a-z2-7] body
+// `ApplianceSchema` requires (see packages/core/src/domain/schemas.ts).
 export const SEED_APPLIANCES: SeedAppliance[] = [
   {
+    id: 'appl_furnace222222222',
     name: 'Furnace',
     brand: 'Carrier',
     model: '59SC5A060E17',
@@ -22,6 +27,7 @@ export const SEED_APPLIANCES: SeedAppliance[] = [
     lastDone: { filter_change: '2026-06-01', inspection: '2025-10-15' }
   },
   {
+    id: 'appl_waterheater22222',
     name: 'Water heater',
     brand: 'Rheem',
     model: 'XG50T12HE40U0',
@@ -37,6 +43,7 @@ export const SEED_APPLIANCES: SeedAppliance[] = [
     lastDone: { flush: '2025-09-01', inspection: '2026-03-01' }
   },
   {
+    id: 'appl_washer2222222222',
     name: 'Washer',
     brand: 'LG',
     model: 'WM4000HWA',
@@ -49,6 +56,7 @@ export const SEED_APPLIANCES: SeedAppliance[] = [
     lastDone: { clean: '2026-08-20' }
   },
   {
+    id: 'appl_dishwasher222222',
     name: 'Dishwasher',
     brand: 'Bosch',
     model: 'SHPM88Z75N',
@@ -61,6 +69,7 @@ export const SEED_APPLIANCES: SeedAppliance[] = [
     lastDone: { clean: '2026-09-01' }
   },
   {
+    id: 'appl_refrigerator2222',
     name: 'Refrigerator',
     brand: 'Samsung',
     model: 'RF28R7351SG',
@@ -73,6 +82,7 @@ export const SEED_APPLIANCES: SeedAppliance[] = [
     lastDone: { replace_part: '2026-04-10' }
   },
   {
+    id: 'appl_sumppump22222222',
     name: 'Sump pump',
     brand: 'Zoeller',
     model: 'M53',
@@ -86,17 +96,18 @@ export const SEED_APPLIANCES: SeedAppliance[] = [
   }
 ];
 
+export const SEED_APPLIANCE_COUNT = SEED_APPLIANCES.length;
+
 export async function seedRepository(repo: Repository, householdId: string, today: string): Promise<{ applianceIds: string[] }> {
   await repo.putHousehold({ id: householdId, name: 'The Harlow household', timezone: 'America/Chicago' });
   const applianceIds: string[] = [];
   for (const seed of SEED_APPLIANCES) {
-    const id = newId('appl');
     const { lastDone, ...rest } = seed;
-    await repo.putAppliance({ ...rest, id, manualDocId: null });
+    await repo.putAppliance({ ...rest, manualDocId: null });
     for (const t of seed.templates) {
       const last = lastDone[t.taskType] ?? today;
       await repo.putMaintenance({
-        applianceId: id,
+        applianceId: seed.id,
         taskType: t.taskType,
         intervalDays: t.intervalDays,
         lastDoneAt: last,
@@ -104,7 +115,7 @@ export async function seedRepository(repo: Repository, householdId: string, toda
         notes: null
       });
     }
-    applianceIds.push(id);
+    applianceIds.push(seed.id);
   }
   return { applianceIds };
 }

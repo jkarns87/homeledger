@@ -7,4 +7,4 @@ export type { Repository } from './repo/repository.js';
 export { createMemoryRepository } from './repo/memory.js';
 export { createDynamoRepository } from './repo/dynamo.js';
 export { ensureTable } from './repo/table.js';
-export { SEED_APPLIANCES, seedRepository } from './seed/household.js';
+export { SEED_APPLIANCES, SEED_APPLIANCE_COUNT, seedRepository } from './seed/household.js';

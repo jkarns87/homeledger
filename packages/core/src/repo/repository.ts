@@ -15,6 +15,8 @@ import type {
 export interface Repository {
   getHousehold(): Promise<Household | null>;
   putHousehold(h: Household): Promise<void>;
+  /** Deletes every item under this repository's household partition (household, appliances, maintenance, logs, docs, events, visits, alerts, devices). Used to make re-seeding idempotent rather than additive. */
+  resetHousehold(): Promise<void>;
   putAppliance(a: Appliance): Promise<void>;
   getAppliance(id: string): Promise<Appliance | null>;
   listAppliances(filter?: { room?: string; category?: ApplianceCategoryValue }): Promise<Appliance[]>;

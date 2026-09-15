@@ -36,6 +36,17 @@ export function createMemoryRepository(_householdId: string): Repository {
     async putHousehold(h) {
       household = h;
     },
+    async resetHousehold() {
+      household = null;
+      appliances.clear();
+      maintenance.clear();
+      logs.length = 0;
+      docs.clear();
+      events.clear();
+      visits.clear();
+      alerts.length = 0;
+      devices.clear();
+    },
     async putAppliance(a) {
       appliances.set(a.id, a);
     },

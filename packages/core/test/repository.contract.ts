@@ -100,6 +100,16 @@ export function runRepositoryContract(name: string, make: () => Promise<Reposito
       expect(fetched?.providerName).toBe('Reliable Plumbing');
     });
 
+    it('resetHousehold deletes the household, appliances, and maintenance items', async () => {
+      await repo.putHousehold({ id: 'hh_test', name: 'Test household', timezone: 'America/Chicago' });
+      await repo.putAppliance(appliance());
+      await repo.putMaintenance(maintenance());
+      await repo.resetHousehold();
+      expect(await repo.getHousehold()).toBeNull();
+      expect(await repo.listAppliances()).toEqual([]);
+      expect(await repo.getMaintenance('appl_aaaaaaaaaaaaaaaa', 'filter_change')).toBeNull();
+    });
+
     it('appends and lists logs newest first', async () => {
       await repo.appendLog({
         id: 'log_aaaaaaaaaaaaaaaa',

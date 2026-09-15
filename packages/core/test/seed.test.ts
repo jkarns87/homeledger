@@ -12,4 +12,21 @@ describe('seed', () => {
     const templateCount = SEED_APPLIANCES.reduce((n, a) => n + a.templates.length, 0);
     expect(due.length).toBe(templateCount);
   });
+
+  it('uses fixed appliance ids that are stable across calls', async () => {
+    const first = await seedRepository(createMemoryRepository('hh_harlow'), 'hh_harlow', '2026-09-13');
+    const second = await seedRepository(createMemoryRepository('hh_harlow'), 'hh_harlow', '2026-09-13');
+    expect(second.applianceIds).toEqual(first.applianceIds);
+    expect(new Set(first.applianceIds).size).toBe(SEED_APPLIANCES.length);
+  });
+
+  it('seeding the same repository twice overwrites rather than accumulates', async () => {
+    const repo = createMemoryRepository('hh_harlow');
+    await seedRepository(repo, 'hh_harlow', '2026-09-13');
+    await seedRepository(repo, 'hh_harlow', '2026-09-13');
+    expect(await repo.listAppliances()).toHaveLength(SEED_APPLIANCES.length);
+    const due = await repo.listMaintenanceDue(3650, '2026-09-13');
+    const templateCount = SEED_APPLIANCES.reduce((n, a) => n + a.templates.length, 0);
+    expect(due).toHaveLength(templateCount);
+  });
 });

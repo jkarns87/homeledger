@@ -1,5 +1,5 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { BatchWriteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { Alert, Appliance, Device, Doc, Event, Household, LogEntry, MaintenanceItem, TaskTypeValue, Visit } from '../domain/schemas.js';
 import { gsi1, gsi2, pk, sk } from './keys.js';
 import type { Repository } from './repository.js';
@@ -61,6 +61,29 @@ export function createDynamoRepository(opts: {
     },
     async putHousehold(h) {
       await put(sk.household(), 'household', h);
+    },
+    async resetHousehold() {
+      const keys: { PK: string; SK: string }[] = [];
+      let ExclusiveStartKey: Record<string, unknown> | undefined;
+      do {
+        const out = await doc.send(
+          new QueryCommand({
+            TableName: T,
+            KeyConditionExpression: 'PK = :p',
+            ExpressionAttributeValues: { ':p': P },
+            ProjectionExpression: 'PK, SK',
+            ExclusiveStartKey
+          })
+        );
+        for (const item of out.Items ?? []) keys.push({ PK: item.PK as string, SK: item.SK as string });
+        ExclusiveStartKey = out.LastEvaluatedKey;
+      } while (ExclusiveStartKey);
+
+      const BATCH = 25; // BatchWriteItem's per-request limit
+      for (let i = 0; i < keys.length; i += BATCH) {
+        const chunk = keys.slice(i, i + BATCH);
+        await doc.send(new BatchWriteCommand({ RequestItems: { [T]: chunk.map(key => ({ DeleteRequest: { Key: key } })) } }));
+      }
     },
 
     async putAppliance(a) {
