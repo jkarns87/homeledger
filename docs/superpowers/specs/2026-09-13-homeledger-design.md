@@ -66,7 +66,7 @@ One pnpm monorepo. TypeScript everywhere. Node 22.
 - Modern branch: requests carrying per-request `_meta` go to the stateless `createMcpHandler`, which instantiates the factory per request and returns MRTR `input_required` results natively.
 - Legacy branch: requests detected by `isLegacyRequest` (an `initialize` call or an `Mcp-Session-Id` header) go to a per-session `NodeStreamableHTTPServerTransport` created with `sessionIdGenerator`, kept in an in-process session map keyed by session ID. Legacy clients therefore get `initialize` → `Mcp-Session-Id` → session-bound requests, and the SDK's input-required legacy shim pushes real `elicitation/create` requests over that session. Elicitation reaches legacy clients at protocol 2025-06-18 or later; a 2025-03-26 client (Alexa+'s documented handshake) gets tools, resources, and prompts without elicitation, which is the correct behavior for that revision.
 - The in-process session map is safe because AgentCore pins a session to one microVM; sessions expire with the microVM's idle timeout. The week-1 spike validates this branch end to end on AgentCore before anything else is built on it.
-- Origin validation on. Host validation configured for the AgentCore invocation host.
+- Origin validation on. Host-header validation is disabled on the deployed runtime because AgentCore forwards an internal, cell-specific Host (FL-020); the JWT authorizer is the access control; local runs keep the SDK default allowlist.
 - Handlers use the write-once MRTR pattern: check `inputResponses` first, request only what is missing via `inputRequired.elicit()`, carry cross-round state in a signed `requestState` (`createRequestStateCodec`). The default legacy shim converts these into real `elicitation/create` requests for 2025-era clients.
 - Progress notifications during `book_service`'s availability phase.
 - No sampling, no roots, no logging feature. Structured logs to stdout → CloudWatch.
@@ -83,7 +83,7 @@ One pnpm monorepo. TypeScript everywhere. Node 22.
 | `maintenance_due` | `horizonDays?` (default 30) | `items[] {applianceId, applianceName, taskType, dueAt, overdue}` | `ui://homeledger/calendar` | GSI query on `nextDueAt` |
 | `log_maintenance` | `applianceId`, `taskType`, `date?`, `notes?` | `{logged, nextDueAt}` | none | Recomputes `MAINT#` item |
 | `book_service` | `applianceId`, `issue`, `preferredWindow?` | `{visitId, provider, windowStart, windowEnd, status}` | `ui://homeledger/visit` | Elicits provider (≤5 enum), window (enum), confirm (boolean). Progress 0→3 during a simulated availability check (bounded delay). Writes `VISIT#` |
-| `recent_events` | `sinceHours?` (default 24) | `events[] {type, deviceName, at, summary, visitId?}` | none | Visits and alerts |
+| `recent_events` | `sinceHours?` (default 24) | `events[] {kind, deviceName, at, summary, visitId?}` | none | Visits and alerts |
 | `get_visit` | `visitId` | visit + `snapshotUrl?` (presigned, short TTL) + `description?` | `ui://homeledger/visit` | |
 
 Provider options for `book_service` come from a static, clearly labeled sample marketplace in `packages/core` (per category, three to five providers). This is the one simulated data source and the README says so.
