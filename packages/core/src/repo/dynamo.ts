@@ -80,9 +80,22 @@ export function createDynamoRepository(opts: {
       } while (ExclusiveStartKey);
 
       const BATCH = 25; // BatchWriteItem's per-request limit
+      const MAX_ATTEMPTS = 5;
       for (let i = 0; i < keys.length; i += BATCH) {
         const chunk = keys.slice(i, i + BATCH);
-        await doc.send(new BatchWriteCommand({ RequestItems: { [T]: chunk.map(key => ({ DeleteRequest: { Key: key } })) } }));
+        let requests: { DeleteRequest: { Key: { PK: string; SK: string } } }[] = chunk.map(key => ({ DeleteRequest: { Key: key } }));
+        let delayMs = 50;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS && requests.length > 0; attempt++) {
+          const out = await doc.send(new BatchWriteCommand({ RequestItems: { [T]: requests } }));
+          requests = (out.UnprocessedItems?.[T] as typeof requests) ?? [];
+          if (requests.length === 0) break;
+          if (attempt === MAX_ATTEMPTS) break;
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          delayMs *= 2;
+        }
+        if (requests.length > 0) {
+          throw new Error(`resetHousehold: ${requests.length} item(s) still unprocessed after ${MAX_ATTEMPTS} attempts`);
+        }
       }
     },
 
