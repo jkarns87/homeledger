@@ -44,4 +44,17 @@ describe('sample provider marketplace', () => {
   it('states in the notice that the marketplace is simulated', () => {
     expect(SAMPLE_MARKETPLACE_NOTICE).toContain('sample data');
   });
+
+  it('breaks rating ties alphabetically by provider name', () => {
+    const kitchen = providersForCategory('kitchen');
+    const coldpoint = kitchen.find(p => p.name === 'Coldpoint Refrigeration');
+    const hearth = kitchen.find(p => p.name === 'Hearth and Home Repair');
+    expect(coldpoint).toBeDefined();
+    expect(hearth).toBeDefined();
+    expect(coldpoint?.rating).toBe(hearth?.rating);
+    expect(coldpoint?.rating).toBe(4.5);
+    const coldpointIndex = kitchen.indexOf(coldpoint!);
+    const hearthIndex = kitchen.indexOf(hearth!);
+    expect(coldpointIndex).toBeLessThan(hearthIndex);
+  });
 });

@@ -45,8 +45,8 @@ export const SAMPLE_PROVIDERS: ServiceProvider[] = [
   { id: 'prov_westfold', name: 'Westfold Appliance', category: 'laundry', rating: 4.0, leadTimeDays: 4, phone: '555-0133', sample: true },
 
   { id: 'prov_galley_appl', name: 'Galley Appliance Care', category: 'kitchen', rating: 4.8, leadTimeDays: 2, phone: '555-0141', sample: true },
+  { id: 'prov_hearth_home', name: 'Hearth and Home Repair', category: 'kitchen', rating: 4.5, leadTimeDays: 3, phone: '555-0143', sample: true },
   { id: 'prov_coldpoint', name: 'Coldpoint Refrigeration', category: 'kitchen', rating: 4.5, leadTimeDays: 1, phone: '555-0142', sample: true },
-  { id: 'prov_hearth_home', name: 'Hearth and Home Repair', category: 'kitchen', rating: 4.1, leadTimeDays: 3, phone: '555-0143', sample: true },
   { id: 'prov_pantry_pro', name: 'Pantry Pro Service', category: 'kitchen', rating: 3.8, leadTimeDays: 5, phone: '555-0144', sample: true },
 
   { id: 'prov_bright_wire', name: 'Bright Wire Electric', category: 'electrical', rating: 4.9, leadTimeDays: 2, phone: '555-0151', sample: true },
@@ -62,8 +62,13 @@ export const SAMPLE_PROVIDERS: ServiceProvider[] = [
   { id: 'prov_oddjob_crew', name: 'Oddjob Crew', category: 'other', rating: 3.8, leadTimeDays: 1, phone: '555-0173', sample: true }
 ];
 
+/**
+ * Fetch at most MAX_PROVIDER_OPTIONS providers for a given appliance category,
+ * sorted by rating (highest first), with ties broken alphabetically by name.
+ * This function is total: SAMPLE_PROVIDERS guarantees three to five providers
+ * for every ApplianceCategoryValue, so it will never return an empty array.
+ */
 export function providersForCategory(category: ApplianceCategoryValue): ServiceProvider[] {
   const own = SAMPLE_PROVIDERS.filter(p => p.category === category);
-  const pool = own.length > 0 ? own : SAMPLE_PROVIDERS.filter(p => p.category === 'other');
-  return [...pool].sort((a, b) => b.rating - a.rating || a.name.localeCompare(b.name)).slice(0, MAX_PROVIDER_OPTIONS);
+  return [...own].sort((a, b) => b.rating - a.rating || a.name.localeCompare(b.name)).slice(0, MAX_PROVIDER_OPTIONS);
 }
