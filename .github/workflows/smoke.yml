@@ -30,6 +30,7 @@ jobs:
         run: terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="region=$AWS_REGION"
 
       - name: Export Terraform outputs
+        id: tf-outputs
         working-directory: infra/live/demo/platform
         run: |
           MCP_URL=$(terraform output -raw agent_runtime_invocation_url)
@@ -43,10 +44,13 @@ jobs:
             echo "MCP_URL=$MCP_URL"
             echo "COGNITO_TOKEN_URL=$COGNITO_TOKEN_URL"
             echo "COGNITO_CLIENT_ID=$COGNITO_CLIENT_ID"
-            echo "COGNITO_CLIENT_SECRET=$COGNITO_CLIENT_SECRET"
             echo "TABLE_NAME=$TABLE_NAME"
             echo "AGENT_RUNTIME_ARN=$AGENT_RUNTIME_ARN"
           } >> "$GITHUB_ENV"
+          # Kept out of $GITHUB_ENV so it never reaches later steps' full
+          # environment (pnpm install included) - only the "Run smoke" step
+          # below receives it, via its own env:.
+          echo "client_secret=$COGNITO_CLIENT_SECRET" >> "$GITHUB_OUTPUT"
 
       - uses: pnpm/action-setup@v4
         with: { version: 10.15.0 }
@@ -60,10 +64,14 @@ jobs:
 
       - run: pnpm --filter @homeledger/scripts seed:remote
 
-      - run: pnpm smoke
+      - name: Run smoke
+        env:
+          COGNITO_CLIENT_SECRET: ${{ steps.tf-outputs.outputs.client_secret }}
+        run: pnpm smoke
 
       - name: Tail runtime logs
         if: always()
+        continue-on-error: true
         run: |
           RUNTIME_ID="${AGENT_RUNTIME_ARN##*/}"
           aws logs tail "/aws/bedrock-agentcore/runtimes/${RUNTIME_ID}-DEFAULT" --since 30m --format short
