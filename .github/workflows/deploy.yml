@@ -1,0 +1,120 @@
+name: deploy
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - 'apps/**'
+      - 'packages/**'
+      - 'scripts/**'
+      - '.github/workflows/deploy.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # No `environment: demo` here: pull_request runs use the synthetic
+  # `refs/pull/N/merge` ref, which no deployment branch pattern can match, so
+  # the demo environment's branch policy always rejects it. The OIDC role's
+  # trust policy already allows the `repo:jkarns87/homeledger:pull_request`
+  # subject directly, so the plan job assumes the role without an environment.
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: '1.16.1', terraform_wrapper: false }
+
+      - name: Terraform init
+        working-directory: infra/live/demo/platform
+        run: terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="region=$AWS_REGION"
+
+      - name: Terraform plan
+        working-directory: infra/live/demo/platform
+        run: |
+          IMAGE=$(terraform output -raw deployed_image_uri 2>/dev/null || true)
+          terraform plan -no-color -input=false -var "image_uri=$IMAGE" -out=tfplan
+          {
+            echo "<details><summary>terraform plan</summary>"
+            echo ""
+            echo '```'
+            terraform show -no-color tfplan
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    environment: demo
+    concurrency: deploy-demo
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: '1.16.1', terraform_wrapper: false }
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Terraform init
+        working-directory: infra/live/demo/platform
+        run: terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="region=$AWS_REGION"
+
+      # One-time bootstrap exception to the no-`-target` rule: state has no ECR
+      # repository yet on a brand new account, and the image must exist in ECR
+      # before the runtime resource (later in this same apply chain) can be
+      # created. This narrowly targets only the ECR repository and its
+      # lifecycle policy, and only runs when they are not already in state.
+      - name: Bootstrap ECR repository if absent
+        working-directory: infra/live/demo/platform
+        run: |
+          if ! terraform state list 2>/dev/null | grep -qx 'aws_ecr_repository.mcp'; then
+            terraform apply -auto-approve -input=false -target=aws_ecr_repository.mcp -target=aws_ecr_lifecycle_policy.mcp -var image_uri=""
+          fi
+
+      - name: Build and push image
+        id: image
+        run: |
+          REPO=$(terraform -chdir=infra/live/demo/platform output -raw ecr_repository_url)
+          IMAGE=$(./scripts/build-image.sh "$REPO" "${GITHUB_SHA::7}")
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform apply
+        working-directory: infra/live/demo/platform
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: terraform apply -auto-approve -input=false -var "image_uri=$IMAGE_URI"
+
+      - name: Publish outputs summary
+        working-directory: infra/live/demo/platform
+        run: |
+          {
+            echo "<details><summary>terraform output</summary>"
+            echo ""
+            echo '```'
+            terraform output
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,108 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      dynamodb:
+        image: amazon/dynamodb-local:latest
+        ports: ['8000:8000']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # @homeledger/core is consumed by @homeledger/mcp-server via its published
+      # dist/ entry point (package.json main/types), not TS source directly, so
+      # a fresh checkout must build it before typecheck/test of mcp-server can
+      # resolve the module.
+      - run: pnpm --filter @homeledger/core build
+      - run: pnpm format
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm --filter @homeledger/core test:dynamo
+      - run: pnpm build
+
+  terraform:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: '1.16.1' }
+
+      - name: terraform fmt
+        working-directory: infra
+        run: terraform fmt -check -recursive
+
+      - name: platform validate and test
+        working-directory: infra/live/demo/platform
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform test
+
+      - name: agentcore-runtime validate and test
+        working-directory: infra/modules/agentcore-runtime
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform test
+
+      - name: cognito-m2m validate and test
+        working-directory: infra/modules/cognito-m2m
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform test
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: tflint init
+        working-directory: infra
+        run: tflint --init
+
+      - name: tflint
+        working-directory: infra
+        run: tflint --recursive --config "$(pwd)/.tflint.hcl"
+
+      # Scanned per directory, not as a single `scan-ref: infra`: trivy's
+      # Terraform-aware scan of the infra tree (or of infra/live/demo/platform
+      # alone) follows the cognito-m2m module reference but not the
+      # agentcore-runtime one, so the execution role's inline IAM policy is
+      # silently never evaluated by a tree-wide scan. Each reusable module
+      # scanned as its own root, on the other hand, is evaluated correctly
+      # (confirmed locally: `trivy config --severity LOW,MEDIUM,HIGH,CRITICAL
+      # infra/modules/agentcore-runtime` reports Target "." scanned, 0
+      # misconfigurations - a real evaluated result, not a skip).
+      - name: trivy (platform)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/live/demo/platform
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: trivy (agentcore-runtime)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/modules/agentcore-runtime
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: trivy (cognito-m2m)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/modules/cognito-m2m
+          severity: HIGH,CRITICAL
+          exit-code: '1'

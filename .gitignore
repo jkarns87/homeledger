@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.tfstate
+*.tfstate.backup
+.terraform/
+infra/**/demo.tfvars
+coverage/
+.DS_Store
+.claude/worktrees/
+.superpowers/

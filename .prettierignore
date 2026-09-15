@@ -1,0 +1,9 @@
+pnpm-lock.yaml
+dist
+node_modules
+.superpowers
+.claude
+*.tfstate*
+.terraform
+docs/
+*.md
