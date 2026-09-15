@@ -115,3 +115,20 @@ run "outputs_are_wired_and_non_empty" {
     error_message = "cognito_client_secret_arn must be set"
   }
 }
+
+run "dev_tools_disabled_sets_env_var_to_zero" {
+  # apply: environment_variables is echoed back by the provider on the
+  # created resource, unknown at plan time the same way agent_runtime_arn is
+  # in runtime_created_with_image above.
+  command = apply
+
+  variables {
+    image_uri         = "123456789012.dkr.ecr.us-east-1.amazonaws.com/homeledger-mcp:abc1234"
+    dev_tools_enabled = false
+  }
+
+  assert {
+    condition     = module.agentcore_runtime.environment_variables["HOMELEDGER_DEV_TOOLS"] == "0"
+    error_message = "HOMELEDGER_DEV_TOOLS must be \"0\" when dev_tools_enabled is false"
+  }
+}

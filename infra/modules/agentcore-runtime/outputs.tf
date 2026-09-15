@@ -17,3 +17,8 @@ output "runtime_id" {
   description = "AgentCore runtime id. Empty string until the runtime is created."
   value       = try(aws_bedrockagentcore_agent_runtime.this[0].agent_runtime_id, "")
 }
+
+output "environment_variables" {
+  description = "Environment variables applied to the runtime container, for callers (and tests) that need to assert on a specific value. Empty map until the runtime is created."
+  value       = try(aws_bedrockagentcore_agent_runtime.this[0].environment_variables, {})
+}

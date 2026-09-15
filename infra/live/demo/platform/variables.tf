@@ -58,3 +58,9 @@ variable "allowed_hosts" {
   description = "Comma-separated Host header allowlist passed to the server as ALLOWED_HOSTS, or \"*\" to disable Host-header validation entirely. Defaults to \"*\" because under AgentCore Runtime the container is reachable only through the authenticated invocation endpoint (the JWT authorizer is the access control there), and the Host header AgentCore actually forwards is an internal, undocumented, cell-specific name (observed: cell01.us-east-1.prod.arp.kepler-analytics.aws.dev) that cannot be pinned in advance. Local runs pass an explicit list (e.g. \"localhost,127.0.0.1,0.0.0.0\") to keep DNS-rebinding protection there."
   default     = "*"
 }
+
+variable "dev_tools_enabled" {
+  type        = bool
+  description = "Whether the deployed runtime registers developer-only MCP tools (currently echo_confirm) via HOMELEDGER_DEV_TOOLS. Defaults to true for the demo: echo_confirm is the concrete proof that the elicitation round trip works end to end through AgentCore, and the demo deliberately ships it enabled rather than hidden."
+  default     = true
+}

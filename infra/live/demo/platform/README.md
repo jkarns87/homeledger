@@ -75,6 +75,14 @@ Resource names derive from `local.name_prefix = "${var.env}-homeledger"`, so
 the server reads its table name from the `table_name` output / `TABLE_NAME`
 environment variable rather than any hardcoded string.
 
+## Dev tools
+
+`var.dev_tools_enabled` defaults to `true`, so the demo deliberately ships
+with developer-only MCP tools (currently `echo_confirm`) registered on the
+deployed runtime: `echo_confirm` is the concrete proof that the elicitation
+round trip works end to end through AgentCore, and hiding it would remove the
+only way to demonstrate that live.
+
 ## Variables
 
 See `variables.tf` for the full list, defaults, and validation rules.
@@ -119,6 +127,7 @@ is not read automatically by the Actions workflow, which passes
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
 | <a name="input_allowed_hosts"></a> [allowed\_hosts](#input\_allowed\_hosts) | Comma-separated Host header allowlist passed to the server as ALLOWED\_HOSTS, or "*" to disable Host-header validation entirely. Defaults to "*" because under AgentCore Runtime the container is reachable only through the authenticated invocation endpoint (the JWT authorizer is the access control there), and the Host header AgentCore actually forwards is an internal, undocumented, cell-specific name (observed: cell01.us-east-1.prod.arp.kepler-analytics.aws.dev) that cannot be pinned in advance. Local runs pass an explicit list (e.g. "localhost,127.0.0.1,0.0.0.0") to keep DNS-rebinding protection there. | `string` | `"*"` | no |
+| <a name="input_dev_tools_enabled"></a> [dev\_tools\_enabled](#input\_dev\_tools\_enabled) | Whether the deployed runtime registers developer-only MCP tools (currently echo\_confirm) via HOMELEDGER\_DEV\_TOOLS. Defaults to true for the demo: echo\_confirm is the concrete proof that the elicitation round trip works end to end through AgentCore, and the demo deliberately ships it enabled rather than hidden. | `bool` | `true` | no |
 | <a name="input_env"></a> [env](#input\_env) | Deployment environment name. Only "demo" exists today; later layers (events, simulator) will live under infra/live/demo/ alongside this root. | `string` | `"demo"` | no |
 | <a name="input_household_id"></a> [household\_id](#input\_household\_id) | Household id seeded into the MCP server's environment as HOUSEHOLD\_ID. | `string` | `"hh_harlow"` | no |
 | <a name="input_idle_session_timeout_seconds"></a> [idle\_session\_timeout\_seconds](#input\_idle\_session\_timeout\_seconds) | Idle runtime session timeout passed to the AgentCore runtime, in seconds. | `number` | `1800` | no |

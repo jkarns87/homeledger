@@ -20,6 +20,7 @@ the runtime does not exist.
 
 | Name | Version |
 | ---- | ------- |
+| <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.10.0 |
 | <a name="requirement_aws"></a> [aws](#requirement\_aws) | >= 6.21.0, < 7.0.0 |
 
 ## Providers
@@ -65,6 +66,7 @@ No modules.
 | Name | Description |
 | ---- | ----------- |
 | <a name="output_agent_runtime_arn"></a> [agent\_runtime\_arn](#output\_agent\_runtime\_arn) | ARN of the AgentCore runtime. Empty string until image\_uri is set and the runtime is created. |
+| <a name="output_environment_variables"></a> [environment\_variables](#output\_environment\_variables) | Environment variables applied to the runtime container, for callers (and tests) that need to assert on a specific value. Empty map until the runtime is created. |
 | <a name="output_invocation_url"></a> [invocation\_url](#output\_invocation\_url) | HTTPS invocation URL for the runtime's DEFAULT endpoint. Empty string until the runtime is created. |
 | <a name="output_role_arn"></a> [role\_arn](#output\_role\_arn) | ARN of the IAM execution role created for the runtime. |
 | <a name="output_runtime_id"></a> [runtime\_id](#output\_runtime\_id) | AgentCore runtime id. Empty string until the runtime is created. |

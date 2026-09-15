@@ -105,7 +105,7 @@ module "agentcore_runtime" {
     HOUSEHOLD_ID         = var.household_id
     TABLE_NAME           = aws_dynamodb_table.homeledger.name
     AWS_REGION           = local.region
-    HOMELEDGER_DEV_TOOLS = "1"
+    HOMELEDGER_DEV_TOOLS = var.dev_tools_enabled ? "1" : "0"
     ALLOWED_HOSTS        = var.allowed_hosts
     PORT                 = "8000"
   }
