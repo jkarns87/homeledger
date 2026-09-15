@@ -23,8 +23,13 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
     },
     async ({ sinceHours }) => {
       const hours = sinceHours ?? 24;
-      const since = new Date(new Date(deps.now()).getTime() - hours * 3_600_000).toISOString();
-      const [visits, doors, alerts] = await Promise.all([deps.repo.listVisitsSince(since), deps.repo.listEvents(since), deps.repo.listAlerts(since)]);
+      const nowIso = deps.now();
+      const since = new Date(new Date(nowIso).getTime() - hours * 3_600_000).toISOString();
+      const [visitsSince, doors, alerts] = await Promise.all([deps.repo.listVisitsSince(since), deps.repo.listEvents(since), deps.repo.listAlerts(since)]);
+      // listVisitsSince has no upper bound, so a visit scheduled months out
+      // would otherwise show up in "the last N hours" ahead of real events.
+      // Bound to the window: only visits that have actually started count.
+      const visits = visitsSince.filter(v => v.windowStart <= nowIso);
       const events: z.infer<typeof EventRow>[] = [
         ...visits.map(v => ({
           kind: 'visit' as const,

@@ -19,8 +19,27 @@ describe('recent_events', () => {
       category: 'plumbing',
       applianceId,
       issue: 'leak',
-      windowStart: '2026-09-13T13:00:00.000Z',
+      windowStart: '2026-09-13T11:00:00.000Z',
       windowEnd: '2026-09-13T15:00:00.000Z',
+      status: 'scheduled',
+      ringEventIds: [],
+      snapshotKey: null,
+      description: null,
+      arrivedAt: null,
+      createdAt: '2026-09-12T10:00:00.000Z'
+    });
+    // Scheduled well in the future relative to the harness's now
+    // (2026-09-13T12:00:00.000Z): must not appear in "recent" events even
+    // though its windowStart falls within the sinceHours lookback window.
+    await h.deps.repo.putVisit({
+      id: 'visit_cccccccccccccccc',
+      providerId: 'p2',
+      providerName: 'Future HVAC',
+      category: 'hvac',
+      applianceId,
+      issue: 'inspection',
+      windowStart: '2026-09-14T09:00:00.000Z',
+      windowEnd: '2026-09-14T11:00:00.000Z',
       status: 'scheduled',
       ringEventIds: [],
       snapshotKey: null,
@@ -60,6 +79,7 @@ describe('recent_events', () => {
     const sc = r.structuredContent as { events: Array<{ kind: string; at: string; summary: string; visitId: string | null }> };
     expect(sc.events.map(e => e.kind)).toEqual(['visit', 'door', 'alert']);
     expect(sc.events[0]?.visitId).toBe('visit_aaaaaaaaaaaaaaaa');
+    expect(sc.events.some(e => e.visitId === 'visit_cccccccccccccccc')).toBe(false);
     const text = (r.content as Array<{ text?: string }>)[0]?.text ?? '';
     expect(hasJson(text)).toBe(false);
     expect(text).toContain('Reliable Plumbing');
