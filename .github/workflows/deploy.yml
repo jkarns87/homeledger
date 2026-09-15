@@ -16,10 +16,14 @@ permissions:
   contents: read
 
 jobs:
+  # No `environment: demo` here: pull_request runs use the synthetic
+  # `refs/pull/N/merge` ref, which no deployment branch pattern can match, so
+  # the demo environment's branch policy always rejects it. The OIDC role's
+  # trust policy already allows the `repo:jkarns87/homeledger:pull_request`
+  # subject directly, so the plan job assumes the role without an environment.
   plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    environment: demo
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}

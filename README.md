@@ -53,7 +53,7 @@ https://bedrock-agentcore.<region>.amazonaws.com/runtimes/<urlencoded-runtime-ar
 
 Every request to that URL must carry a Cognito client-credentials bearer token in the `Authorization: Bearer <token>` header — the runtime's `custom_jwt_authorizer` (discovery URL + allowed client id, both from the `cognito-m2m` module) rejects anything else. Mint a token from `cognito_token_url` with `grant_type=client_credentials` and `scope=homeledger/mcp`, using HTTP Basic auth of `cognito_client_id:cognito_client_secret`.
 
-Two workflows drive the deployed stack. `deploy.yml` runs a `terraform plan` on every pull request touching `infra/**`, `apps/**`, `packages/**`, or `scripts/**`, and applies on push to `main` — merging a PR into `main` applies it. Both workflows can also be dispatched manually:
+Two workflows drive the deployed stack. `deploy.yml` runs a `terraform plan` on every pull request touching `infra/**`, `apps/**`, `packages/**`, or `scripts/**`, and applies on push to `main` — merging a PR into `main` applies it. The `plan` job runs without the `demo` GitHub environment gate (pull request runs use the synthetic `refs/pull/N/merge` ref, which no deployment branch policy can match; the OIDC role's trust policy admits pull_request tokens directly), while `apply` still requires it. Both workflows can also be dispatched manually:
 
 ```bash
 gh workflow run deploy.yml --ref <branch>   # infra apply + image build/push, GitHub environment "demo"
