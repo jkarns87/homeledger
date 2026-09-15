@@ -13,8 +13,14 @@ const MIN_REQUEST_STATE_KEY_BYTES = 32;
 
 function resolveRequestStateKey(env: NodeJS.ProcessEnv): string {
   const configured = env.REQUEST_STATE_KEY;
-  if (configured && Buffer.byteLength(configured, 'utf8') >= MIN_REQUEST_STATE_KEY_BYTES) return configured;
-  if (configured) throw new Error(`REQUEST_STATE_KEY must be at least ${MIN_REQUEST_STATE_KEY_BYTES} bytes`);
+  // `configured !== undefined` (rather than the truthiness of `configured`)
+  // so an explicitly-set-but-empty REQUEST_STATE_KEY="" is treated as a
+  // deployment misconfiguration and throws, the same as a too-short value,
+  // instead of silently falling through to a generated per-process key.
+  if (configured !== undefined) {
+    if (Buffer.byteLength(configured, 'utf8') >= MIN_REQUEST_STATE_KEY_BYTES) return configured;
+    throw new Error(`REQUEST_STATE_KEY must be at least ${MIN_REQUEST_STATE_KEY_BYTES} bytes`);
+  }
   // No configured key: mint a per-process one. Multi round-trip rounds that
   // land on a different microVM than the one that minted the state are then
   // rejected with -32602 and the client restarts the flow. Acceptable for

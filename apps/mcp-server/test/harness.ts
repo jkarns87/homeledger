@@ -38,3 +38,46 @@ export async function modernClient(over: Partial<ServerDeps> = {}) {
     }
   };
 }
+
+export type ElicitAnswer = { action: 'accept'; content: Record<string, unknown> } | { action: 'decline' } | { action: 'cancel' };
+
+/**
+ * A 2026-07-28 client that answers embedded elicitation requests. The field
+ * name is the single key of requestedSchema.properties, which is exactly the
+ * key the server used in inputRequests. `schemas`, when supplied, collects
+ * every requestedSchema so a test can assert option counts.
+ */
+export async function modernElicitClient(
+  answer: (field: string, message: string) => ElicitAnswer,
+  over: Partial<ServerDeps> = {},
+  schemas?: Array<Record<string, unknown>>
+) {
+  const deps = { ...(await seededDeps()), ...over };
+  const handler = createMcpHandler(() => buildServer(deps));
+  const transport = new StreamableHTTPClientTransport(new URL('http://test.local/mcp'), {
+    fetch: (url, init) => handler.fetch(new Request(url, init))
+  });
+  const client = new Client(
+    { name: 'modern-elicit', version: '1.0.0' },
+    { capabilities: { elicitation: { form: {} } }, inputRequired: { maxRounds: 6 }, versionNegotiation: { mode: 'auto' } }
+  );
+  const asked: Array<{ field: string; message: string }> = [];
+  client.setRequestHandler('elicitation/create', async request => {
+    const requestedSchema = (request.params as { requestedSchema: { properties: Record<string, unknown> } }).requestedSchema;
+    const field = Object.keys(requestedSchema.properties)[0] ?? '';
+    const message = (request.params as { message: string }).message;
+    asked.push({ field, message });
+    schemas?.push(requestedSchema as unknown as Record<string, unknown>);
+    return answer(field, message);
+  });
+  await client.connect(transport);
+  return {
+    client,
+    deps,
+    asked,
+    close: async () => {
+      await client.close();
+      await handler.close();
+    }
+  };
+}

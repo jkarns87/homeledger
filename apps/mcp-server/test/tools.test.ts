@@ -19,6 +19,7 @@ describe('tools/list', () => {
       'log_maintenance',
       'recent_events',
       'ask_manual',
+      'book_service',
       'echo_confirm'
     ]);
     for (const t of tools) expect(t.outputSchema).toBeDefined();
