@@ -52,7 +52,9 @@ console.log('token: ok');
   // Catches seed duplication (FL-023): re-seeding without a reset used to add
   // six more appliances every run instead of overwriting the same six.
   if (applianceCount !== SEED_APPLIANCE_COUNT)
-    throw new Error(`expected ${SEED_APPLIANCE_COUNT} seeded appliances, got ${applianceCount} - table may hold duplicates from before the reset-before-seed fix`);
+    throw new Error(
+      `expected ${SEED_APPLIANCE_COUNT} seeded appliances, got ${applianceCount} - table may hold duplicates from before the reset-before-seed fix`
+    );
   const due = await timed('modern maintenance_due', () => client.callTool({ name: 'maintenance_due', arguments: {} }));
   if (!(due.structuredContent as { items: unknown[] }).items.length) throw new Error('no maintenance items; run seed:remote');
   await client.close();
