@@ -6,10 +6,10 @@ export function speakList(items: string[], noun: string): string {
   const shown = items.slice(0, VOICE_MAX_ITEMS);
   const rest = items.length - shown.length;
   let joined: string;
-  if (shown.length === 1) joined = shown[0]!;
-  else if (shown.length === 2 && rest === 0) joined = `${shown[0]} and ${shown[1]}`;
-  else joined = `${shown.slice(0, -1).join(', ')}, and ${rest > 0 ? `${rest} more` : shown[shown.length - 1]}`;
-  if (rest > 0 && shown.length > 1) joined = `${shown.join(', ')}, and ${rest} more`;
+  if (rest > 0) joined = `${shown.join(', ')}, and ${rest} more`;
+  else if (shown.length === 1) joined = shown[0]!;
+  else if (shown.length === 2) joined = `${shown[0]} and ${shown[1]}`;
+  else joined = `${shown.slice(0, -1).join(', ')}, and ${shown[shown.length - 1]}`;
   return `${items.length} ${plural(items.length)}: ${joined}.`;
 }
 
@@ -20,4 +20,14 @@ export function hasJson(text: string): boolean {
 export function speakDate(isoDate: string): string {
   const d = new Date(`${isoDate}T00:00:00Z`);
   return d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+
+export function speakWeekdayDate(isoDate: string): string {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+
+/** Task types are snake_case; every underscore becomes a space, not just the first. */
+export function taskWords(taskType: string): string {
+  return taskType.replaceAll('_', ' ');
 }

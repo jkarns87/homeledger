@@ -12,7 +12,15 @@ describe('tools/list', () => {
     const h = await modernClient();
     close = h.close;
     const { tools } = await h.client.listTools();
-    expect(tools.map(t => t.name)).toEqual(['list_appliances', 'get_appliance', 'maintenance_due', 'log_maintenance', 'recent_events', 'echo_confirm']);
+    expect(tools.map(t => t.name)).toEqual([
+      'list_appliances',
+      'get_appliance',
+      'maintenance_due',
+      'log_maintenance',
+      'recent_events',
+      'ask_manual',
+      'echo_confirm'
+    ]);
     for (const t of tools) expect(t.outputSchema).toBeDefined();
   });
 });

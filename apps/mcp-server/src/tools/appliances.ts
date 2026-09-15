@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { ApplianceCategory, TaskType, isOverdue } from '@homeledger/core';
 import type { ServerDeps } from '../server.js';
-import { speakDate, speakList } from '../voice.js';
+import { speakDate, speakList, taskWords } from '../voice.js';
 
 const WarrantyStatus = z.enum(['active', 'expired', 'unknown']);
 
@@ -95,7 +95,7 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
         maintenance.length === 0
           ? 'No maintenance scheduled.'
           : speakList(
-              maintenance.map(m => `${m.taskType.replace('_', ' ')} ${m.overdue ? 'overdue since' : 'due'} ${speakDate(m.nextDueAt)}`),
+              maintenance.map(m => `${taskWords(m.taskType)} ${m.overdue ? 'overdue since' : 'due'} ${speakDate(m.nextDueAt)}`),
               'task'
             );
       return {

@@ -2,9 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { TaskType, computeNextDue, isOverdue, newId } from '@homeledger/core';
 import type { ServerDeps } from '../server.js';
-import { speakDate, speakList } from '../voice.js';
-
-const taskWords = (t: string) => t.replace('_', ' ');
+import { speakDate, speakList, taskWords } from '../voice.js';
 
 export function registerMaintenanceTools(server: McpServer, deps: ServerDeps): void {
   server.registerTool(
