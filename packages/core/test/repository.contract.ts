@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Repository } from '../src/repo/repository.js';
-import type { Appliance, Event, MaintenanceItem, Visit } from '../src/domain/schemas.js';
+import type { Alert, Appliance, Device, Event, MaintenanceItem, Visit } from '../src/domain/schemas.js';
 
 export const appliance = (over: Partial<Appliance> = {}): Appliance => ({
   id: 'appl_aaaaaaaaaaaaaaaa',
@@ -54,6 +54,26 @@ export const event = (over: Partial<Event> = {}): Event => ({
   deviceName: 'Front Door',
   at: '2026-09-22T13:20:00.000Z',
   rawS3Key: null,
+  ...over
+});
+
+export const alert = (over: Partial<Alert> = {}): Alert => ({
+  id: 'alert_aaaaaaaaaaaaaaaa',
+  sensorType: 'freeze',
+  deviceName: 'Garage sensor',
+  at: '2026-09-22T03:00:00.000Z',
+  maintenanceRef: null,
+  status: 'open',
+  ...over
+});
+
+export const device = (over: Partial<Device> = {}): Device => ({
+  id: 'dev_aaaaaaaaaaaaaaaa',
+  ringDeviceId: 'ava1.ring.device.1',
+  name: 'Front Door',
+  kind: 'doorbell',
+  online: true,
+  lastSeenAt: '2026-09-22T13:00:00.000Z',
   ...over
 });
 
@@ -129,6 +149,54 @@ export function runRepositoryContract(name: string, make: () => Promise<Reposito
       });
       const logs = await repo.listLogs('appl_aaaaaaaaaaaaaaaa', 10);
       expect(logs.map(l => l.doneAt)).toEqual(['2026-09-13', '2026-06-01']);
+    });
+
+    it('replaces a visit in place and reads the new state back', async () => {
+      await repo.putVisit(visit());
+      await repo.putVisit(
+        visit({
+          status: 'arrived',
+          arrivedAt: '2026-09-22T13:20:00.000Z',
+          snapshotKey: 'snapshots/hh_test/visit_a.jpg',
+          description: 'A person in a blue jacket at the door.',
+          ringEventIds: ['ring-evt-1']
+        })
+      );
+      const after = await repo.getVisit('visit_aaaaaaaaaaaaaaaa');
+      expect(after?.status).toBe('arrived');
+      expect(after?.arrivedAt).toBe('2026-09-22T13:20:00.000Z');
+      expect(after?.snapshotKey).toBe('snapshots/hh_test/visit_a.jpg');
+      expect(after?.description).toBe('A person in a blue jacket at the door.');
+      expect(after?.ringEventIds).toEqual(['ring-evt-1']);
+      expect((await repo.listVisitsSince('2026-09-22T00:00:00.000Z')).length).toBe(1);
+      expect(await repo.getVisit('visit_zzzzzzzzzzzzzzzz')).toBeNull();
+    });
+
+    it('stores alerts and lists them newest first within a window', async () => {
+      await repo.putAlert(alert());
+      await repo.putAlert(
+        alert({
+          id: 'alert_bbbbbbbbbbbbbbbb',
+          sensorType: 'flood',
+          deviceName: 'Basement sensor',
+          at: '2026-09-22T09:00:00.000Z',
+          maintenanceRef: { applianceId: 'appl_aaaaaaaaaaaaaaaa', taskType: 'test' }
+        })
+      );
+      const recent = await repo.listAlerts('2026-09-22T00:00:00.000Z');
+      expect(recent.map(a => a.id)).toEqual(['alert_bbbbbbbbbbbbbbbb', 'alert_aaaaaaaaaaaaaaaa']);
+      expect(recent[0]?.maintenanceRef?.taskType).toBe('test');
+      expect((await repo.listAlerts('2026-09-23T00:00:00.000Z')).length).toBe(0);
+    });
+
+    it('keys devices by ring device id and lists them by name', async () => {
+      await repo.putDevice(device());
+      await repo.putDevice(device({ id: 'dev_bbbbbbbbbbbbbbbb', ringDeviceId: 'ava1.ring.device.2', name: 'Back Door', kind: 'camera' }));
+      await repo.putDevice(device({ id: 'dev_cccccccccccccccc', name: 'Front Door', online: false, lastSeenAt: null }));
+      const devices = await repo.listDevices();
+      expect(devices.map(d => d.name)).toEqual(['Back Door', 'Front Door']);
+      expect(devices.find(d => d.name === 'Front Door')?.online).toBe(false);
+      expect(devices.find(d => d.name === 'Front Door')?.lastSeenAt).toBeNull();
     });
   });
 }
