@@ -1,11 +1,20 @@
 import { createApp } from './app.js';
 import { depsFromEnv } from './deps.js';
 
+function parseAllowedHosts(raw: string | undefined): string[] | 'any' | undefined {
+  // '*' disables Host-header validation (see createApp's 'any' handling);
+  // unset keeps createApp's own default list; anything else is a literal
+  // comma-separated list.
+  if (raw === '*') return 'any';
+  if (raw === undefined) return undefined;
+  return raw
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
 const port = Number(process.env.PORT ?? 8000);
-const allowedHosts = (process.env.ALLOWED_HOSTS ?? 'localhost,127.0.0.1,0.0.0.0')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+const allowedHosts = parseAllowedHosts(process.env.ALLOWED_HOSTS);
 
 const deps = await depsFromEnv(process.env);
 const { app, close } = createApp(deps, { allowedHosts });

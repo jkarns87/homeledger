@@ -5,13 +5,25 @@ import express, { type RequestHandler } from 'express';
 import { createLegacyRouter, isLegacyBody } from './legacy.js';
 import { buildServer, SERVER_INFO, type ServerDeps } from './server.js';
 
-export function createApp(deps: ServerDeps, opts: { allowedHosts?: string[] } = {}) {
+export function createApp(deps: ServerDeps, opts: { allowedHosts?: string[] | 'any' } = {}) {
   const build = () => buildServer(deps);
   const modern = createMcpHandler(build, { legacy: 'reject' });
   const modernNode = toNodeHandler(modern);
   const legacy = createLegacyRouter(build);
 
-  const mcpApp = createMcpExpressApp({ host: '0.0.0.0', allowedHosts: opts.allowedHosts ?? ['localhost', '127.0.0.1', '0.0.0.0'], jsonLimit: '1mb' });
+  // 'any' means the caller explicitly asked to disable Host-header validation
+  // (AgentCore's invocation proxy forwards an internal, undocumented Host that
+  // an allowlist cannot name in advance — FL-020/FL-022 — and the runtime is
+  // reachable only through the authenticated invocation endpoint anyway, so
+  // the JWT authorizer is the access control there, not this allowlist).
+  // `@modelcontextprotocol/express`'s createMcpExpressApp only installs its
+  // hostHeaderValidation middleware when `allowedHosts` is truthy, so passing
+  // `undefined` here (as opposed to omitting the option or leaving it unset)
+  // turns validation off entirely rather than pinning a guessed hostname.
+  // No opts / an unset value keeps the local default list, so existing local
+  // and test behavior (validation on, localhost-class hosts only) is unchanged.
+  const allowedHosts = opts.allowedHosts === 'any' ? undefined : (opts.allowedHosts ?? ['localhost', '127.0.0.1', '0.0.0.0']);
+  const mcpApp = createMcpExpressApp({ host: '0.0.0.0', allowedHosts, jsonLimit: '1mb' });
 
   const route: RequestHandler = async (req, res, next) => {
     try {
