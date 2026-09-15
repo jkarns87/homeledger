@@ -197,6 +197,17 @@ export function runRepositoryContract(name: string, make: () => Promise<Reposito
       expect(devices.map(d => d.name)).toEqual(['Back Door', 'Front Door']);
       expect(devices.find(d => d.name === 'Front Door')?.online).toBe(false);
       expect(devices.find(d => d.name === 'Front Door')?.lastSeenAt).toBeNull();
+      expect(devices.find(d => d.name === 'Front Door')?.id).toBe('dev_cccccccccccccccc');
+    });
+
+    it('replaces an alert by id and reads the new state back', async () => {
+      await repo.putAlert(alert());
+      await repo.putAlert(alert({ status: 'acknowledged' }));
+      const alerts = await repo.listAlerts('2026-09-22T00:00:00.000Z');
+      expect(alerts.length).toBe(1);
+      expect(alerts[0]?.status).toBe('acknowledged');
+      expect(alerts[0]?.id).toBe('alert_aaaaaaaaaaaaaaaa');
+      expect(alerts[0]?.at).toBe('2026-09-22T03:00:00.000Z');
     });
   });
 }
