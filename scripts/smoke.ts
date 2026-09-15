@@ -2,6 +2,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { Client as LegacyClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport as LegacyTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { SEED_APPLIANCE_COUNT } from '@homeledger/core';
 
 const need = (k: string) => {
   const v = process.env[k];
@@ -45,6 +46,13 @@ console.log('token: ok');
   const names = tools.map(t => t.name);
   const expected = ['list_appliances', 'get_appliance', 'maintenance_due', 'log_maintenance', 'recent_events', 'echo_confirm'];
   if (JSON.stringify(names) !== JSON.stringify(expected)) throw new Error(`tool order ${names.join(',')}`);
+  const list = await timed('modern list_appliances', () => client.callTool({ name: 'list_appliances', arguments: {} }));
+  const applianceCount = (list.structuredContent as { appliances: unknown[] }).appliances.length;
+  console.log(`seeded appliance count: ${applianceCount}`);
+  // Catches seed duplication (FL-023): re-seeding without a reset used to add
+  // six more appliances every run instead of overwriting the same six.
+  if (applianceCount !== SEED_APPLIANCE_COUNT)
+    throw new Error(`expected ${SEED_APPLIANCE_COUNT} seeded appliances, got ${applianceCount} - table may hold duplicates from before the reset-before-seed fix`);
   const due = await timed('modern maintenance_due', () => client.callTool({ name: 'maintenance_due', arguments: {} }));
   if (!(due.structuredContent as { items: unknown[] }).items.length) throw new Error('no maintenance items; run seed:remote');
   await client.close();
