@@ -55,6 +55,6 @@ variable "idle_session_timeout_seconds" {
 
 variable "allowed_hosts" {
   type        = string
-  description = "Comma-separated Host header allowlist passed to the server as ALLOWED_HOSTS. bedrock-agentcore.us-east-1.amazonaws.com is the public invocation host; cell01.us-east-1.prod.arp.kepler-analytics.aws.dev is the internal Host header AgentCore Runtime actually forwards to the container (observed from CloudWatch logs, undocumented, and possibly cell/region specific)."
-  default     = "localhost,127.0.0.1,0.0.0.0,bedrock-agentcore.us-east-1.amazonaws.com,cell01.us-east-1.prod.arp.kepler-analytics.aws.dev"
+  description = "Comma-separated Host header allowlist passed to the server as ALLOWED_HOSTS, or \"*\" to disable Host-header validation entirely. Defaults to \"*\" because under AgentCore Runtime the container is reachable only through the authenticated invocation endpoint (the JWT authorizer is the access control there), and the Host header AgentCore actually forwards is an internal, undocumented, cell-specific name (observed: cell01.us-east-1.prod.arp.kepler-analytics.aws.dev) that cannot be pinned in advance. Local runs pass an explicit list (e.g. \"localhost,127.0.0.1,0.0.0.0\") to keep DNS-rebinding protection there."
+  default     = "*"
 }
