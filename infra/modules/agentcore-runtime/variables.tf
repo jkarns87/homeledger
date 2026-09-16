@@ -76,3 +76,9 @@ variable "network_mode" {
     error_message = "network_mode must be PUBLIC or VPC."
   }
 }
+
+variable "knowledge_base_arn" {
+  type        = string
+  description = "ARN of the Bedrock Knowledge Base the runtime may call bedrock:Retrieve on. Empty string grants no retrieval access."
+  default     = ""
+}

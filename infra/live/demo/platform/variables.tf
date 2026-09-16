@@ -64,3 +64,20 @@ variable "dev_tools_enabled" {
   description = "Whether the deployed runtime registers developer-only MCP tools (currently echo_confirm) via HOMELEDGER_DEV_TOOLS. Defaults to true for the demo: echo_confirm is the concrete proof that the elicitation round trip works end to end through AgentCore, and the demo deliberately ships it enabled rather than hidden."
   default     = true
 }
+
+variable "availability_delay_ms" {
+  type        = number
+  description = "Total budget for book_service's simulated availability check, in milliseconds. Must stay well inside the 3 s per-tool response budget."
+  default     = 600
+
+  validation {
+    condition     = var.availability_delay_ms >= 0 && var.availability_delay_ms <= 2000
+    error_message = "availability_delay_ms must be between 0 and 2000."
+  }
+}
+
+variable "embedding_model_arn" {
+  type        = string
+  description = "Override for the knowledge base embedding model ARN. Empty uses Titan Text Embeddings v2 in the deployment region."
+  default     = ""
+}

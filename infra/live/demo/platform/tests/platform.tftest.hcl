@@ -1,3 +1,5 @@
+mock_provider "random" {}
+
 mock_provider "aws" {
   override_data {
     target = module.agentcore_runtime.data.aws_iam_policy_document.trust
@@ -20,10 +22,45 @@ mock_provider "aws" {
     }
   }
 
+  override_data {
+    target = module.knowledge_base.data.aws_iam_policy_document.kb_trust
+    values = {
+      json = jsonencode({ Version = "2012-10-17", Statement = [] })
+    }
+  }
+
+  override_data {
+    target = module.knowledge_base.data.aws_iam_policy_document.kb
+    values = {
+      json = jsonencode({ Version = "2012-10-17", Statement = [] })
+    }
+  }
+
   override_resource {
     target = module.agentcore_runtime.aws_iam_role.this
     values = {
       arn = "arn:aws:iam::123456789012:role/demo-homeledger-agentcore-runtime"
+    }
+  }
+
+  override_resource {
+    target = module.knowledge_base.aws_iam_role.kb
+    values = {
+      arn = "arn:aws:iam::123456789012:role/demo-homeledger-knowledge-base"
+    }
+  }
+
+  override_resource {
+    target = module.knowledge_base.aws_s3vectors_index.manuals
+    values = {
+      index_arn = "arn:aws:s3vectors:us-east-1:123456789012:bucket/demo-homeledger-vectors/index/manuals"
+    }
+  }
+
+  override_resource {
+    target = module.knowledge_base.aws_s3_bucket.manuals
+    values = {
+      arn = "arn:aws:s3:::demo-homeledger-manuals-123456789012"
     }
   }
 }
@@ -131,4 +168,39 @@ run "dev_tools_disabled_sets_env_var_to_zero" {
     condition     = module.agentcore_runtime.environment_variables["HOMELEDGER_DEV_TOOLS"] == "0"
     error_message = "HOMELEDGER_DEV_TOOLS must be \"0\" when dev_tools_enabled is false"
   }
+}
+
+run "knowledge_base_is_wired_into_the_runtime" {
+  # apply: knowledge_base_id and the secret arn are provider-computed and
+  # unknown at plan time for resources being created.
+  command = apply
+
+  variables {
+    image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/homeledger-mcp:abc1234"
+  }
+
+  assert {
+    condition     = output.knowledge_base_id != null && output.knowledge_base_id != ""
+    error_message = "knowledge_base_id must be set"
+  }
+
+  assert {
+    condition     = output.manuals_prefix == "manuals/hh_harlow/"
+    error_message = "the manuals prefix must be scoped to the household"
+  }
+
+  assert {
+    condition     = output.manuals_bucket != null && output.manuals_bucket != ""
+    error_message = "manuals_bucket must be set"
+  }
+}
+
+run "rejects_an_out_of_range_availability_delay" {
+  command = plan
+
+  variables {
+    availability_delay_ms = 5000
+  }
+
+  expect_failures = [var.availability_delay_ms]
 }

@@ -83,3 +83,17 @@ run "rejects_out_of_range_idle_timeout" {
 
   expect_failures = [var.idle_session_timeout_seconds]
 }
+
+run "accepts_a_knowledge_base_arn" {
+  command = plan
+
+  variables {
+    image_uri          = "123456789012.dkr.ecr.us-east-1.amazonaws.com/homeledger-mcp:abc1234"
+    knowledge_base_arn = "arn:aws:bedrock:us-east-1:123456789012:knowledge-base/KB1234567"
+  }
+
+  assert {
+    condition     = var.knowledge_base_arn != "" && length(aws_bedrockagentcore_agent_runtime.this) == 1
+    error_message = "the runtime must still be created when a knowledge base arn is supplied"
+  }
+}
