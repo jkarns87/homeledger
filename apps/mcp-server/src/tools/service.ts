@@ -179,4 +179,63 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       };
     }
   );
+
+  server.registerTool(
+    'get_visit',
+    {
+      title: 'Get a service visit',
+      description:
+        'Details for one scheduled or past service visit: who is coming, for which appliance, in which window, and whether they have arrived. Includes a doorbell snapshot and a one-line description once the visit has been matched to a door event.',
+      inputSchema: z.object({ visitId: z.string() }),
+      outputSchema: z.object({
+        visit: z.object({
+          id: z.string(),
+          providerName: z.string(),
+          applianceId: z.string(),
+          applianceName: z.string(),
+          issue: z.string(),
+          windowStart: z.string(),
+          windowEnd: z.string(),
+          status: VisitStatus,
+          arrivedAt: z.string().nullable()
+        }),
+        snapshotUrl: z.string().nullable(),
+        description: z.string().nullable()
+      }),
+      annotations: { readOnlyHint: true }
+    },
+    async ({ visitId }) => {
+      const visit = await deps.repo.getVisit(visitId);
+      if (!visit) return { content: [{ type: 'text', text: "I couldn't find that visit." }], isError: true };
+      const appliance = await deps.repo.getAppliance(visit.applianceId);
+      const applianceName = appliance?.name ?? 'appliance';
+      const applianceWords = applianceName.toLowerCase();
+      const day = speakWeekdayDate(visit.windowStart.slice(0, 10));
+      const spoken =
+        visit.status === 'scheduled'
+          ? `${visit.providerName} is scheduled for the ${applianceWords} on ${day}, 1 to 3 PM.`
+          : `${visit.providerName} ${visit.status} for the ${applianceWords} on ${day}.`;
+      return {
+        content: [{ type: 'text', text: spoken }],
+        structuredContent: {
+          visit: {
+            id: visit.id,
+            providerName: visit.providerName,
+            applianceId: visit.applianceId,
+            applianceName,
+            issue: visit.issue,
+            windowStart: visit.windowStart,
+            windowEnd: visit.windowEnd,
+            status: visit.status,
+            arrivedAt: visit.arrivedAt
+          },
+          // Both filled in by the Ring plan: snapshotUrl from a short-TTL
+          // presign of visit.snapshotKey, description from the Nova vision
+          // sentence. Always present, always null until then.
+          snapshotUrl: null,
+          description: visit.description
+        }
+      };
+    }
+  );
 }

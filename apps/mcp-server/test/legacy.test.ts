@@ -38,6 +38,7 @@ describe('legacy (2025-era) client', () => {
       'recent_events',
       'ask_manual',
       'book_service',
+      'get_visit',
       'echo_confirm'
     ]);
     const r = await client.callTool({ name: 'list_appliances', arguments: { room: 'Basement' } });
