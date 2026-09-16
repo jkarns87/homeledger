@@ -5,6 +5,7 @@ import { booleanField, elicitOutcome, enumField } from '../elicit.js';
 import { runAvailabilityCheck } from '../progress.js';
 import type { ServerDeps } from '../server.js';
 import { speakWeekdayDate } from '../voice.js';
+import { WIDGET_URIS, uiMeta } from '../widgets/index.js';
 
 /** Cross-round booking state, carried in the signed requestState. */
 export interface BookingState {
@@ -62,7 +63,8 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
         windowStart: z.string(),
         windowEnd: z.string(),
         status: VisitStatus
-      })
+      }),
+      _meta: uiMeta(WIDGET_URIS.visit)
     },
     async ({ applianceId, issue }, ctx: ServerContext) => {
       const appliance = await deps.repo.getAppliance(applianceId);
@@ -202,7 +204,8 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
         snapshotUrl: z.string().nullable(),
         description: z.string().nullable()
       }),
-      annotations: { readOnlyHint: true }
+      annotations: { readOnlyHint: true },
+      _meta: uiMeta(WIDGET_URIS.visit)
     },
     async ({ visitId }) => {
       const visit = await deps.repo.getVisit(visitId);

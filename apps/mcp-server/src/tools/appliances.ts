@@ -3,6 +3,7 @@ import * as z from 'zod/v4';
 import { ApplianceCategory, TaskType, isOverdue } from '@homeledger/core';
 import type { ServerDeps } from '../server.js';
 import { speakDate, speakList, taskWords } from '../voice.js';
+import { WIDGET_URIS, uiMeta } from '../widgets/index.js';
 
 const WarrantyStatus = z.enum(['active', 'expired', 'unknown']);
 
@@ -29,7 +30,8 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
       description: 'List the household appliances, optionally filtered by room or category. Use this to find an appliance id before calling other tools.',
       inputSchema: z.object({ room: z.string().optional(), category: ApplianceCategory.optional() }),
       outputSchema: z.object({ appliances: z.array(ApplianceSummary) }),
-      annotations: { readOnlyHint: true }
+      annotations: { readOnlyHint: true },
+      _meta: uiMeta(WIDGET_URIS.appliances)
     },
     async ({ room, category }) => {
       const today = deps.now().slice(0, 10);
@@ -70,7 +72,8 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
           z.object({ taskType: TaskType, intervalDays: z.number(), lastDoneAt: z.string().nullable(), nextDueAt: z.string(), overdue: z.boolean() })
         )
       }),
-      annotations: { readOnlyHint: true }
+      annotations: { readOnlyHint: true },
+      _meta: uiMeta(WIDGET_URIS.appliance)
     },
     async ({ applianceId }) => {
       const today = deps.now().slice(0, 10);

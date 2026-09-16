@@ -1,6 +1,8 @@
 import type { McpServer } from '@modelcontextprotocol/server';
+import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
 import { isOverdue } from '@homeledger/core';
 import type { ServerDeps } from './server.js';
+import { WIDGETS } from './widgets/index.js';
 
 const json = (uri: string, value: unknown) => ({ contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(value, null, 2) }] });
 
@@ -32,4 +34,10 @@ export function registerResources(server: McpServer, deps: ServerDeps): void {
       return json(uri.href, items);
     }
   );
+
+  for (const widget of WIDGETS) {
+    server.registerResource(widget.name, widget.uri, { title: widget.title, description: widget.description, mimeType: RESOURCE_MIME_TYPE }, async uri => ({
+      contents: [{ uri: uri.href, mimeType: RESOURCE_MIME_TYPE, text: widget.html }]
+    }));
+  }
 }
