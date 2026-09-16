@@ -30,6 +30,10 @@ describe('buildSmokePdf', () => {
     }
   });
 
+  // Pinned to a literal, not just "is a non-empty string": this constant is
+  // a cross-task anchor a later task's deployed smoke test can match
+  // ask_manual results against to confirm they came from this fixture
+  // document specifically, so its exact text is load-bearing, not filler.
   it('SMOKE_MANUAL_TITLE names the seeded document', () => {
     expect(SMOKE_MANUAL_TITLE).toBe('HomeLedger smoke test manual');
   });

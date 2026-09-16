@@ -44,9 +44,14 @@ export interface ManualMetadataSidecar {
  * `APPLIANCE_ID_METADATA_KEY` is imported from `@homeledger/core` rather
  * than retyped here because it is the exact key
  * `createKnowledgeBaseRetriever`'s equals-filter matches on (see
- * `packages/core/src/retrieval/bedrock.ts`) — importing the constant means
- * a rename on either side breaks a test instead of silently drifting apart
- * in production.
+ * `packages/core/src/retrieval/bedrock.ts`). Importing the shared symbol
+ * means the two call sites cannot silently diverge from each other, and it
+ * means a literal typed here instead of the import (e.g. 'appliance_id')
+ * fails `scripts/test/manuals.test.ts`'s contract test. It does NOT by
+ * itself catch a rename of the constant's value, since both sides would
+ * move together — that is caught instead by the literal assertion in
+ * `packages/core/test/bedrock-retriever.test.ts`, which the scripts
+ * contract test also pins independently (see its own comment).
  *
  * `title` is a plain author-supplied attribute, not one of the reserved
  * `x-amz-bedrock-kb-*` keys the service populates automatically (see
@@ -96,6 +101,15 @@ export async function uploadManual(options: UploadManualOptions): Promise<{ docI
   const agent: IngestionSender = options.agent ?? new BedrockAgentClient({ region: options.region });
   const repo = options.repo ?? createDynamoRepository({ tableName: options.tableName, householdId: options.householdId, region: options.region });
 
+  // Validated before any write, not after: a typo'd --appliance is the
+  // likeliest operator error, and derivedId's retry-idempotency cannot heal
+  // it — nobody re-runs the command with the same typo — so it must never
+  // leave S3 objects or a DOC# row behind for an appliance that doesn't
+  // exist.
+  const appliance = await repo.getAppliance(options.applianceId);
+  if (!appliance) throw new Error(`appliance ${options.applianceId} not found in ${options.tableName}`);
+  if (appliance.manualDocId) console.log(`replacing existing manual ${appliance.manualDocId} for appliance ${options.applianceId}`);
+
   const metadata = buildManualMetadata(options.applianceId, options.title);
 
   await s3.send(new PutObjectCommand({ Bucket: options.bucket, Key: s3Key, Body: options.pdf, ContentType: 'application/pdf' }));
@@ -118,8 +132,6 @@ export async function uploadManual(options: UploadManualOptions): Promise<{ docI
     kbSync: { status: 'pending', at: null }
   });
 
-  const appliance = await repo.getAppliance(options.applianceId);
-  if (!appliance) throw new Error(`appliance ${options.applianceId} not found in ${options.tableName}`);
   await repo.putAppliance({ ...appliance, manualDocId: docId });
 
   const started = await agent.send(
@@ -180,11 +192,13 @@ if (isEntrypoint) {
     throw new Error('usage: manuals.ts --appliance <appl_id> --title "<title>" --file <path.pdf> [--pages <n>]');
   }
   const pagesFlag = flag('pages');
+  const pages = pagesFlag ? Number.parseInt(pagesFlag, 10) : null;
+  if (pages !== null && !Number.isInteger(pages)) throw new Error(`--pages must be an integer, got "${pagesFlag}"`);
   const result = await uploadManual({
     applianceId,
     title,
     pdf: await readFile(file),
-    pages: pagesFlag ? Number.parseInt(pagesFlag, 10) : null,
+    pages,
     region: need('AWS_REGION'),
     householdId: need('HOUSEHOLD_ID'),
     tableName: need('TABLE_NAME'),

@@ -80,11 +80,26 @@ function baseOptions() {
 }
 
 describe('buildManualMetadata — cross-task contract with the Bedrock retriever (Task 9)', () => {
-  // THE load-bearing test: createKnowledgeBaseRetriever (packages/core/src/retrieval/bedrock.ts)
+  // createKnowledgeBaseRetriever (packages/core/src/retrieval/bedrock.ts)
   // filters with `{ filter: { equals: { key: APPLIANCE_ID_METADATA_KEY, value: applianceId } } }`.
-  // Importing the constant here, rather than retyping 'applianceId', means a
-  // rename on either side of the contract breaks this test instead of
-  // silently shipping a retriever that returns unfiltered results.
+  // buildManualMetadata imports and writes the SAME symbol, so the two call
+  // sites cannot silently diverge, and a producer-side literal typed here
+  // instead of the import (e.g. 'appliance_id') fails the next test.
+  //
+  // What this describe block does NOT by itself catch is a rename of the
+  // constant's *value*: both sides read one symbol, so they move together
+  // and a rename alone leaves every test in this file green. The value is
+  // independently anchored by the literal assertion in
+  // packages/core/test/bedrock-retriever.test.ts ("adds an equals filter on
+  // applianceId when one is supplied"), which asserts the bare string
+  // 'applianceId' against the retriever's real filter build — that is the
+  // test that actually catches a rename. Do not delete that literal
+  // assertion on the theory that this describe block already covers it.
+  // The test below closes part of that gap by pinning the value here too.
+  it("pins the constant's literal value, so a rename is caught on this side as well", () => {
+    expect(APPLIANCE_ID_METADATA_KEY).toBe('applianceId');
+  });
+
   it('writes the exact metadata attribute name the retriever filters on', () => {
     const sidecar = buildManualMetadata(appliance.id, 'LG WM4000HWA washer owner manual');
     expect(sidecar.metadataAttributes[APPLIANCE_ID_METADATA_KEY]).toBe(appliance.id);
@@ -111,6 +126,10 @@ describe('uploadManual', () => {
     // manuals namespaced apart from another's in the shared bucket.
     expect(result.s3Key).toBe(`manuals/hh_test/${result.docId}.pdf`);
     expect(s3.calls).toHaveLength(2);
+    // Consistency check only, not a shape guard (the line above already
+    // pins the shape independently): confirms the PDF was actually
+    // uploaded under the same key uploadManual reports back, not a
+    // different one computed some other way internally.
     expect(s3.calls[0]?.input.Key).toBe(result.s3Key);
     expect(s3.calls[0]?.input.ContentType).toBe('application/pdf');
     expect(s3.calls[1]?.input.Key).toBe(`${result.s3Key}.metadata.json`);
@@ -150,15 +169,22 @@ describe('uploadManual', () => {
     expect(doc?.kbSync.status).toBe('failed');
   });
 
-  it('throws before starting ingestion when the appliance does not exist in the table', async () => {
+  it('throws before any write when the appliance does not exist, leaving no S3 objects and no orphaned DOC# row', async () => {
+    // A typo'd --appliance is the likeliest operator mistake, and
+    // derivedId's retry-idempotency cannot heal it: nobody re-runs the
+    // command with the same typo, so whatever this leaves behind is
+    // permanent. Asserts the full "no residue" property, not just that the
+    // promise rejects.
     const repo = createMemoryRepository('hh_test'); // no appliance seeded
+    const s3 = fakeS3();
     const agent = fakeAgent(['COMPLETE']);
+    const missingApplianceId = 'appl_missingmissingmi';
 
-    await expect(uploadManual({ ...baseOptions(), applianceId: 'appl_missingmissingmi', s3: fakeS3().sender, agent: agent.sender, repo })).rejects.toThrow(
-      /not found/
-    );
+    await expect(uploadManual({ ...baseOptions(), applianceId: missingApplianceId, s3: s3.sender, agent: agent.sender, repo })).rejects.toThrow(/not found/);
 
+    expect(s3.calls).toHaveLength(0);
     expect(agent.startCalls()).toBe(0);
+    expect(await repo.getDoc(derivedId('doc', missingApplianceId))).toBeNull();
   });
 
   it('throws instead of polling forever when the job never reaches a terminal status inside the timeout budget', async () => {
