@@ -63,6 +63,26 @@ mock_provider "aws" {
       arn = "arn:aws:s3:::demo-homeledger-manuals-123456789012"
     }
   }
+
+  override_resource {
+    target = module.knowledge_base.aws_bedrockagent_knowledge_base.manuals
+    values = {
+      id = "KB1234567890"
+    }
+  }
+
+  # module.knowledge_base has its own data.aws_caller_identity.current
+  # instance (distinct from the root's, overridden above), which the
+  # manuals bucket name is built from. Overriding it to the same account id
+  # makes that bucket name an exact, configuration-determined string rather
+  # than a mock-fabricated one, so knowledge_base_is_wired_into_the_runtime
+  # can assert on it precisely instead of only on non-emptiness.
+  override_data {
+    target = module.knowledge_base.data.aws_caller_identity.current
+    values = {
+      account_id = "123456789012"
+    }
+  }
 }
 
 run "table_has_both_gsis_with_all_projection" {
@@ -179,9 +199,12 @@ run "knowledge_base_is_wired_into_the_runtime" {
     image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/homeledger-mcp:abc1234"
   }
 
+  # The knowledge base's id is fixed by override_resource above, so this
+  # asserts the output is wired to THAT resource's id specifically, not
+  # merely that some mock-fabricated string made it through non-empty.
   assert {
-    condition     = output.knowledge_base_id != null && output.knowledge_base_id != ""
-    error_message = "knowledge_base_id must be set"
+    condition     = output.knowledge_base_id == "KB1234567890"
+    error_message = "knowledge_base_id must echo the knowledge base resource's id"
   }
 
   assert {
@@ -189,9 +212,13 @@ run "knowledge_base_is_wired_into_the_runtime" {
     error_message = "the manuals prefix must be scoped to the household"
   }
 
+  # manuals_bucket is built entirely from configuration
+  # (name_prefix-manuals-account_id); with module.knowledge_base's own
+  # aws_caller_identity data source pinned above, the exact string is
+  # knowable, so assert it rather than only its non-emptiness.
   assert {
-    condition     = output.manuals_bucket != null && output.manuals_bucket != ""
-    error_message = "manuals_bucket must be set"
+    condition     = output.manuals_bucket == "demo-homeledger-manuals-123456789012"
+    error_message = "manuals_bucket must follow the name_prefix-manuals-account_id convention"
   }
 }
 
