@@ -65,6 +65,11 @@ describe('knowledge base retriever', () => {
     clock += CACHE_TTL_MS + 1;
     await retriever.retrieve({ question: 'What does F21 mean?' });
     expect(calls.length).toBe(2);
+    // The refetch's entry takes the stale one's place rather than sitting
+    // alongside it: a further call inside the new TTL window is served from
+    // cache again, not refetched a third time.
+    await retriever.retrieve({ question: 'What does F21 mean?' });
+    expect(calls.length).toBe(2);
   });
 
   it('caches per appliance filter, not just per question', async () => {

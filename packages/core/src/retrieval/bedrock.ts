@@ -59,7 +59,10 @@ export function createKnowledgeBaseRetriever(options: KnowledgeBaseRetrieverOpti
       const limit = clampPassages(request.maxPassages);
       const key = cacheKey(request.question, request.applianceId, limit);
       const hit = cache.get(key);
-      if (hit && hit.expiresAt > now()) return hit.passages;
+      if (hit) {
+        if (hit.expiresAt > now()) return hit.passages;
+        cache.delete(key);
+      }
 
       const command = new RetrieveCommand({
         knowledgeBaseId: options.knowledgeBaseId,
