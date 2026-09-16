@@ -16,6 +16,19 @@ export const CACHE_TTL_MS = 600_000;
 export const PAGE_METADATA_KEY = 'x-amz-bedrock-kb-document-page-number';
 export const SOURCE_URI_METADATA_KEY = 'x-amz-bedrock-kb-source-uri';
 
+/**
+ * The author-written metadata attribute name the applianceId equals-filter
+ * below matches on. This is NOT one of the `x-amz-bedrock-kb-*` reserved
+ * keys above (which the service itself populates and which the S3 data
+ * source connector rejects author metadata for, per
+ * https://docs.aws.amazon.com/bedrock/latest/userguide/kb-test-config.html#kb-test-config-filters:
+ * "metadata fields prefixed with x-amz-bedrock are reserved by the
+ * service... You cannot override reserved metadata fields"). The manuals
+ * ingestion script (`@homeledger/scripts`) must write this exact key into
+ * every document's `.metadata.json` sidecar for this filter to match.
+ */
+export const APPLIANCE_ID_METADATA_KEY = 'applianceId';
+
 export interface KnowledgeBaseRetrieverOptions {
   knowledgeBaseId: string;
   client?: RetrieveSender;
@@ -70,7 +83,7 @@ export function createKnowledgeBaseRetriever(options: KnowledgeBaseRetrieverOpti
         retrievalConfiguration: {
           vectorSearchConfiguration: {
             numberOfResults: limit,
-            ...(request.applianceId ? { filter: { equals: { key: 'applianceId', value: request.applianceId } } } : {})
+            ...(request.applianceId ? { filter: { equals: { key: APPLIANCE_ID_METADATA_KEY, value: request.applianceId } } } : {})
           }
         }
       });
