@@ -12,6 +12,21 @@ async function waterHeaterId(client: Awaited<ReturnType<typeof modernElicitClien
   return (list.structuredContent as { appliances: Array<{ id: string }> }).appliances[0]!.id;
 }
 
+type ManualResult =
+  | { resultType: 'input_required'; inputRequests: Record<string, unknown>; requestState?: string }
+  | { content: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
+
+/**
+ * Drives one round of `tools/call` without the SDK's auto-fulfilling MRTR
+ * driver, so a test can inspect (and, for the idempotency test, replay) the
+ * raw `input_required` result of an individual round — `client.callTool()`
+ * always runs the whole flow to completion and never hands back the
+ * intermediate `requestState`.
+ */
+async function callManual(client: Awaited<ReturnType<typeof modernElicitClient>>['client'], params: Record<string, unknown>): Promise<ManualResult> {
+  return client.request({ method: 'tools/call', params }, { allowInputRequired: true }) as Promise<ManualResult>;
+}
+
 describe('book_service over multi round-trip requests (2026-07-28)', () => {
   it('asks for provider, window, and confirmation, then writes the visit', async () => {
     const h = await modernElicitClient(field => {
@@ -99,5 +114,75 @@ describe('book_service over multi round-trip requests (2026-07-28)', () => {
     expect(r.isError).toBe(true);
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe("I couldn't find that appliance.");
     expect(h.asked).toEqual([]);
+  });
+
+  it('stops without writing anything when the user declines at the window step', async () => {
+    const h = await modernElicitClient(field => {
+      if (field === 'provider') return { action: 'accept', content: { provider: 'prov_kettle_water' } };
+      return { action: 'decline' };
+    });
+    close = h.close;
+    const applianceId = await waterHeaterId(h.client);
+    const r = await h.client.callTool({ name: 'book_service', arguments: { applianceId, issue: 'no hot water' } });
+    expect(r.isError).toBe(true);
+    expect((r.content as Array<{ text?: string }>)[0]?.text).toBe("Okay, I haven't booked anything.");
+    expect(h.asked.map(a => a.field)).toEqual(['provider', 'window']);
+    expect(await h.deps.repo.listVisitsSince('2026-01-01T00:00:00.000Z')).toEqual([]);
+  });
+
+  it('is idempotent: replaying the confirm round overwrites the same visit instead of duplicating it', async () => {
+    // Drives the flow manually (bypassing the SDK's auto-fulfilling driver)
+    // so the round-3 requestState token can be captured and resubmitted —
+    // an ordinary network retry of the confirm round, not just a hostile
+    // replay. answer() is never invoked since callManual() drives directly.
+    const h = await modernElicitClient(() => ({ action: 'decline' }));
+    close = h.close;
+    const applianceId = await waterHeaterId(h.client);
+    const args = { applianceId, issue: 'no hot water' };
+
+    const r1 = await callManual(h.client, { name: 'book_service', arguments: args });
+    if (r1.resultType !== 'input_required') throw new Error('expected input_required for the provider round');
+    const providerKey = Object.keys(r1.inputRequests)[0]!;
+
+    const r2 = await callManual(h.client, {
+      name: 'book_service',
+      arguments: args,
+      inputResponses: { [providerKey]: { action: 'accept', content: { provider: 'prov_kettle_water' } } },
+      requestState: r1.requestState
+    });
+    if (r2.resultType !== 'input_required') throw new Error('expected input_required for the window round');
+    const windowKey = Object.keys(r2.inputRequests)[0]!;
+
+    const r3 = await callManual(h.client, {
+      name: 'book_service',
+      arguments: args,
+      inputResponses: { [windowKey]: { action: 'accept', content: { window: 'win_1' } } },
+      requestState: r2.requestState
+    });
+    if (r3.resultType !== 'input_required') throw new Error('expected input_required for the confirm round');
+    const confirmKey = Object.keys(r3.inputRequests)[0]!;
+
+    const confirmParams = {
+      name: 'book_service',
+      arguments: args,
+      inputResponses: { [confirmKey]: { action: 'accept', content: { confirm: true } } },
+      requestState: r3.requestState
+    };
+
+    const first = await callManual(h.client, confirmParams);
+    const replay = await callManual(h.client, confirmParams); // same requestState + inputResponses, resubmitted verbatim
+
+    if (first.resultType === 'input_required' || replay.resultType === 'input_required') {
+      throw new Error('expected both confirm submissions to complete the booking');
+    }
+    expect(first.isError).toBeFalsy();
+    expect(replay.isError).toBeFalsy();
+    const firstVisitId = (first.structuredContent as { visitId: string }).visitId;
+    const replayVisitId = (replay.structuredContent as { visitId: string }).visitId;
+    expect(replayVisitId).toBe(firstVisitId);
+
+    const visits = await h.deps.repo.listVisitsSince('2026-01-01T00:00:00.000Z');
+    expect(visits).toHaveLength(1);
+    expect(visits[0]?.id).toBe(firstVisitId);
   });
 });

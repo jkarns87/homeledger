@@ -1,6 +1,6 @@
 import { acceptedContent, inputRequired, type McpServer, type RequestStateCodec, type ServerContext } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { VisitStatus, newId, providersForCategory } from '@homeledger/core';
+import { VisitStatus, derivedId, providersForCategory } from '@homeledger/core';
 import { booleanField, elicitOutcome, enumField } from '../elicit.js';
 import type { ServerDeps } from '../server.js';
 import { speakWeekdayDate } from '../voice.js';
@@ -147,7 +147,14 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       }
       if (!confirmed.confirm) return notBooked();
 
-      const visitId = newId('visit');
+      // Deterministic, not random: a client retry of this exact confirm round
+      // (an ordinary network retry, not just a hostile replay) must produce
+      // the SAME visit id so the write overwrites the prior attempt's row
+      // (Repository.putVisit is replace-by-id) instead of double-booking.
+      // Household id is included so this stays correct if multi-household
+      // ever lands, even though there is only one household today.
+      const household = await deps.repo.getHousehold();
+      const visitId = derivedId('visit', `${household?.id ?? ''}\u0000${applianceId}\u0000${provider.id}\u0000${window.start}`);
       await deps.repo.putVisit({
         id: visitId,
         providerId: provider.id,
