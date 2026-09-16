@@ -11,3 +11,4 @@ export { ensureTable } from './repo/table.js';
 export { SEED_APPLIANCES, SEED_APPLIANCE_COUNT, seedRepository } from './seed/household.js';
 export * from './retrieval/retriever.js';
 export * from './retrieval/fixture.js';
+export * from './retrieval/bedrock.js';

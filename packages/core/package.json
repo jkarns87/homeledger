@@ -19,6 +19,7 @@
     "seed:local": "DYNAMO_ENDPOINT=http://127.0.0.1:8000 AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local AWS_REGION=us-east-1 tsx scripts/seed-local.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-agent-runtime": "^3.900.0",
     "@aws-sdk/client-dynamodb": "^3.900.0",
     "@aws-sdk/lib-dynamodb": "^3.900.0",
     "zod": "^4.2.0"

@@ -3,6 +3,7 @@ import {
   SAMPLE_MANUAL_PASSAGES,
   createDynamoRepository,
   createFixtureRetriever,
+  createKnowledgeBaseRetriever,
   createMemoryRepository,
   seedRepository,
   type ManualRetriever
@@ -37,7 +38,7 @@ function resolveRetriever(env: NodeJS.ProcessEnv): ManualRetriever {
     return createFixtureRetriever(SAMPLE_MANUAL_PASSAGES);
   }
   console.log(JSON.stringify({ msg: 'retriever', kind: 'knowledge-base', knowledgeBaseId }));
-  throw new Error('KNOWLEDGE_BASE_ID is set but the Knowledge Base retriever is not wired yet');
+  return createKnowledgeBaseRetriever({ knowledgeBaseId, region: env.AWS_REGION });
 }
 
 export async function depsFromEnv(env: NodeJS.ProcessEnv): Promise<ServerDeps> {
