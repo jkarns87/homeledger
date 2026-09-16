@@ -3,6 +3,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { Client as LegacyClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport as LegacyTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { SEED_APPLIANCE_COUNT } from '@homeledger/core';
 
 export const need = (k: string): string => {
   const v = process.env[k];
@@ -64,6 +65,23 @@ export function assertWidgetWiring(tools: SmokeTool[]): void {
   for (const [name, uri] of WIDGET_EXPECTATIONS) {
     if (widgetUriOf(tools, name) !== uri) throw new Error(`${name} lost its widget reference`);
   }
+}
+
+/**
+ * FL-023 regression guard, restored per controller ruling: re-seeding
+ * without a reset once added SEED_APPLIANCE_COUNT more appliance rows on
+ * every run instead of overwriting the same ones, and the live table
+ * reached roughly 4x its intended size before anyone noticed. The fix was
+ * fixed seed ids plus Repository.resetHousehold(); this assertion is what
+ * proves that fix still holds. Deliberately an exact match, not a floor
+ * (`< SEED_APPLIANCE_COUNT` alone would miss the actual failure mode, which
+ * is too MANY rows, not too few) - see the mutation check in the task
+ * report/FL-031 for a duplicated-count case this exact-match form catches
+ * and a floor-only form would not.
+ */
+export function assertApplianceCount(count: number): void {
+  if (count !== SEED_APPLIANCE_COUNT)
+    throw new Error(`expected ${SEED_APPLIANCE_COUNT} seeded appliances, got ${count} - table may hold duplicates from before the reset-before-seed fix`);
 }
 
 export async function timedWithBudget<T>(label: string, fn: () => Promise<T>, budgetMs: number, enforce = true): Promise<T> {
@@ -135,6 +153,15 @@ if (isEntrypoint) {
     const { tools } = await timed('modern tools/list', () => client.listTools());
     assertToolOrder(tools.map(t => t.name));
     assertWidgetWiring(tools);
+
+    // Unfiltered, not the legacy block's category-filtered call below: FL-023's
+    // duplication bug inflated the WHOLE household's appliance count, and a
+    // filtered call could stay looking healthy while the underlying table
+    // still held duplicates outside that filter.
+    const list = await timed('modern list_appliances', () => client.callTool({ name: 'list_appliances', arguments: {} }));
+    const applianceCount = (list.structuredContent as { appliances: unknown[] }).appliances.length;
+    console.log(`seeded appliance count: ${applianceCount}`);
+    assertApplianceCount(applianceCount);
 
     const due = await timed('modern maintenance_due', () => client.callTool({ name: 'maintenance_due', arguments: {} }));
     if (!(due.structuredContent as { items: unknown[] }).items.length) throw new Error('no maintenance items; run seed:remote');

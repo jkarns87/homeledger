@@ -1,5 +1,7 @@
+import { SEED_APPLIANCE_COUNT } from '@homeledger/core';
 import { describe, expect, it } from 'vitest';
 import {
+  assertApplianceCount,
   assertToolOrder,
   assertWidgetWiring,
   buildElicitResponse,
@@ -152,6 +154,35 @@ describe('assertWidgetWiring', () => {
   it('throws naming the tool when its uri points at the wrong widget', () => {
     const wrong = FIVE_WIDGET_TOOLS.map(([n, uri]) => (n === 'get_visit' ? toolWithWidget(n, 'ui://homeledger/calendar') : toolWithWidget(n, uri)));
     expect(() => assertWidgetWiring(wrong)).toThrow('get_visit lost its widget reference');
+  });
+});
+
+// FL-023 regression guard, restored per controller ruling: the seed was
+// genuinely non-idempotent on this project (re-seeding without a reset added
+// SEED_APPLIANCE_COUNT more rows every run; the live table reached roughly
+// 4x its intended size before anyone noticed), and this is the assertion
+// that proves the fixed-seed-id + resetHousehold() fix still holds.
+describe('assertApplianceCount', () => {
+  it('does not throw at exactly SEED_APPLIANCE_COUNT', () => {
+    expect(() => assertApplianceCount(SEED_APPLIANCE_COUNT)).not.toThrow();
+  });
+
+  // Models the actual historical failure mode: re-seeding without a reset
+  // did not add an arbitrary wrong number, it added the seed set again,
+  // landing on a whole multiple of SEED_APPLIANCE_COUNT (2x after one
+  // extra re-seed, and the live incident reached roughly 4x). A guard
+  // written as `count < SEED_APPLIANCE_COUNT` (a floor only) would let
+  // every one of these through, since a duplicated count is always >=
+  // the expected count, never below it - this exact-match form is what
+  // actually catches the bug that motivated the guard.
+  it.each([2, 3, 4])('throws when the count is a %ix duplicate of SEED_APPLIANCE_COUNT', multiple => {
+    expect(() => assertApplianceCount(SEED_APPLIANCE_COUNT * multiple)).toThrow(
+      `expected ${SEED_APPLIANCE_COUNT} seeded appliances, got ${SEED_APPLIANCE_COUNT * multiple}`
+    );
+  });
+
+  it('throws when the count is short of SEED_APPLIANCE_COUNT too (not just a floor)', () => {
+    expect(() => assertApplianceCount(SEED_APPLIANCE_COUNT - 1)).toThrow(`expected ${SEED_APPLIANCE_COUNT} seeded appliances, got ${SEED_APPLIANCE_COUNT - 1}`);
   });
 });
 
