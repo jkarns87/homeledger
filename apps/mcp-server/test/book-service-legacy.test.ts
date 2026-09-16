@@ -50,11 +50,14 @@ describe('book_service over a 2025-era session (legacy shim)', () => {
     expect(asked[1]?.options).toEqual(['win_1', 'win_2', 'win_3']);
 
     const sc = r.structuredContent as { visitId: string; provider: string; windowStart: string; status: string };
+    expect(sc.visitId).toMatch(/^visit_/);
     expect(sc.provider).toBe('Kettle Creek Water Heaters');
     expect(sc.windowStart).toBe('2026-09-15T13:00:00.000Z');
     expect(sc.status).toBe('scheduled');
     expect((await deps.repo.getVisit(sc.visitId))?.providerId).toBe('prov_kettle_water');
+    expect(await deps.repo.listVisitsSince('2026-01-01T00:00:00.000Z')).toHaveLength(1);
 
+    await transport.terminateSession();
     await client.close();
   });
 
