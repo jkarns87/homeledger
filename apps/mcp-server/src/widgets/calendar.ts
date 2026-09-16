@@ -5,17 +5,38 @@ const BODY = String.raw`<main><h1>Maintenance due</h1><div id="list" class="empt
 const SCRIPT = String.raw`
 (function () {
   var list = document.getElementById('list');
+  // Buttons currently awaiting a reply to their in-flight tool call below. A
+  // host-cancelled call (ui/notifications/tool-cancelled) never settles that
+  // call's own promise, so without this the button would stay disabled on
+  // "Logging" forever; resetPending() below clears it independently.
+  var pendingButtons = [];
+
+  function settle(button) {
+    var index = pendingButtons.indexOf(button);
+    if (index !== -1) pendingButtons.splice(index, 1);
+  }
+
+  function resetPending() {
+    for (var i = 0; i < pendingButtons.length; i++) {
+      pendingButtons[i].disabled = false;
+      pendingButtons[i].textContent = 'Retry';
+    }
+    pendingButtons = [];
+  }
 
   function markDone(item, button) {
     button.disabled = true;
     button.textContent = 'Logging';
+    pendingButtons.push(button);
     window.homeledger
       .callTool('log_maintenance', { applianceId: item.applianceId, taskType: item.taskType })
       .then(function (result) {
+        settle(button);
         var data = (result && result.structuredContent) || {};
         button.textContent = data.nextDueAt ? 'Next ' + data.nextDueAt : 'Logged';
       })
       .catch(function (error) {
+        settle(button);
         button.disabled = false;
         button.textContent = 'Retry';
         console.error('log_maintenance failed', error);
@@ -23,6 +44,9 @@ const SCRIPT = String.raw`
   }
 
   function render(result) {
+    // A fresh render replaces the list, so any buttons still tracked from a
+    // previous render no longer exist in the DOM.
+    pendingButtons = [];
     var data = (result && result.structuredContent) || {};
     var items = data.items || [];
     if (items.length === 0) {
@@ -62,6 +86,7 @@ const SCRIPT = String.raw`
   }
 
   window.homeledger.on('toolresult', render);
+  window.homeledger.on('toolcancelled', resetPending);
   window.homeledger.connect('homeledger-calendar');
 })();
 `;

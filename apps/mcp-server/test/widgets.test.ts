@@ -1,3 +1,4 @@
+import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/ext-apps';
 import { RESOURCE_MIME_TYPE, RESOURCE_URI_META_KEY } from '@modelcontextprotocol/ext-apps/server';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WIDGETS, WIDGET_URIS } from '../src/widgets/index.js';
@@ -49,12 +50,30 @@ describe('widget resources', () => {
       expect(contents.mimeType).toBe(RESOURCE_MIME_TYPE);
       const html = contents.text;
       expect(html.startsWith('<!doctype html>')).toBe(true);
-      expect(html).toContain('ui/initialize');
-      expect(html).toContain('ui/notifications/tool-result');
+      // Delimited call/conditional forms, not bare method-name substrings:
+      // `toContain('ui/initialize')` alone survives a rename to
+      // 'ui/initialize-v2', since the mutated string still contains the
+      // original as a prefix. Each of these pins the exact shape the bridge
+      // uses the method name in, so a rename of any one breaks the match.
+      expect(html).toContain("request('ui/initialize', {");
+      expect(html).toContain(`protocolVersion: '${LATEST_PROTOCOL_VERSION}'`);
+      expect(html).toContain("method: 'ui/notifications/initialized'");
+      expect(html).toContain("message.method === 'ui/notifications/tool-result')");
+      expect(html).toContain("message.method === 'ui/notifications/host-context-changed')");
+      expect(html).toContain("method: 'ui/notifications/size-changed'");
+      expect(html).toContain("request('tools/call', {");
+      expect(html).toContain("message.method === 'ui/notifications/tool-cancelled')");
+      // Every message is rejected unless it comes from window.parent - the
+      // package's own transport treats this as required, since the bridge
+      // otherwise trusts any frame holding a handle to the widget window.
+      expect(html).toContain('if (event.source !== window.parent) return;');
       expect(html).toContain('prefers-color-scheme: dark');
       expect(html).toContain('768px');
-      // No external assets: nothing may be fetched over the network.
-      expect(/(?:src|href)\s*=\s*["']https?:/i.test(html)).toBe(false);
+      // No external assets: nothing may be fetched over the network. Scheme
+      // is optional so protocol-relative URLs ("//cdn.example.com/x.js") are
+      // caught too, not just explicit http(s):.
+      expect(/(?:src|href)\s*=\s*["'](?:https?:)?\/\//i.test(html)).toBe(false);
+      expect(html).not.toMatch(/@import|url\(\s*["']?(?:https?:)?\/\//i);
       expect(html).not.toContain('//fonts.googleapis.com');
     }
   });
@@ -62,10 +81,28 @@ describe('widget resources', () => {
   it('puts a log as done button on the calendar widget only', async () => {
     const h = await modernClient();
     close = h.close;
+    const html = new Map<string, string>();
+    for (const widget of WIDGETS) {
+      const read = await h.client.readResource({ uri: widget.uri });
+      html.set(widget.uri, (read.contents[0] as { text: string }).text);
+    }
+    // Delimited on the actual callTool() invocation, not the bare tool name:
+    // the bare substring also survives inside the unrelated
+    // console.error('log_maintenance failed', ...) error-log string, so a
+    // mutation that renames the callTool() call but leaves the log message
+    // alone would otherwise go undetected.
+    expect(html.get(WIDGET_URIS.calendar)).toContain("callTool('log_maintenance'");
+    expect(html.get(WIDGET_URIS.appliances)).not.toContain("callTool('log_maintenance'");
+    expect(html.get(WIDGET_URIS.appliance)).not.toContain("callTool('log_maintenance'");
+    expect(html.get(WIDGET_URIS.visit)).not.toContain("callTool('log_maintenance'");
+  });
+
+  it('resets a stuck "Logging" button on the calendar widget if the host cancels the call', async () => {
+    const h = await modernClient();
+    close = h.close;
     const calendar = await h.client.readResource({ uri: WIDGET_URIS.calendar });
-    expect((calendar.contents[0] as { text: string }).text).toContain('log_maintenance');
-    const appliances = await h.client.readResource({ uri: WIDGET_URIS.appliances });
-    expect((appliances.contents[0] as { text: string }).text).not.toContain('log_maintenance');
+    const html = (calendar.contents[0] as { text: string }).text;
+    expect(html).toContain("on('toolcancelled', resetPending)");
   });
 });
 

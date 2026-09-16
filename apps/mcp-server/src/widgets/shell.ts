@@ -3,9 +3,11 @@
  * no external assets. Wire protocol taken from @modelcontextprotocol/ext-apps
  * 2.0.0: ui/initialize (request, result carries hostContext), then
  * ui/notifications/initialized, then host-to-view notifications
- * ui/notifications/tool-result, ui/notifications/tool-input and
- * ui/notifications/host-context-changed. Tool calls go to the host as plain
- * MCP tools/call requests over the same postMessage channel.
+ * ui/notifications/tool-result, ui/notifications/tool-input,
+ * ui/notifications/tool-cancelled and ui/notifications/host-context-changed.
+ * Tool calls go to the host as plain MCP tools/call requests over the same
+ * postMessage channel. Incoming messages are rejected unless event.source is
+ * window.parent, matching the package's own PostMessageTransport.
  *
  * Written without template literals on purpose: the widget files embed this
  * with String.raw, so a dollar-brace sequence here would be interpolated.
@@ -14,7 +16,7 @@ export const BRIDGE_SCRIPT = String.raw`
 (function () {
   var pending = {};
   var nextId = 1;
-  var handlers = { toolresult: [], toolinput: [], hostcontext: [] };
+  var handlers = { toolresult: [], toolinput: [], toolcancelled: [], hostcontext: [] };
   var hostContext = {};
 
   function post(message) {
@@ -35,6 +37,11 @@ export const BRIDGE_SCRIPT = String.raw`
   }
 
   window.addEventListener('message', function (event) {
+    // The package's own PostMessageTransport treats eventSource validation as
+    // required (message-transport.d.ts): the host only ever targets this
+    // frame's window.parent, so any other source is not the host and must be
+    // ignored, not merely untrusted-but-processed.
+    if (event.source !== window.parent) return;
     var message = event.data;
     if (!message || message.jsonrpc !== '2.0') return;
     if (message.id !== undefined && pending[message.id]) {
@@ -46,6 +53,7 @@ export const BRIDGE_SCRIPT = String.raw`
     }
     if (message.method === 'ui/notifications/tool-result') return emit('toolresult', message.params || {});
     if (message.method === 'ui/notifications/tool-input') return emit('toolinput', (message.params || {}).arguments || {});
+    if (message.method === 'ui/notifications/tool-cancelled') return emit('toolcancelled', message.params || {});
     if (message.method === 'ui/notifications/host-context-changed') {
       var changed = message.params || {};
       for (var key in changed) hostContext[key] = changed[key];
