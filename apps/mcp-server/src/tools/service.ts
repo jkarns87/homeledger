@@ -2,6 +2,7 @@ import { acceptedContent, inputRequired, type McpServer, type RequestStateCodec,
 import * as z from 'zod/v4';
 import { VisitStatus, derivedId, providersForCategory } from '@homeledger/core';
 import { booleanField, elicitOutcome, enumField } from '../elicit.js';
+import { runAvailabilityCheck } from '../progress.js';
 import type { ServerDeps } from '../server.js';
 import { speakWeekdayDate } from '../voice.js';
 
@@ -109,7 +110,7 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
         const answer = acceptedContent(ctx.mcpReq.inputResponses, 'window', WindowAnswer);
         const chosen = answer ? windows.find(w => w.id === answer.window) : undefined;
         if (!chosen) {
-          await checkAvailability(ctx, deps, provider.name);
+          await runAvailabilityCheck(ctx, deps.availabilityDelayMs, provider.name);
           return inputRequired({
             inputRequests: {
               window: inputRequired.elicit({
@@ -178,9 +179,4 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       };
     }
   );
-}
-
-/** Replaced in Task 7 with a progress-reporting implementation. */
-async function checkAvailability(_ctx: ServerContext, deps: ServerDeps, _providerName: string): Promise<void> {
-  if (deps.availabilityDelayMs > 0) await new Promise(resolve => setTimeout(resolve, deps.availabilityDelayMs));
 }
