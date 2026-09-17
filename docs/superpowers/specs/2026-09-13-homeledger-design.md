@@ -83,7 +83,7 @@ One pnpm monorepo. TypeScript everywhere. Node 22.
 | `maintenance_due` | `horizonDays?` (default 30) | `items[] {applianceId, applianceName, taskType, dueAt, overdue}` | `ui://homeledger/calendar` | GSI query on `nextDueAt` |
 | `log_maintenance` | `applianceId`, `taskType`, `date?`, `notes?` | `{logged, nextDueAt}` | none | Recomputes `MAINT#` item |
 | `book_service` | `applianceId`, `issue`, `preferredWindow?` | `{visitId, provider, windowStart, windowEnd, status}` | `ui://homeledger/visit` | Elicits provider (≤5 enum), window (enum), confirm (boolean). Progress 0→3 during a simulated availability check (bounded delay). Writes `VISIT#` |
-| `recent_events` | `sinceHours?` (default 24) | `events[] {kind, deviceName, at, summary, visitId}` | none | Visits and alerts. Not optional keys: every field is always emitted, with `deviceName` and `visitId` nullable — `visitId` is `null` on door and alert rows, `deviceName` is `null` on visit rows |
+| `recent_events` | `sinceHours?` (default 24) | `events[] {kind, deviceName, at, summary, visitId}` | none | Merges three sources: visits, door events, and alerts. Not optional keys: every field is always emitted, with `deviceName` and `visitId` nullable — `visitId` is `null` on door and alert rows, `deviceName` is `null` on visit rows |
 | `get_visit` | `visitId` | visit + `snapshotUrl` (presigned, short TTL) + `description`, both nullable but always present | `ui://homeledger/visit` | Not optional keys: both are always emitted, and both are `null` until the Ring pipeline fills them |
 
 Provider options for `book_service` come from a static, clearly labeled sample marketplace in `packages/core` (per category, three to five providers). This is the one simulated data source and the README says so.
