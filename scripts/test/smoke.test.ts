@@ -2,12 +2,14 @@ import { SAMPLE_MANUAL_PASSAGES, SEED_APPLIANCE_COUNT } from '@homeledger/core';
 import { describe, expect, it } from 'vitest';
 import { SMOKE_MANUAL_TITLE } from '../seed-manual.js';
 import {
+  ASK_MANUAL_SKIP_LINE,
   assertApplianceCount,
   assertManualPassages,
   assertSpokenProse,
   assertToolOrder,
   assertWidgetWiring,
   buildElicitResponse,
+  checkManualPassages,
   EXPECTED_TOOLS,
   need,
   timedWithBudget,
@@ -244,6 +246,48 @@ describe('assertManualPassages', () => {
     expect(prefix).not.toBe(SMOKE_MANUAL_TITLE);
     const passages: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: prefix, page: 1 }];
     expect(() => assertManualPassages(passages)).toThrow(/did not return the seeded KB document/);
+  });
+});
+
+// The three states the owner asked for explicitly. The middle one is the
+// whole point: a Knowledge Base IS configured, so fixture-shaped content
+// must still fail hard. The skip exists only for "there is no Knowledge
+// Base at all", never for "the Knowledge Base returned the wrong thing".
+describe('checkManualPassages', () => {
+  const fixtureShaped: ManualPassage[] = SAMPLE_MANUAL_PASSAGES.map(p => ({ text: p.text, docTitle: p.docTitle, page: p.page }));
+  const seeded: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: SMOKE_MANUAL_TITLE, page: 1 }];
+
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['whitespace only', '   ']
+  ])('skips, without throwing, when KNOWLEDGE_BASE_ID is %s', (_label, kbId) => {
+    expect(checkManualPassages(kbId, fixtureShaped)).toBe('skipped');
+    // Also with no passages at all: a runtime with no Knowledge Base can
+    // legitimately return nothing, and the skip must not trip over that.
+    expect(checkManualPassages(kbId, [])).toBe('skipped');
+  });
+
+  it('asserts and passes when a Knowledge Base is configured and the seeded document came back', () => {
+    expect(checkManualPassages('kb-1234567890', seeded)).toBe('asserted');
+  });
+
+  // The false green this whole assertion exists to prevent: Terraform's
+  // output is populated, but the running revision still has the variable
+  // unset and is quietly serving @homeledger/core's SAMPLE_MANUAL_PASSAGES
+  // (which match this smoke's exact question and contain "F21"). Not
+  // skippable, at any KNOWLEDGE_BASE_ID.
+  it('still throws when a Knowledge Base is configured but the content is fixture-shaped', () => {
+    expect(() => checkManualPassages('kb-1234567890', fixtureShaped)).toThrow(/did not return the seeded KB document/);
+  });
+
+  it('still throws when a Knowledge Base is configured but no passages came back at all', () => {
+    expect(() => checkManualPassages('kb-1234567890', [])).toThrow('ask_manual returned no passages');
+  });
+
+  it('names KNOWLEDGE_BASE_ID in the skip line so the log says why nothing was proved', () => {
+    expect(ASK_MANUAL_SKIP_LINE).toContain('SKIPPED');
+    expect(ASK_MANUAL_SKIP_LINE).toContain('KNOWLEDGE_BASE_ID');
   });
 });
 
