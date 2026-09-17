@@ -97,8 +97,11 @@ export interface ManualPassage {
  * server's own createFixtureRetriever fallback (task-13-review.md Finding
  * 1, CRITICAL). apps/mcp-server/src/deps.ts silently returns the fixture
  * retriever whenever KNOWLEDGE_BASE_ID is unset on the runtime revision -
- * including today's actual state (Knowledge Base never applied, FL-019) and
- * the brief's own "apply didn't replace the revision" failure mode - and
+ * including the brief's own "apply didn't replace the revision" failure
+ * mode, and today's actual state, which is NOT what an earlier version of
+ * this comment claimed: the Knowledge Base applied cleanly and exists, but
+ * nothing has ever been ingested into it because the account-wide Bedrock
+ * model block refuses the embedding call (FL-019, FL-032) - and
  * @homeledger/core's SAMPLE_MANUAL_PASSAGES[0] matches this smoke's exact
  * question on four keywords and contains "F21", so a bare substring check
  * on "F21" cannot tell the two apart: it would report SMOKE OK against a
@@ -117,33 +120,77 @@ export function assertManualPassages(passages: readonly ManualPassage[]): void {
     );
 }
 
-export const ASK_MANUAL_SKIP_LINE =
+export const ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE =
   '\n!! ask_manual: SKIPPED - no KNOWLEDGE_BASE_ID configured, so no Knowledge Base is provisioned and this run proves nothing about real retrieval (FRICTION-LOG.md FL-019).\n';
+
+export const ASK_MANUAL_SKIP_INGESTION_BLOCKED =
+  '\n!! ask_manual: SKIPPED - a Knowledge Base IS provisioned, but seed:manual could not ingest into it: Bedrock model invocation is blocked account-wide, so the Knowledge Base role cannot call the embedding model (FRICTION-LOG.md FL-019, FL-032). The Knowledge Base is therefore empty and ask_manual is answering from the fixture retriever. This run proves nothing about real retrieval; every other assertion below still ran.\n';
+
+/**
+ * Reads the workflow's `MANUAL_INGESTION_SKIPPED` signal.
+ *
+ * Fails CLOSED, and that is the whole design of this function: only an
+ * explicit affirmative counts as "ingestion was skipped". Unset, empty,
+ * whitespace, `0`, `false`, and anything unrecognised all mean "enforce".
+ * The alternative - treating any non-empty string as truthy, the reflexive
+ * shell idiom - would turn a stray `MANUAL_INGESTION_SKIPPED=false` or a
+ * copy-paste of the variable name into a permanent, silent disabling of the
+ * one assertion in this file that exists to stop a false green. Making the
+ * skip opt-in by exact value means the failure mode of a mistyped signal is
+ * a red pipeline, not a green one that proves nothing.
+ */
+export function manualIngestionSkipped(raw: string | undefined): boolean {
+  const value = (raw ?? '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+export type ManualCheckOutcome = 'skipped-no-knowledge-base' | 'skipped-ingestion-blocked' | 'asserted';
 
 /**
  * Decides between skipping the Knowledge Base check and enforcing it, and is
- * the ONLY place that decision is made.
+ * the ONLY place that decision is made. There are three states, not two.
  *
- * The signal is `KNOWLEDGE_BASE_ID`, which .github/workflows/smoke.yml
- * already exports from the platform root's `knowledge_base_id` Terraform
- * output. That is the same value Terraform feeds the runtime's
- * `environment_variables` map, and the same variable
- * apps/mcp-server/src/deps.ts reads to choose the Bedrock retriever over the
- * fixture one - so an empty value here means no Knowledge Base exists to
- * retrieve from at all, and there is nothing to prove. Deliberately not a
- * separate opt-out flag: a flag would be one more thing to get wrong, and
- * the first time someone set it "temporarily" the check would be gone.
+ * 1. No `KNOWLEDGE_BASE_ID` -> no Knowledge Base exists to retrieve from.
+ *    The value comes from .github/workflows/smoke.yml, which exports it from
+ *    the platform root's `knowledge_base_id` Terraform output - the same
+ *    value Terraform feeds the runtime's `environment_variables` map and the
+ *    same variable apps/mcp-server/src/deps.ts reads to choose the Bedrock
+ *    retriever over the fixture one. Nothing to prove; skip.
  *
- * What this must NOT do, and does not: soften the check when a Knowledge
- * Base IS configured. A non-empty KNOWLEDGE_BASE_ID with content that does
- * not carry SMOKE_MANUAL_TITLE is precisely the false green
- * assertManualPassages exists to prevent - the "apply didn't replace the
- * revision" case, where Terraform's output is populated but the running
- * revision still has the variable unset and is quietly serving fixtures. It
- * throws, exactly as before.
+ * 2. `KNOWLEDGE_BASE_ID` set, but ingestion was skipped. This state did not
+ *    exist when this function was first written, and its absence is what
+ *    broke smoke run 35238251562: the Knowledge Base module applied cleanly
+ *    (bucket, Knowledge Base, IAM role all real), so the binary
+ *    "is it provisioned" test says yes, while the account-wide Bedrock block
+ *    means no document has ever been embedded into it. Provisioned-but-empty
+ *    is a third state, and treating it as state 3 made one blocked embedding
+ *    call hide the eight tools that do work. Skip, loudly. See FL-032.
+ *
+ * 3. `KNOWLEDGE_BASE_ID` set and ingestion happened -> enforce, no opt-out.
+ *
+ * What separates state 2 from state 3 is NOT anything observable in the
+ * passages: a Knowledge Base that was never ingested into and a Knowledge
+ * Base serving the wrong document both come back as "no passage carries
+ * SMOKE_MANUAL_TITLE", and the runtime falls back to the fixture retriever
+ * in both cases. They are indistinguishable from here by construction, so
+ * the distinction has to be carried in from the seed step that knows: the
+ * workflow sets `MANUAL_INGESTION_SKIPPED` only when seed:manual printed its
+ * skip sentinel, and `manualIngestionSkipped` above accepts only an explicit
+ * affirmative. Inferring it instead - "empty result means nothing was
+ * ingested" - would be precisely the false green this assertion exists to
+ * prevent, because that is also what a runtime quietly serving fixtures
+ * looks like.
+ *
+ * What this must NOT do, and does not: soften state 3. A configured
+ * Knowledge Base that WAS ingested into, returning content that does not
+ * carry SMOKE_MANUAL_TITLE, is the "apply didn't replace the revision" case
+ * - Terraform's output populated, the running revision still unset, fixtures
+ * being served, `SMOKE OK` printed against a system with no real retrieval
+ * at all. It throws, exactly as before.
  */
-export function checkManualPassages(knowledgeBaseId: string | undefined, passages: readonly ManualPassage[]): 'skipped' | 'asserted' {
-  if (!knowledgeBaseId || knowledgeBaseId.trim() === '') return 'skipped';
+export function checkManualPassages(knowledgeBaseId: string | undefined, ingestionSkipped: boolean, passages: readonly ManualPassage[]): ManualCheckOutcome {
+  if (!knowledgeBaseId || knowledgeBaseId.trim() === '') return 'skipped-no-knowledge-base';
+  if (ingestionSkipped) return 'skipped-ingestion-blocked';
   assertManualPassages(passages);
   return 'asserted';
 }
@@ -259,17 +306,22 @@ if (isEntrypoint) {
     if (!(due.structuredContent as { items: unknown[] }).items.length) throw new Error('no maintenance items; run seed:remote');
 
     // Real Knowledge Base retrieval against the document seed:manual ingested,
-    // when one is provisioned. When KNOWLEDGE_BASE_ID is empty the tool is
-    // answering from the fixture retriever by construction; the run says so
-    // loudly and continues rather than failing forever, because a pipeline
-    // that is permanently red on a known, unfixable-from-here blocker is a
-    // pipeline people stop reading. Nothing else is relaxed: the call still
-    // has to succeed, come back in budget, and speak prose.
+    // when one is provisioned AND something was actually ingested into it.
+    // In either skip state the tool is answering from the fixture retriever
+    // by construction; the run says so loudly and continues rather than
+    // failing forever, because a pipeline that is permanently red on a
+    // known, unfixable-from-here blocker is a pipeline people stop reading -
+    // and because failing here aborts the process before the legacy block
+    // below, so one blocked embedding call would take the other eight tools'
+    // coverage down with it. Nothing else is relaxed: the call still has to
+    // succeed, come back in budget, and speak prose, in every state.
     const manual = await timed('modern ask_manual (knowledge base)', () =>
       client.callTool({ name: 'ask_manual', arguments: { question: 'What does error code F21 mean on the washer?' } })
     );
     const passages = (manual.structuredContent as { passages: ManualPassage[] }).passages;
-    if (checkManualPassages(process.env.KNOWLEDGE_BASE_ID, passages) === 'skipped') console.log(ASK_MANUAL_SKIP_LINE);
+    const manualOutcome = checkManualPassages(process.env.KNOWLEDGE_BASE_ID, manualIngestionSkipped(process.env.MANUAL_INGESTION_SKIPPED), passages);
+    if (manualOutcome === 'skipped-no-knowledge-base') console.log(ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE);
+    else if (manualOutcome === 'skipped-ingestion-blocked') console.log(ASK_MANUAL_SKIP_INGESTION_BLOCKED);
     else console.log(`ask_manual: ${passages.length} passage(s), first from ${passages[0]!.docTitle} page ${passages[0]!.page}`);
 
     const manualText = (manual.content as Array<{ text?: string }>)[0]?.text ?? '';

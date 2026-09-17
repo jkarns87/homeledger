@@ -2,7 +2,8 @@ import { SAMPLE_MANUAL_PASSAGES, SEED_APPLIANCE_COUNT } from '@homeledger/core';
 import { describe, expect, it } from 'vitest';
 import { SMOKE_MANUAL_TITLE } from '../seed-manual.js';
 import {
-  ASK_MANUAL_SKIP_LINE,
+  ASK_MANUAL_SKIP_INGESTION_BLOCKED,
+  ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE,
   assertApplianceCount,
   assertManualPassages,
   assertSpokenProse,
@@ -11,6 +12,7 @@ import {
   buildElicitResponse,
   checkManualPassages,
   EXPECTED_TOOLS,
+  manualIngestionSkipped,
   need,
   timedWithBudget,
   widgetUriOf,
@@ -21,11 +23,16 @@ import {
 
 // Most of scripts/smoke.ts only runs meaningfully against the deployed
 // AgentCore runtime, the deployed Knowledge Base, and a live Cognito token
-// endpoint - none of which exist in this test run (the Knowledge Base was
-// never applied; Bedrock model access is blocked account-wide, FL-019). What
-// IS pure, offline logic - need(), the tool-order and widget-wiring
-// assertions, the budget enforcement in timedWithBudget, and the legacy
-// elicitation auto-fulfilment in buildElicitResponse - is exercised here.
+// endpoint - none of which are reachable from this test run. The Knowledge
+// Base itself DOES now exist (it applied cleanly on the first post-merge
+// deploy; an earlier version of this comment wrongly said it was never
+// applied - see FL-032), but nothing has been ingested into it, because
+// Bedrock model invocation is blocked account-wide and the Knowledge Base
+// role's embedding call is refused (FL-019). What IS pure, offline logic -
+// need(), the tool-order and widget-wiring assertions, the three-state
+// Knowledge Base decision, the budget enforcement in timedWithBudget, and
+// the legacy elicitation auto-fulfilment in buildElicitResponse - is
+// exercised here.
 
 describe('need', () => {
   it('returns the env var when set', () => {
@@ -249,45 +256,108 @@ describe('assertManualPassages', () => {
   });
 });
 
-// The three states the owner asked for explicitly. The middle one is the
-// whole point: a Knowledge Base IS configured, so fixture-shaped content
-// must still fail hard. The skip exists only for "there is no Knowledge
-// Base at all", never for "the Knowledge Base returned the wrong thing".
+// Fails closed by design: only an explicit affirmative disables the
+// assertion. If this ever became "any non-empty string is truthy", a stray
+// MANUAL_INGESTION_SKIPPED=false in a workflow edit would silently and
+// permanently switch off the one guard in this file that exists to stop a
+// false green - and nothing would go red to say so.
+describe('manualIngestionSkipped', () => {
+  it.each([['1'], ['true'], ['TRUE'], ['  yes  '], ['Yes']])('treats %j as skipped', raw => {
+    expect(manualIngestionSkipped(raw)).toBe(true);
+  });
+
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['whitespace only', '   '],
+    ['the string zero', '0'],
+    ['the string false', 'false'],
+    ['the string no', 'no'],
+    ['an unrecognised value', 'maybe'],
+    ['a value that merely contains an affirmative', 'not-true']
+  ])('does NOT treat %s as skipped, so the assertion stays enforced', (_label, raw) => {
+    expect(manualIngestionSkipped(raw)).toBe(false);
+  });
+});
+
+// The four states the owner asked for explicitly. States 3 and 4 are the
+// point of the whole function: once a Knowledge Base is configured AND
+// ingestion actually happened, wrong content must still fail hard. The skips
+// exist for "there is no Knowledge Base" and "there is one but nothing could
+// be put into it" - never for "the Knowledge Base returned the wrong thing".
 describe('checkManualPassages', () => {
   const fixtureShaped: ManualPassage[] = SAMPLE_MANUAL_PASSAGES.map(p => ({ text: p.text, docTitle: p.docTitle, page: p.page }));
   const seeded: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: SMOKE_MANUAL_TITLE, page: 1 }];
 
+  // State 1: no Knowledge Base at all.
   it.each([
     ['unset', undefined],
     ['empty', ''],
     ['whitespace only', '   ']
   ])('skips, without throwing, when KNOWLEDGE_BASE_ID is %s', (_label, kbId) => {
-    expect(checkManualPassages(kbId, fixtureShaped)).toBe('skipped');
+    expect(checkManualPassages(kbId, false, fixtureShaped)).toBe('skipped-no-knowledge-base');
     // Also with no passages at all: a runtime with no Knowledge Base can
     // legitimately return nothing, and the skip must not trip over that.
-    expect(checkManualPassages(kbId, [])).toBe('skipped');
+    expect(checkManualPassages(kbId, false, [])).toBe('skipped-no-knowledge-base');
+    // And the absent Knowledge Base is reported as such even if the seed
+    // step somehow also signalled a skip - the more fundamental state wins,
+    // so the log names the real reason rather than the downstream symptom.
+    expect(checkManualPassages(kbId, true, [])).toBe('skipped-no-knowledge-base');
   });
 
-  it('asserts and passes when a Knowledge Base is configured and the seeded document came back', () => {
-    expect(checkManualPassages('kb-1234567890', seeded)).toBe('asserted');
+  // State 2: a Knowledge Base exists, but seed:manual could not ingest into
+  // it. This is the state that did not exist before FL-032 and whose absence
+  // failed smoke run 35238251562 outright. Note the content here is exactly
+  // the content state 4 must reject - identical input, opposite outcome,
+  // decided solely by the signal from the seed step.
+  it('skips when a Knowledge Base is configured but ingestion was skipped', () => {
+    expect(checkManualPassages('kb-1234567890', true, fixtureShaped)).toBe('skipped-ingestion-blocked');
+    expect(checkManualPassages('kb-1234567890', true, [])).toBe('skipped-ingestion-blocked');
+    // Even content that WOULD have passed: the run still proved nothing,
+    // because nothing was ingested for it to have come from.
+    expect(checkManualPassages('kb-1234567890', true, seeded)).toBe('skipped-ingestion-blocked');
   });
 
-  // The false green this whole assertion exists to prevent: Terraform's
-  // output is populated, but the running revision still has the variable
-  // unset and is quietly serving @homeledger/core's SAMPLE_MANUAL_PASSAGES
-  // (which match this smoke's exact question and contain "F21"). Not
-  // skippable, at any KNOWLEDGE_BASE_ID.
-  it('still throws when a Knowledge Base is configured but the content is fixture-shaped', () => {
-    expect(() => checkManualPassages('kb-1234567890', fixtureShaped)).toThrow(/did not return the seeded KB document/);
+  // State 3: configured, ingested, title matches.
+  it('asserts and passes when a Knowledge Base is configured, ingestion happened, and the seeded document came back', () => {
+    expect(checkManualPassages('kb-1234567890', false, seeded)).toBe('asserted');
   });
 
-  it('still throws when a Knowledge Base is configured but no passages came back at all', () => {
-    expect(() => checkManualPassages('kb-1234567890', [])).toThrow('ask_manual returned no passages');
+  // State 4, THE INVARIANT. The false green this whole assertion exists to
+  // prevent: Terraform's output is populated, ingestion ran, but the running
+  // revision still has the variable unset and is quietly serving
+  // @homeledger/core's SAMPLE_MANUAL_PASSAGES (which match this smoke's
+  // exact question and contain "F21"). Not skippable, at any
+  // KNOWLEDGE_BASE_ID, and specifically not made skippable by the new third
+  // state - which is why each of these passes ingestionSkipped=false
+  // explicitly rather than relying on a default.
+  it('STILL THROWS when a Knowledge Base is configured, ingestion happened, and the content is fixture-shaped', () => {
+    expect(() => checkManualPassages('kb-1234567890', false, fixtureShaped)).toThrow(/did not return the seeded KB document/);
   });
 
-  it('names KNOWLEDGE_BASE_ID in the skip line so the log says why nothing was proved', () => {
-    expect(ASK_MANUAL_SKIP_LINE).toContain('SKIPPED');
-    expect(ASK_MANUAL_SKIP_LINE).toContain('KNOWLEDGE_BASE_ID');
+  it('still throws when ingestion happened and the title merely resembles the seeded one', () => {
+    const nearMiss: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: `${SMOKE_MANUAL_TITLE} (archived copy)`, page: 1 }];
+    expect(() => checkManualPassages('kb-1234567890', false, nearMiss)).toThrow(/did not return the seeded KB document/);
+  });
+
+  it('still throws when a Knowledge Base is configured, ingestion happened, and no passages came back at all', () => {
+    expect(() => checkManualPassages('kb-1234567890', false, [])).toThrow('ask_manual returned no passages');
+  });
+
+  it('names KNOWLEDGE_BASE_ID in the no-Knowledge-Base skip line so the log says why nothing was proved', () => {
+    expect(ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE).toContain('SKIPPED');
+    expect(ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE).toContain('KNOWLEDGE_BASE_ID');
+  });
+
+  // Two skips, two different causes, two different lines: reusing one line
+  // for both would leave the log unable to distinguish "no Knowledge Base
+  // was ever built" from "one was built and could not be filled", which are
+  // very different things to read on a Monday morning.
+  it('says something different, and names the Bedrock block, in the ingestion-skipped line', () => {
+    expect(ASK_MANUAL_SKIP_INGESTION_BLOCKED).toContain('SKIPPED');
+    expect(ASK_MANUAL_SKIP_INGESTION_BLOCKED).toContain('Bedrock');
+    expect(ASK_MANUAL_SKIP_INGESTION_BLOCKED).toContain('FL-032');
+    expect(ASK_MANUAL_SKIP_INGESTION_BLOCKED).not.toBe(ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE);
   });
 });
 
