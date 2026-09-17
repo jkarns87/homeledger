@@ -88,7 +88,110 @@ export interface UploadManualOptions {
 
 const TERMINAL_STATUSES = new Set(['COMPLETE', 'FAILED', 'STOPPED']);
 
-export async function uploadManual(options: UploadManualOptions): Promise<{ docId: string; s3Key: string; ingestionJobId: string; status: string }> {
+/**
+ * The exact sentence AWS returns when Bedrock model invocation is refused at
+ * the ACCOUNT level (FRICTION-LOG.md FL-019, support case 178941623300459).
+ * Observed byte-identical across three independent probes on two days, from
+ * two different principals, for two different models.
+ *
+ * Deliberately just this sentence, and deliberately not the rest of the
+ * message. The full text AWS sends is:
+ *
+ *   Knowledge base role arn:aws:iam::<account>:role/demo-homeledger-knowledge-base
+ *   is not able to call specified bedrock embedding model
+ *   arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0:
+ *   Error 002: Access to Bedrock models is not allowed for this account
+ *   (Service: BedrockRuntime, Status Code: 400)
+ *
+ * Everything around this sentence is a moving part and would make the match
+ * too tight: the role ARN is account-specific, the model ARN changes the
+ * moment the Knowledge Base is re-pointed at a different embedding model or
+ * region, the `Error 002` code is an undocumented internal identifier, and
+ * the `(Service: ..., Status Code: ...)` suffix is a Java-SDK-style wrapper
+ * this Node client only ever sees because the control plane passes the
+ * downstream error through verbatim. Pinning any of those would break this
+ * matcher on a change that has nothing to do with the condition it names.
+ *
+ * Equally it is NOT just "denied" or "Bedrock" or the `ValidationException`
+ * class, which would be too loose: `StartIngestionJob` raises
+ * `ValidationException` for a malformed metadata sidecar, an S3 key the data
+ * source's prefix does not cover, and a `dataSourceId` that does not belong
+ * to the knowledge base. Every one of those is a real bug in this repo and
+ * must keep failing the run.
+ *
+ * This sentence is the one part of the message that states the actual
+ * condition — the account cannot invoke Bedrock models at all — and it is
+ * the only part that cannot be true for any of those other causes.
+ */
+export const BEDROCK_ACCOUNT_BLOCK_MESSAGE = 'Access to Bedrock models is not allowed for this account';
+
+/**
+ * True only for the account-wide Bedrock model block, and false for every
+ * other ingestion failure.
+ *
+ * Three conditions, all required:
+ *
+ *  1. `name === 'ValidationException'` — the error class the Bedrock Agent
+ *     control plane raises for this. Duck-typed on `name` rather than
+ *     `instanceof ValidationException` on purpose: each AWS SDK v3 client
+ *     bundles its own copy of the class, so `instanceof` is unreliable
+ *     across client/version boundaries (and across a pnpm store with two
+ *     resolutions of the same package), and the AWS SDK's own documented
+ *     guidance for v3 error handling is to branch on `name`.
+ *  2. HTTP 400 — pins the error to a client-fault response the service
+ *     actually returned, not a locally constructed or re-thrown lookalike,
+ *     and rules out a 5xx that happened to echo the text.
+ *  3. The message contains `BEDROCK_ACCOUNT_BLOCK_MESSAGE`.
+ *
+ * None of the three is sufficient alone and each removes a distinct class of
+ * false positive, which is exactly what the mutation checks in
+ * `scripts/test/manuals.test.ts` verify: dropping any one of them makes a
+ * test that must stay red go green.
+ *
+ * The match is case-sensitive. If AWS ever rewords the sentence this returns
+ * false and the run fails hard, which is the correct direction to fail: a
+ * missed skip costs one red pipeline that a human reads, whereas a matcher
+ * loose enough to survive rewording is a matcher that can swallow a genuine
+ * ingestion bug silently and forever.
+ */
+export function isBedrockAccountBlock(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { name?: unknown; message?: unknown; $metadata?: { httpStatusCode?: unknown } | null };
+  if (candidate.name !== 'ValidationException') return false;
+  if (candidate.$metadata?.httpStatusCode !== 400) return false;
+  return typeof candidate.message === 'string' && candidate.message.includes(BEDROCK_ACCOUNT_BLOCK_MESSAGE);
+}
+
+/**
+ * Printed on its own line when ingestion is skipped, so the caller can detect
+ * the skip from the log without parsing prose. `.github/workflows/smoke.yml`
+ * greps for it anchored (`^...$`) and turns a hit into the
+ * `MANUAL_INGESTION_SKIPPED` environment variable the smoke step reads —
+ * the same log-sentinel idiom as `SMOKE OK`, and for the same reason: an
+ * exit code cannot carry this, because the whole point of the skip is that
+ * the exit code is 0 either way.
+ */
+export const MANUAL_INGESTION_SKIPPED_SENTINEL = 'MANUAL_INGESTION_SKIPPED';
+
+export const MANUAL_INGESTION_SKIP_LINE =
+  '\n!! seed:manual: SKIPPED ingestion - the Knowledge Base role cannot call the embedding model because Bedrock model invocation is blocked account-wide (FRICTION-LOG.md FL-019, FL-032). The PDF and its metadata sidecar ARE uploaded and the DOC# row is recorded with kbSync.status "pending"; re-running seed:manual once the block clears ingests them with no re-upload. Nothing about real retrieval is proved by this run.\n';
+
+/** Prints the skip loudly and emits the machine-readable sentinel the workflow greps for. */
+export function reportIngestionSkipped(): void {
+  console.log(MANUAL_INGESTION_SKIP_LINE);
+  console.log(MANUAL_INGESTION_SKIPPED_SENTINEL);
+}
+
+/**
+ * Discriminated on `ingestion` rather than carrying a nullable job id a
+ * caller might forget to check: `tsc` then forces every caller to handle the
+ * skipped case before it can read `ingestionJobId` or `status` at all.
+ */
+export type UploadManualResult =
+  | { docId: string; s3Key: string; ingestion: 'complete'; ingestionJobId: string; status: string }
+  | { docId: string; s3Key: string; ingestion: 'skipped-bedrock-blocked'; ingestionJobId: null; status: null };
+
+export async function uploadManual(options: UploadManualOptions): Promise<UploadManualResult> {
   // Deterministic, not random: the domain model gives each appliance a
   // single manualDocId, so re-running this script for the same appliance
   // (a retry after a mid-run failure, or a deliberate re-upload of a
@@ -135,13 +238,54 @@ export async function uploadManual(options: UploadManualOptions): Promise<{ docI
 
   await repo.putAppliance({ ...appliance, manualDocId: docId });
 
-  const started = await agent.send(
-    new StartIngestionJobCommand({
-      knowledgeBaseId: options.knowledgeBaseId,
-      dataSourceId: options.dataSourceId,
-      description: `HomeLedger manual ${docId}`
-    })
-  );
+  // Only this one call is wrapped, and only for this one condition.
+  //
+  // Starting the job is where the account-wide Bedrock block bites: the
+  // service synchronously has the Knowledge Base role call the Titan
+  // embedding model to validate it can, and that invocation is refused
+  // before any job id is issued (FL-019, FL-032). Everything before this
+  // point — the appliance lookup, both S3 puts, the DOC# write — has already
+  // succeeded, and everything after it (polling, terminal status, failure
+  // reasons) keeps its original fail-hard behaviour untouched.
+  //
+  // Deliberately NOT extended to a job that starts and then reaches FAILED
+  // carrying the same text in `failureReasons`. That is not the observed
+  // shape, and widening the skip to terminal statuses would put it in the
+  // same code path as every genuine ingestion failure — a malformed sidecar,
+  // an unreadable object — which is precisely the path that must stay red.
+  // If AWS ever moves the refusal to job level, this fails hard and someone
+  // revisits it deliberately; see `scripts/test/manuals.test.ts`, which pins
+  // that scope with a test rather than leaving it to this comment.
+  //
+  // The uploaded objects and the DOC# row are deliberately LEFT IN PLACE on
+  // a skip, not rolled back. The S3 PDF plus its `.metadata.json` sidecar
+  // are exactly the input a later ingestion job consumes, so once the block
+  // clears a bare StartIngestionJob picks them up with no re-upload; the
+  // DOC# row is what `get_appliance` reads for `{docId, title}` and what
+  // `appliance.manualDocId` points at, so deleting it would take working
+  // functionality away to react to an unrelated external outage. The row is
+  // not orphaned residue either — it still carries kbSync.status 'pending'
+  // from the write above, which is the honest description of a document that
+  // is uploaded and not yet ingested. Contrast the appliance-not-found guard
+  // near the top of this function, which writes nothing precisely because
+  // that error is permanent and operator-caused; this one is transient and
+  // external. derivedId also makes docId and s3Key deterministic, so a
+  // re-run replaces in place rather than accumulating — the duplicate-
+  // residue risk that would otherwise argue for cleanup does not exist here.
+  let started: StartIngestionJobCommandOutput;
+  try {
+    started = await agent.send(
+      new StartIngestionJobCommand({
+        knowledgeBaseId: options.knowledgeBaseId,
+        dataSourceId: options.dataSourceId,
+        description: `HomeLedger manual ${docId}`
+      })
+    );
+  } catch (error) {
+    if (!isBedrockAccountBlock(error)) throw error;
+    return { docId, s3Key, ingestion: 'skipped-bedrock-blocked', ingestionJobId: null, status: null };
+  }
+
   const ingestionJobId = started.ingestionJob?.ingestionJobId;
   if (!ingestionJobId) throw new Error('StartIngestionJob returned no ingestionJobId');
   console.log(`ingestion job ${ingestionJobId} started`);
@@ -175,7 +319,7 @@ export async function uploadManual(options: UploadManualOptions): Promise<{ docI
   });
 
   if (status !== 'COMPLETE') throw new Error(`ingestion ${status}: ${failureReasons.join('; ') || 'no reason reported'}`);
-  return { docId, s3Key, ingestionJobId, status };
+  return { docId, s3Key, ingestion: 'complete', ingestionJobId, status };
 }
 
 // ESM's canonical "am I the entrypoint" check: compare the running module's
@@ -217,5 +361,10 @@ if (isEntrypoint) {
     knowledgeBaseId: need('KNOWLEDGE_BASE_ID'),
     dataSourceId: need('DATA_SOURCE_ID')
   });
+  // No process.exit(0) here or in seed-manual.ts: returning normally from the
+  // top-level await already exits 0, and an explicit exit can truncate stdout
+  // that has not flushed - which would eat the very sentinel the workflow
+  // greps for.
+  if (result.ingestion === 'skipped-bedrock-blocked') reportIngestionSkipped();
   console.log(result.docId);
 }

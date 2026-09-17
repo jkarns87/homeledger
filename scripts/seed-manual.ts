@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createDynamoRepository } from '@homeledger/core';
-import { uploadManual } from './manuals.js';
+import { reportIngestionSkipped, uploadManual } from './manuals.js';
 
 const need = (key: string): string => {
   const value = process.env[key];
@@ -95,5 +95,18 @@ if (isEntrypoint) {
     knowledgeBaseId: need('KNOWLEDGE_BASE_ID'),
     dataSourceId: need('DATA_SOURCE_ID')
   });
-  console.log(`seeded ${result.docId} for ${washer.name} (${washer.id})`);
+
+  // Three outcomes, not two. `uploadManual` throws for every ingestion
+  // failure except the one account-wide Bedrock block it can positively
+  // identify (see isBedrockAccountBlock), so reaching this line at all means
+  // either the document is ingested or it is uploaded-and-waiting. The
+  // difference is stated in the log rather than smoothed over, because
+  // "seeded" reading the same for both is exactly how a run that proved
+  // nothing gets mistaken for a run that proved something.
+  if (result.ingestion === 'skipped-bedrock-blocked') {
+    reportIngestionSkipped();
+    console.log(`uploaded (not ingested) ${result.docId} for ${washer.name} (${washer.id})`);
+  } else {
+    console.log(`seeded ${result.docId} for ${washer.name} (${washer.id})`);
+  }
 }
