@@ -17,7 +17,7 @@ Nine tools, in a fixed order that is frozen after the first deploy:
 | Tool | Does | Widget |
 |---|---|---|
 | `list_appliances` | Every appliance, filterable by room or category | `ui://homeledger/appliances` |
-| `get_appliance` | One appliance with its maintenance tasks | `ui://homeledger/appliance` |
+| `get_appliance` | One appliance with its maintenance tasks and the manual on file, if any | `ui://homeledger/appliance` |
 | `maintenance_due` | What is overdue or due inside a horizon | `ui://homeledger/calendar` |
 | `log_maintenance` | Records a completed task, advances the next due date | none |
 | `recent_events` | Visits, door events, and sensor alerts | none |

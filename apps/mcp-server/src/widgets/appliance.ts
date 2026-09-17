@@ -37,6 +37,24 @@ const SCRIPT = String.raw`
     head.appendChild(warranty);
     detail.appendChild(head);
 
+    // The title only, and only when a manual is on file. docId is an internal
+    // key with nothing to link to from here (the widget has no presigned URL
+    // for the PDF, the way get_visit will have one for its snapshot), so it
+    // would be noise on a 768x480 canvas; the title is the one part a person
+    // can act on, and showing it is what makes the ingested DOC# row visible
+    // in the running system at all. Read unconditionally - get_appliance
+    // always emits the key, null when there is no manual.
+    var manual = data.manual;
+    if (manual) {
+      var manualCard = document.createElement('div');
+      manualCard.className = 'card';
+      var manualLine = document.createElement('div');
+      manualLine.className = 'muted';
+      manualLine.textContent = 'Manual on file: ' + manual.title;
+      manualCard.appendChild(manualLine);
+      detail.appendChild(manualCard);
+    }
+
     var tasks = data.maintenance || [];
     for (var i = 0; i < tasks.length; i++) {
       var task = tasks[i];

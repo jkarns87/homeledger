@@ -70,7 +70,18 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
         appliance: ApplianceSummary.extend({ serial: z.string().nullable(), purchasedAt: z.string().nullable(), warrantyUntil: z.string().nullable() }),
         maintenance: z.array(
           z.object({ taskType: TaskType, intervalDays: z.number(), lastDoneAt: z.string().nullable(), nextDueAt: z.string(), overdue: z.boolean() })
-        )
+        ),
+        // Spec 4.2's `manual {docId, title}` row. Nullable-but-always-present
+        // rather than optional, the convention get_visit's snapshotUrl and
+        // description already set: the appliance widget reads `data.manual`
+        // unconditionally, so a missing key and a present-null key must not
+        // be two different shapes for "this appliance has no manual".
+        //
+        // This is also the only reader of the DOC# row scripts/manuals.ts
+        // writes (and of appliance.manualDocId, which it points at that row),
+        // so without it the whole manuals ingestion path is write-only and
+        // nothing in the running system can show whether it wrote a sane row.
+        manual: z.object({ docId: z.string(), title: z.string() }).nullable()
       }),
       annotations: { readOnlyHint: true },
       _meta: uiMeta(WIDGET_URIS.appliance)
@@ -91,6 +102,10 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
             overdue: isOverdue(m.nextDueAt, today)
           });
       }
+      // Null when the appliance carries no manualDocId, and also when it
+      // carries one whose DOC# row has since gone: a dangling pointer is
+      // "no manual I can name", not a reason to fail the whole lookup.
+      const doc = a.manualDocId ? await deps.repo.getDoc(a.manualDocId) : null;
       const status = warrantyStatus(a.warrantyUntil, today);
       const warrantyText =
         status === 'active' ? `under warranty until ${speakDate(a.warrantyUntil!)}` : status === 'expired' ? 'out of warranty' : 'warranty unknown';
@@ -116,7 +131,8 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
             purchasedAt: a.purchasedAt,
             warrantyUntil: a.warrantyUntil
           },
-          maintenance
+          maintenance,
+          manual: doc ? { docId: doc.id, title: doc.title } : null
         }
       };
     }

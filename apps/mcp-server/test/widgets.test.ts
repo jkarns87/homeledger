@@ -97,6 +97,19 @@ describe('widget resources', () => {
     expect(html.get(WIDGET_URIS.visit)).not.toContain("callTool('log_maintenance'");
   });
 
+  it("renders get_appliance's manual title on the appliance widget only", async () => {
+    const h = await modernClient();
+    close = h.close;
+    const appliance = await h.client.readResource({ uri: WIDGET_URIS.appliance });
+    const html = (appliance.contents[0] as { text: string }).text;
+    // Delimited on the concatenation that actually puts the title on screen,
+    // not a bare 'manual' substring, which would survive the render being
+    // deleted while the `var manual = data.manual;` read stayed behind.
+    expect(html).toContain("'Manual on file: ' + manual.title");
+    const appliances = await h.client.readResource({ uri: WIDGET_URIS.appliances });
+    expect((appliances.contents[0] as { text: string }).text).not.toContain('Manual on file');
+  });
+
   it('resets a stuck "Logging" button on the calendar widget if the host cancels the call', async () => {
     const h = await modernClient();
     close = h.close;
