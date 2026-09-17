@@ -57,11 +57,19 @@ describe('recent_events', () => {
       at: '2026-09-13T09:30:00.000Z',
       rawS3Key: null
     });
+    // 11:30, deliberately NEWER than the 11:00 visit even though alerts are
+    // the LAST of the three sources events.ts merges. The fixture's time
+    // order therefore disagrees with the merge's source order, which is what
+    // forces the descending .sort() in events.ts to do real work: with the
+    // sort deleted the tool emits literal merge order (visit, door, alert)
+    // and the expectation below goes red. An earlier fixture put this at
+    // 03:00, where descending time and source order coincided and deleting
+    // the sort left the whole suite green.
     await h.deps.repo.putAlert({
       id: 'alert_aaaaaaaaaaaaaaaa',
       sensorType: 'freeze',
       deviceName: 'Garage sensor',
-      at: '2026-09-13T03:00:00.000Z',
+      at: '2026-09-13T11:30:00.000Z',
       maintenanceRef: null,
       status: 'open'
     });
@@ -77,8 +85,14 @@ describe('recent_events', () => {
     });
     const r = await h.client.callTool({ name: 'recent_events', arguments: { sinceHours: 24 } });
     const sc = r.structuredContent as { events: Array<{ kind: string; at: string; summary: string; visitId: string | null }> };
-    expect(sc.events.map(e => e.kind)).toEqual(['visit', 'door', 'alert']);
-    expect(sc.events[0]?.visitId).toBe('visit_aaaaaaaaaaaaaaaa');
+    // Neither of these is the source order events.ts builds the array in
+    // (visits, then doors, then alerts), so both fail if the sort is removed
+    // or reversed. The `at` list is asserted alongside the kinds because it
+    // is the actual ordering key; the kinds alone would still pass if two
+    // rows of different kinds ever carried the same timestamp.
+    expect(sc.events.map(e => e.kind)).toEqual(['alert', 'visit', 'door']);
+    expect(sc.events.map(e => e.at)).toEqual(['2026-09-13T11:30:00.000Z', '2026-09-13T11:00:00.000Z', '2026-09-13T09:30:00.000Z']);
+    expect(sc.events.find(e => e.kind === 'visit')?.visitId).toBe('visit_aaaaaaaaaaaaaaaa');
     expect(sc.events.some(e => e.visitId === 'visit_cccccccccccccccc')).toBe(false);
     const text = (r.content as Array<{ text?: string }>)[0]?.text ?? '';
     expect(hasJson(text)).toBe(false);
