@@ -26,7 +26,7 @@ export function createMemoryRepository(_householdId: string): Repository {
   const docs = new Map<string, Doc>();
   const events = new Map<string, Event>(); // keyed by ringEventId
   const visits = new Map<string, Visit>();
-  const alerts: Alert[] = [];
+  const alerts = new Map<string, Alert>();
   const devices = new Map<string, Device>();
 
   return {
@@ -44,7 +44,7 @@ export function createMemoryRepository(_householdId: string): Repository {
       docs.clear();
       events.clear();
       visits.clear();
-      alerts.length = 0;
+      alerts.clear();
       devices.clear();
     },
     async putAppliance(a) {
@@ -105,10 +105,10 @@ export function createMemoryRepository(_householdId: string): Repository {
       return [...visits.values()].filter(v => v.windowStart >= sinceIso).sort((x, y) => x.windowStart.localeCompare(y.windowStart));
     },
     async putAlert(a) {
-      alerts.push(a);
+      alerts.set(a.id, a);
     },
     async listAlerts(sinceIso) {
-      return alerts.filter(a => a.at >= sinceIso).sort((x, y) => y.at.localeCompare(x.at));
+      return [...alerts.values()].filter(a => a.at >= sinceIso).sort((x, y) => y.at.localeCompare(x.at));
     },
     async putDevice(d) {
       devices.set(d.ringDeviceId, d);

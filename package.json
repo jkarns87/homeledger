@@ -12,7 +12,8 @@
     "test": "pnpm -r test",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
-    "smoke": "pnpm --filter @homeledger/scripts smoke"
+    "smoke": "pnpm --filter @homeledger/scripts smoke",
+    "manuals": "pnpm --filter @homeledger/scripts manuals"
   },
   "devDependencies": {
     "prettier": "^3.7.4",

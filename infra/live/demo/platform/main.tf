@@ -91,6 +91,39 @@ module "cognito" {
   secret_name                   = "${local.name_prefix}/cognito/client-secret"
 }
 
+# ---------- Manuals, S3 Vectors, and the Bedrock Knowledge Base ----------
+module "knowledge_base" {
+  source = "../../../modules/knowledge-base"
+
+  name_prefix         = local.name_prefix
+  household_id        = var.household_id
+  embedding_model_arn = var.embedding_model_arn
+}
+
+# ---------- Multi round-trip requestState signing key ----------
+# book_service carries booking state across elicitation rounds in a signed,
+# client-echoed requestState. Every microVM that may serve a later round needs
+# the same key, so it is generated once here rather than per process.
+#
+# random_password keeps its value in Terraform state by construction, so the
+# Secrets Manager copy exists for consumers (the Plan 3 simulator) rather than
+# to hide it from state; the version is written with the write-only argument so
+# it is not duplicated into that resource's own state as well.
+resource "random_password" "request_state" {
+  length  = 48
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "request_state" {
+  name = "${local.name_prefix}/mcp/request-state-key"
+}
+
+resource "aws_secretsmanager_secret_version" "request_state" {
+  secret_id                = aws_secretsmanager_secret.request_state.id
+  secret_string_wo         = random_password.request_state.result
+  secret_string_wo_version = 1
+}
+
 # ---------- AgentCore Runtime (execution role + runtime) ----------
 module "agentcore_runtime" {
   source = "../../../modules/agentcore-runtime"
@@ -102,15 +135,19 @@ module "agentcore_runtime" {
   dynamodb_table_arn = aws_dynamodb_table.homeledger.arn
 
   environment_variables = {
-    HOUSEHOLD_ID         = var.household_id
-    TABLE_NAME           = aws_dynamodb_table.homeledger.name
-    AWS_REGION           = local.region
-    HOMELEDGER_DEV_TOOLS = var.dev_tools_enabled ? "1" : "0"
-    ALLOWED_HOSTS        = var.allowed_hosts
-    PORT                 = "8000"
+    HOUSEHOLD_ID          = var.household_id
+    TABLE_NAME            = aws_dynamodb_table.homeledger.name
+    AWS_REGION            = local.region
+    HOMELEDGER_DEV_TOOLS  = var.dev_tools_enabled ? "1" : "0"
+    ALLOWED_HOSTS         = var.allowed_hosts
+    PORT                  = "8000"
+    KNOWLEDGE_BASE_ID     = module.knowledge_base.knowledge_base_id
+    REQUEST_STATE_KEY     = random_password.request_state.result
+    AVAILABILITY_DELAY_MS = tostring(var.availability_delay_ms)
   }
 
   jwt_discovery_url            = module.cognito.discovery_url
   jwt_allowed_client_ids       = [module.cognito.client_id]
   idle_session_timeout_seconds = var.idle_session_timeout_seconds
+  knowledge_base_arn           = module.knowledge_base.knowledge_base_arn
 }

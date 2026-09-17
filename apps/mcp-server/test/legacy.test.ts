@@ -30,7 +30,17 @@ describe('legacy (2025-era) client', () => {
     await client.connect(transport);
     expect(transport.sessionId).toBeDefined();
     const { tools } = await client.listTools();
-    expect(tools.map(t => t.name)).toEqual(['list_appliances', 'get_appliance', 'maintenance_due', 'log_maintenance', 'recent_events', 'echo_confirm']);
+    expect(tools.map(t => t.name)).toEqual([
+      'list_appliances',
+      'get_appliance',
+      'maintenance_due',
+      'log_maintenance',
+      'recent_events',
+      'ask_manual',
+      'book_service',
+      'get_visit',
+      'echo_confirm'
+    ]);
     const r = await client.callTool({ name: 'list_appliances', arguments: { room: 'Basement' } });
     expect((r.structuredContent as { appliances: unknown[] }).appliances.length).toBe(3);
     await transport.terminateSession();

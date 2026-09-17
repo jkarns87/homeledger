@@ -12,7 +12,17 @@ describe('tools/list', () => {
     const h = await modernClient();
     close = h.close;
     const { tools } = await h.client.listTools();
-    expect(tools.map(t => t.name)).toEqual(['list_appliances', 'get_appliance', 'maintenance_due', 'log_maintenance', 'recent_events', 'echo_confirm']);
+    expect(tools.map(t => t.name)).toEqual([
+      'list_appliances',
+      'get_appliance',
+      'maintenance_due',
+      'log_maintenance',
+      'recent_events',
+      'ask_manual',
+      'book_service',
+      'get_visit',
+      'echo_confirm'
+    ]);
     for (const t of tools) expect(t.outputSchema).toBeDefined();
   });
 });
@@ -63,5 +73,55 @@ describe('get_appliance', () => {
     const r = await h.client.callTool({ name: 'get_appliance', arguments: { applianceId: 'appl_zzzzzzzzzzzzzzzz' } });
     expect(r.isError).toBe(true);
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe("I couldn't find that appliance.");
+  });
+
+  // Spec 4.2's `manual {docId, title}`. Asserted in both directions because
+  // the convention being followed is nullable-but-always-present (get_visit's
+  // snapshotUrl/description): the no-manual case has to prove the KEY is
+  // there carrying null, which `toBeNull()` alone would also report for a
+  // key that was simply never emitted - hence the explicit `in` check.
+  it('returns manual: null, with the key present, for an appliance with no manual on file', async () => {
+    const h = await modernClient();
+    close = h.close;
+    const list = await h.client.callTool({ name: 'list_appliances', arguments: { category: 'laundry' } });
+    const id = (list.structuredContent as { appliances: Array<{ id: string }> }).appliances[0]!.id;
+    const r = await h.client.callTool({ name: 'get_appliance', arguments: { applianceId: id } });
+    const sc = r.structuredContent as { manual: { docId: string; title: string } | null };
+    expect('manual' in sc).toBe(true);
+    expect(sc.manual).toBeNull();
+  });
+
+  it('resolves manualDocId through the DOC# row scripts/manuals.ts writes', async () => {
+    const h = await modernClient();
+    close = h.close;
+    const list = await h.client.callTool({ name: 'list_appliances', arguments: { category: 'laundry' } });
+    const id = (list.structuredContent as { appliances: Array<{ id: string }> }).appliances[0]!.id;
+    const appliance = (await h.deps.repo.getAppliance(id))!;
+    await h.deps.repo.putDoc({
+      id: 'doc_aaaaaaaaaaaaaaaa',
+      applianceId: id,
+      title: 'Whirlpool WFW5620HW use and care guide',
+      s3Key: 'manuals/hh_test/doc_aaaaaaaaaaaaaaaa.pdf',
+      pages: 64,
+      kbSync: { status: 'synced', at: '2026-09-13T10:00:00.000Z' }
+    });
+    await h.deps.repo.putAppliance({ ...appliance, manualDocId: 'doc_aaaaaaaaaaaaaaaa' });
+    const r = await h.client.callTool({ name: 'get_appliance', arguments: { applianceId: id } });
+    const sc = r.structuredContent as { manual: { docId: string; title: string } | null };
+    // Exactly the two spec fields, no s3Key/kbSync leakage into the tool surface.
+    expect(sc.manual).toEqual({ docId: 'doc_aaaaaaaaaaaaaaaa', title: 'Whirlpool WFW5620HW use and care guide' });
+  });
+
+  it('returns manual: null when manualDocId points at a DOC# row that is gone', async () => {
+    const h = await modernClient();
+    close = h.close;
+    const list = await h.client.callTool({ name: 'list_appliances', arguments: { category: 'laundry' } });
+    const id = (list.structuredContent as { appliances: Array<{ id: string }> }).appliances[0]!.id;
+    const appliance = (await h.deps.repo.getAppliance(id))!;
+    await h.deps.repo.putAppliance({ ...appliance, manualDocId: 'doc_bbbbbbbbbbbbbbbb' });
+    const r = await h.client.callTool({ name: 'get_appliance', arguments: { applianceId: id } });
+    const sc = r.structuredContent as { manual: { docId: string; title: string } | null };
+    expect(r.isError).toBeFalsy();
+    expect(sc.manual).toBeNull();
   });
 });

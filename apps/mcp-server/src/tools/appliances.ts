@@ -2,7 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { ApplianceCategory, TaskType, isOverdue } from '@homeledger/core';
 import type { ServerDeps } from '../server.js';
-import { speakDate, speakList } from '../voice.js';
+import { speakDate, speakList, taskWords } from '../voice.js';
+import { WIDGET_URIS, uiMeta } from '../widgets/index.js';
 
 const WarrantyStatus = z.enum(['active', 'expired', 'unknown']);
 
@@ -29,7 +30,8 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
       description: 'List the household appliances, optionally filtered by room or category. Use this to find an appliance id before calling other tools.',
       inputSchema: z.object({ room: z.string().optional(), category: ApplianceCategory.optional() }),
       outputSchema: z.object({ appliances: z.array(ApplianceSummary) }),
-      annotations: { readOnlyHint: true }
+      annotations: { readOnlyHint: true },
+      _meta: uiMeta(WIDGET_URIS.appliances)
     },
     async ({ room, category }) => {
       const today = deps.now().slice(0, 10);
@@ -68,9 +70,21 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
         appliance: ApplianceSummary.extend({ serial: z.string().nullable(), purchasedAt: z.string().nullable(), warrantyUntil: z.string().nullable() }),
         maintenance: z.array(
           z.object({ taskType: TaskType, intervalDays: z.number(), lastDoneAt: z.string().nullable(), nextDueAt: z.string(), overdue: z.boolean() })
-        )
+        ),
+        // Spec 4.2's `manual {docId, title}` row. Nullable-but-always-present
+        // rather than optional, the convention get_visit's snapshotUrl and
+        // description already set: the appliance widget reads `data.manual`
+        // unconditionally, so a missing key and a present-null key must not
+        // be two different shapes for "this appliance has no manual".
+        //
+        // This is also the only reader of the DOC# row scripts/manuals.ts
+        // writes (and of appliance.manualDocId, which it points at that row),
+        // so without it the whole manuals ingestion path is write-only and
+        // nothing in the running system can show whether it wrote a sane row.
+        manual: z.object({ docId: z.string(), title: z.string() }).nullable()
       }),
-      annotations: { readOnlyHint: true }
+      annotations: { readOnlyHint: true },
+      _meta: uiMeta(WIDGET_URIS.appliance)
     },
     async ({ applianceId }) => {
       const today = deps.now().slice(0, 10);
@@ -88,6 +102,10 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
             overdue: isOverdue(m.nextDueAt, today)
           });
       }
+      // Null when the appliance carries no manualDocId, and also when it
+      // carries one whose DOC# row has since gone: a dangling pointer is
+      // "no manual I can name", not a reason to fail the whole lookup.
+      const doc = a.manualDocId ? await deps.repo.getDoc(a.manualDocId) : null;
       const status = warrantyStatus(a.warrantyUntil, today);
       const warrantyText =
         status === 'active' ? `under warranty until ${speakDate(a.warrantyUntil!)}` : status === 'expired' ? 'out of warranty' : 'warranty unknown';
@@ -95,7 +113,7 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
         maintenance.length === 0
           ? 'No maintenance scheduled.'
           : speakList(
-              maintenance.map(m => `${m.taskType.replace('_', ' ')} ${m.overdue ? 'overdue since' : 'due'} ${speakDate(m.nextDueAt)}`),
+              maintenance.map(m => `${taskWords(m.taskType)} ${m.overdue ? 'overdue since' : 'due'} ${speakDate(m.nextDueAt)}`),
               'task'
             );
       return {
@@ -113,7 +131,8 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
             purchasedAt: a.purchasedAt,
             warrantyUntil: a.warrantyUntil
           },
-          maintenance
+          maintenance,
+          manual: doc ? { docId: doc.id, title: doc.title } : null
         }
       };
     }

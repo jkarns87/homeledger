@@ -56,6 +56,7 @@ No modules.
 | <a name="input_image_uri"></a> [image\_uri](#input\_image\_uri) | Full ECR image URI with tag. Empty string means no image is available yet, so the runtime is not created (count = 0). | `string` | `""` | no |
 | <a name="input_jwt_allowed_client_ids"></a> [jwt\_allowed\_client\_ids](#input\_jwt\_allowed\_client\_ids) | Client IDs the custom JWT authorizer accepts. | `list(string)` | n/a | yes |
 | <a name="input_jwt_discovery_url"></a> [jwt\_discovery\_url](#input\_jwt\_discovery\_url) | OIDC discovery URL for the custom JWT authorizer (Cognito user pool .well-known/openid-configuration). | `string` | n/a | yes |
+| <a name="input_knowledge_base_arn"></a> [knowledge\_base\_arn](#input\_knowledge\_base\_arn) | ARN of the Bedrock Knowledge Base the runtime may call bedrock:Retrieve on. Empty string grants no retrieval access. | `string` | `""` | no |
 | <a name="input_max_lifetime_seconds"></a> [max\_lifetime\_seconds](#input\_max\_lifetime\_seconds) | Maximum runtime session lifetime, in seconds, before AgentCore forcibly recycles it. | `number` | `28800` | no |
 | <a name="input_name"></a> [name](#input\_name) | AgentCore runtime name. AgentCore restricts this to letters, digits, and underscores. | `string` | n/a | yes |
 | <a name="input_network_mode"></a> [network\_mode](#input\_network\_mode) | AgentCore Runtime network mode. | `string` | `"PUBLIC"` | no |

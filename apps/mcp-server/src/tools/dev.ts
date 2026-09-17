@@ -1,5 +1,6 @@
 import { acceptedContent, inputRequired, type McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
+import { booleanField, elicitOutcome } from '../elicit.js';
 import type { ServerDeps } from '../server.js';
 
 const ConfirmSchema = z.object({ confirm: z.boolean() });
@@ -15,15 +16,14 @@ export function registerDevTools(server: McpServer, deps: ServerDeps): void {
       outputSchema: z.object({ confirmed: z.boolean(), message: z.string() })
     },
     async ({ message }, ctx) => {
-      const responses = ctx.mcpReq.inputResponses as Record<string, { action?: string }> | undefined;
-      if (responses?.confirm?.action === 'decline' || responses?.confirm?.action === 'cancel') {
+      if (elicitOutcome(ctx.mcpReq.inputResponses, 'confirm') === 'declined') {
         return { content: [{ type: 'text', text: `Cancelled: ${message}` }], structuredContent: { confirmed: false, message } };
       }
       const answer = acceptedContent(ctx.mcpReq.inputResponses, 'confirm', ConfirmSchema);
       if (!answer) {
         return inputRequired({
           inputRequests: {
-            confirm: inputRequired.elicit({ message: `Confirm: ${message}?`, requestedSchema: ConfirmSchema })
+            confirm: inputRequired.elicit({ message: `Confirm: ${message}?`, requestedSchema: booleanField('confirm', 'Confirm') })
           }
         });
       }

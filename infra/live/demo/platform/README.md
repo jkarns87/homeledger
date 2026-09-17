@@ -98,12 +98,14 @@ is not read automatically by the Actions workflow, which passes
 | ---- | ------- |
 | <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.10.0 |
 | <a name="requirement_aws"></a> [aws](#requirement\_aws) | ~> 6.21 |
+| <a name="requirement_random"></a> [random](#requirement\_random) | >= 3.6.0, < 4.0.0 |
 
 ## Providers
 
 | Name | Version |
 | ---- | ------- |
 | <a name="provider_aws"></a> [aws](#provider\_aws) | 6.64.0 |
+| <a name="provider_random"></a> [random](#provider\_random) | 3.9.1 |
 
 ## Modules
 
@@ -111,6 +113,7 @@ is not read automatically by the Actions workflow, which passes
 | ---- | ------ | ------- |
 | <a name="module_agentcore_runtime"></a> [agentcore\_runtime](#module\_agentcore\_runtime) | ../../../modules/agentcore-runtime | n/a |
 | <a name="module_cognito"></a> [cognito](#module\_cognito) | ../../../modules/cognito-m2m | n/a |
+| <a name="module_knowledge_base"></a> [knowledge\_base](#module\_knowledge\_base) | ../../../modules/knowledge-base | n/a |
 
 ## Resources
 
@@ -119,6 +122,9 @@ is not read automatically by the Actions workflow, which passes
 | [aws_dynamodb_table.homeledger](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/dynamodb_table) | resource |
 | [aws_ecr_lifecycle_policy.mcp](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecr_lifecycle_policy) | resource |
 | [aws_ecr_repository.mcp](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/ecr_repository) | resource |
+| [aws_secretsmanager_secret.request_state](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret) | resource |
+| [aws_secretsmanager_secret_version.request_state](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/secretsmanager_secret_version) | resource |
+| [random_password.request_state](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/password) | resource |
 | [aws_caller_identity.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/caller_identity) | data source |
 | [aws_region.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
 
@@ -127,7 +133,9 @@ is not read automatically by the Actions workflow, which passes
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
 | <a name="input_allowed_hosts"></a> [allowed\_hosts](#input\_allowed\_hosts) | Comma-separated Host header allowlist passed to the server as ALLOWED\_HOSTS, or "*" to disable Host-header validation entirely. Defaults to "*" because under AgentCore Runtime the container is reachable only through the authenticated invocation endpoint (the JWT authorizer is the access control there), and the Host header AgentCore actually forwards is an internal, undocumented, cell-specific name (observed: cell01.us-east-1.prod.arp.kepler-analytics.aws.dev) that cannot be pinned in advance. Local runs pass an explicit list (e.g. "localhost,127.0.0.1,0.0.0.0") to keep DNS-rebinding protection there. | `string` | `"*"` | no |
+| <a name="input_availability_delay_ms"></a> [availability\_delay\_ms](#input\_availability\_delay\_ms) | Total budget for book\_service's simulated availability check, in milliseconds. Must stay well inside the 3 s per-tool response budget. | `number` | `600` | no |
 | <a name="input_dev_tools_enabled"></a> [dev\_tools\_enabled](#input\_dev\_tools\_enabled) | Whether the deployed runtime registers developer-only MCP tools (currently echo\_confirm) via HOMELEDGER\_DEV\_TOOLS. Defaults to true for the demo: echo\_confirm is the concrete proof that the elicitation round trip works end to end through AgentCore, and the demo deliberately ships it enabled rather than hidden. | `bool` | `true` | no |
+| <a name="input_embedding_model_arn"></a> [embedding\_model\_arn](#input\_embedding\_model\_arn) | Override for the knowledge base embedding model ARN. Empty uses Titan Text Embeddings v2 in the deployment region. | `string` | `""` | no |
 | <a name="input_env"></a> [env](#input\_env) | Deployment environment name. Only "demo" exists today; later layers (events, simulator) will live under infra/live/demo/ alongside this root. | `string` | `"demo"` | no |
 | <a name="input_household_id"></a> [household\_id](#input\_household\_id) | Household id seeded into the MCP server's environment as HOUSEHOLD\_ID. | `string` | `"hh_harlow"` | no |
 | <a name="input_idle_session_timeout_seconds"></a> [idle\_session\_timeout\_seconds](#input\_idle\_session\_timeout\_seconds) | Idle runtime session timeout passed to the AgentCore runtime, in seconds. | `number` | `1800` | no |
@@ -145,7 +153,11 @@ is not read automatically by the Actions workflow, which passes
 | <a name="output_cognito_client_secret_arn"></a> [cognito\_client\_secret\_arn](#output\_cognito\_client\_secret\_arn) | Secrets Manager ARN holding the Cognito client secret. |
 | <a name="output_cognito_discovery_url"></a> [cognito\_discovery\_url](#output\_cognito\_discovery\_url) | OIDC discovery URL for the Cognito user pool used as the AgentCore JWT authorizer. |
 | <a name="output_cognito_token_url"></a> [cognito\_token\_url](#output\_cognito\_token\_url) | OAuth2 client-credentials token endpoint. |
+| <a name="output_data_source_id"></a> [data\_source\_id](#output\_data\_source\_id) | Bedrock data source id used by the manuals ingestion script to start ingestion jobs. |
 | <a name="output_deployed_image_uri"></a> [deployed\_image\_uri](#output\_deployed\_image\_uri) | Image URI the runtime was last applied with; the PR plan job passes it back so plans never show a runtime destroy. |
 | <a name="output_ecr_repository_url"></a> [ecr\_repository\_url](#output\_ecr\_repository\_url) | URL of the ECR repository the MCP server image is pushed to. |
+| <a name="output_knowledge_base_id"></a> [knowledge\_base\_id](#output\_knowledge\_base\_id) | Bedrock Knowledge Base id used by ask\_manual and by the manuals ingestion script. |
+| <a name="output_manuals_bucket"></a> [manuals\_bucket](#output\_manuals\_bucket) | S3 bucket holding manual PDFs and their metadata sidecars. |
+| <a name="output_manuals_prefix"></a> [manuals\_prefix](#output\_manuals\_prefix) | Key prefix inside the manuals bucket that the knowledge base ingests. |
 | <a name="output_table_name"></a> [table\_name](#output\_table\_name) | Name of the DynamoDB table backing the HomeLedger repository. |
 <!-- END_TF_DOCS -->

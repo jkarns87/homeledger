@@ -81,6 +81,14 @@ data "aws_iam_policy_document" "this" {
     actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:BatchWriteItem"]
     resources = [var.dynamodb_table_arn, "${var.dynamodb_table_arn}/index/*"]
   }
+  dynamic "statement" {
+    for_each = var.knowledge_base_arn == "" ? [] : [var.knowledge_base_arn]
+    content {
+      sid       = "RetrieveFromKnowledgeBase"
+      actions   = ["bedrock:Retrieve"]
+      resources = [statement.value]
+    }
+  }
 }
 
 resource "aws_iam_role" "this" {

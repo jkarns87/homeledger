@@ -48,3 +48,23 @@ output "deployed_image_uri" {
   description = "Image URI the runtime was last applied with; the PR plan job passes it back so plans never show a runtime destroy."
   value       = var.image_uri
 }
+
+output "manuals_bucket" {
+  description = "S3 bucket holding manual PDFs and their metadata sidecars."
+  value       = module.knowledge_base.manuals_bucket
+}
+
+output "manuals_prefix" {
+  description = "Key prefix inside the manuals bucket that the knowledge base ingests."
+  value       = module.knowledge_base.manuals_prefix
+}
+
+output "knowledge_base_id" {
+  description = "Bedrock Knowledge Base id used by ask_manual and by the manuals ingestion script."
+  value       = module.knowledge_base.knowledge_base_id
+}
+
+output "data_source_id" {
+  description = "Bedrock data source id used by the manuals ingestion script to start ingestion jobs."
+  value       = module.knowledge_base.data_source_id
+}

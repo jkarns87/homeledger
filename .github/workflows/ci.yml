@@ -64,6 +64,13 @@ jobs:
           terraform validate
           terraform test
 
+      - name: knowledge-base validate and test
+        working-directory: infra/modules/knowledge-base
+        run: |
+          terraform init -backend=false
+          terraform validate
+          terraform test
+
       - uses: terraform-linters/setup-tflint@v4
 
       - name: tflint init
@@ -104,5 +111,13 @@ jobs:
         with:
           scan-type: config
           scan-ref: infra/modules/cognito-m2m
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: trivy (knowledge-base)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: infra/modules/knowledge-base
           severity: HIGH,CRITICAL
           exit-code: '1'

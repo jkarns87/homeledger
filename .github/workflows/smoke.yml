@@ -38,6 +38,19 @@ jobs:
           COGNITO_CLIENT_ID=$(terraform output -raw cognito_client_id)
           COGNITO_CLIENT_SECRET=$(terraform output -raw cognito_client_secret)
           TABLE_NAME=$(terraform output -raw table_name)
+          # The three knowledge-base module outputs are read tolerantly, and
+          # only these three: the Knowledge Base has never been applied
+          # (Bedrock model invocation is blocked account-wide, FL-019), so
+          # `terraform output -raw` on them exits 1 and, under this step's
+          # `set -e`, would fail the workflow here - before the smoke runs at
+          # all, and for a reason that has nothing to do with what the smoke
+          # exists to check. Empty is a meaningful value downstream: it is
+          # exactly what scripts/smoke.ts's checkManualPassages reads as "no
+          # Knowledge Base provisioned". Everything above stays strict,
+          # because a missing runtime URL or table name IS a broken deploy.
+          MANUALS_BUCKET=$(terraform output -raw manuals_bucket 2>/dev/null || true)
+          KNOWLEDGE_BASE_ID=$(terraform output -raw knowledge_base_id 2>/dev/null || true)
+          DATA_SOURCE_ID=$(terraform output -raw data_source_id 2>/dev/null || true)
           AGENT_RUNTIME_ARN=$(terraform output -raw agent_runtime_arn)
           echo "::add-mask::$COGNITO_CLIENT_SECRET"
           {
@@ -45,6 +58,9 @@ jobs:
             echo "COGNITO_TOKEN_URL=$COGNITO_TOKEN_URL"
             echo "COGNITO_CLIENT_ID=$COGNITO_CLIENT_ID"
             echo "TABLE_NAME=$TABLE_NAME"
+            echo "MANUALS_BUCKET=$MANUALS_BUCKET"
+            echo "KNOWLEDGE_BASE_ID=$KNOWLEDGE_BASE_ID"
+            echo "DATA_SOURCE_ID=$DATA_SOURCE_ID"
             echo "AGENT_RUNTIME_ARN=$AGENT_RUNTIME_ARN"
           } >> "$GITHUB_ENV"
           # Kept out of $GITHUB_ENV so it never reaches later steps' full
@@ -64,10 +80,32 @@ jobs:
 
       - run: pnpm --filter @homeledger/scripts seed:remote
 
+      # seed:manual uploads the document scripts/smoke.ts's manual assertion
+      # looks for, and it requires KNOWLEDGE_BASE_ID and DATA_SOURCE_ID to
+      # start an ingestion job. With no Knowledge Base provisioned there is
+      # nothing to ingest into, so the step is skipped rather than left to
+      # die on `KNOWLEDGE_BASE_ID is required` - the same condition, and the
+      # same reasoning, as the smoke's own ask_manual skip. The companion
+      # step below makes the skip visible in the log instead of silent.
+      - run: pnpm --filter @homeledger/scripts seed:manual
+        if: env.KNOWLEDGE_BASE_ID != ''
+
+      - name: Skip manual seeding (no Knowledge Base)
+        if: env.KNOWLEDGE_BASE_ID == ''
+        run: 'echo "seed:manual: SKIPPED - no KNOWLEDGE_BASE_ID configured, so no Knowledge Base is provisioned (FRICTION-LOG.md FL-019)"'
+
       - name: Run smoke
         env:
           COGNITO_CLIENT_SECRET: ${{ steps.tf-outputs.outputs.client_secret }}
-        run: pnpm smoke
+        # The trailing grep is not redundant with pnpm smoke's own exit code
+        # (task-13-review.md Finding 2, IMPORTANT): a symlinked workspace can
+        # make smoke.ts's entrypoint guard skip the entire script - no
+        # assertions run, nothing printed, process exits 0 anyway. Requiring
+        # the sentinel the script only ever prints as its last line means
+        # this step cannot pass without the script actually having reached
+        # its end, independent of and in addition to the realpath fix in
+        # smoke.ts itself.
+        run: pnpm smoke | tee smoke.log && grep -q '^SMOKE OK$' smoke.log
 
       - name: Tail runtime logs
         if: always()

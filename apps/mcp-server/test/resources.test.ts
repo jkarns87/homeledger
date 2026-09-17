@@ -11,7 +11,12 @@ describe('resources', () => {
     const h = await modernClient();
     close = h.close;
     const { resources } = await h.client.listResources();
-    expect(resources.map(r => r.uri).sort()).toEqual(['homeledger://appliances', 'homeledger://household', 'homeledger://maintenance/schedule']);
+    expect(
+      resources
+        .map(r => r.uri)
+        .filter(uri => uri.startsWith('homeledger://'))
+        .sort()
+    ).toEqual(['homeledger://appliances', 'homeledger://household', 'homeledger://maintenance/schedule']);
     const hh = await h.client.readResource({ uri: 'homeledger://household' });
     const body = JSON.parse((hh.contents[0] as { text: string }).text) as { name: string };
     expect(body.name).toBe('The Harlow household');
