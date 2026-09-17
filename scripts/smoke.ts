@@ -1,9 +1,11 @@
+import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { Client as LegacyClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport as LegacyTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { SEED_APPLIANCE_COUNT } from '@homeledger/core';
+import { SMOKE_MANUAL_TITLE } from './seed-manual.js';
 
 export const need = (k: string): string => {
   const v = process.env[k];
@@ -84,6 +86,50 @@ export function assertApplianceCount(count: number): void {
     throw new Error(`expected ${SEED_APPLIANCE_COUNT} seeded appliances, got ${count} - table may hold duplicates from before the reset-before-seed fix`);
 }
 
+export interface ManualPassage {
+  text: string;
+  docTitle: string;
+  page: number | null;
+}
+
+/**
+ * Confirms ask_manual answered from the deployed Knowledge Base, not the
+ * server's own createFixtureRetriever fallback (task-13-review.md Finding
+ * 1, CRITICAL). apps/mcp-server/src/deps.ts silently returns the fixture
+ * retriever whenever KNOWLEDGE_BASE_ID is unset on the runtime revision -
+ * including today's actual state (Knowledge Base never applied, FL-019) and
+ * the brief's own "apply didn't replace the revision" failure mode - and
+ * @homeledger/core's SAMPLE_MANUAL_PASSAGES[0] matches this smoke's exact
+ * question on four keywords and contains "F21", so a bare substring check
+ * on "F21" cannot tell the two apart: it would report SMOKE OK against a
+ * system with no Knowledge Base, S3 Vectors index, ingestion job, or
+ * Bedrock call at all. SMOKE_MANUAL_TITLE is the literal title
+ * seed-manual.ts writes into the sidecar the KB retriever reads docTitle
+ * from (packages/core/src/retrieval/bedrock.ts); no fixture passage
+ * carries it, so requiring BOTH docTitle and the F21 text can only pass
+ * against real ingested content.
+ */
+export function assertManualPassages(passages: readonly ManualPassage[]): void {
+  if (passages.length === 0) throw new Error('ask_manual returned no passages; run seed:manual and confirm the ingestion job completed');
+  if (!passages.some(p => p.docTitle === SMOKE_MANUAL_TITLE && p.text.includes('F21')))
+    throw new Error(
+      `ask_manual did not return the seeded KB document; got: ${passages.map(p => `${p.docTitle} p${p.page}`).join(', ')} - the runtime may be falling back to the fixture retriever (KNOWLEDGE_BASE_ID unset on this revision)`
+    );
+}
+
+/**
+ * Voice-first contract check on a tool's first content block
+ * (task-13-review.md Finding 3, IMPORTANT): an empty or missing content
+ * array coerced through `?? ''` made the previous "spoke JSON" regex
+ * vacuously pass, since '' never matches /[{}[\]]/. Presence is asserted
+ * before shape, so a regression to no spoken text at all fails loudly
+ * instead of reading as OK.
+ */
+export function assertSpokenProse(text: string): void {
+  if (text.length === 0) throw new Error('ask_manual returned no spoken text');
+  if (/[{}[\]]/.test(text)) throw new Error(`ask_manual spoke JSON: ${text}`);
+}
+
 export async function timedWithBudget<T>(label: string, fn: () => Promise<T>, budgetMs: number, enforce = true): Promise<T> {
   const t0 = performance.now();
   const out = await fn();
@@ -120,11 +166,24 @@ export function buildElicitResponse(requestedSchema: ElicitRequestedSchema, aske
   return { action: 'accept', content: { [field]: options[0] } };
 }
 
-// ESM's canonical "am I the entrypoint" check (same as manuals.ts and
-// seed-manual.ts): keeps every export above importable - and therefore
+// ESM's canonical "am I the entrypoint" check (same pattern as manuals.ts
+// and seed-manual.ts): keeps every export above importable - and therefore
 // unit-testable - without requiring MCP_URL/COGNITO_* or touching the
 // network merely to import this module.
-const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+//
+// realpathSync on process.argv[1] is required, not cosmetic
+// (task-13-review.md Finding 2, IMPORTANT): Node's ESM loader resolves
+// import.meta.url through symlinks, but process.argv[1] is the path as
+// typed. On a symlinked workspace (a self-hosted runner, a container
+// bind-mount, macOS /tmp -> /private/tmp) the two would disagree with no
+// realpath, this whole block would be silently skipped, and the process
+// would exit 0 having run zero assertions. Confirmed empirically by the
+// reviewer: the same file through a symlinked directory produced no output
+// and exit 0 before this fix. The CI step's `grep -q '^SMOKE OK$'` in
+// .github/workflows/smoke.yml is the second, independent half of this
+// fix - belt and braces, since this guard can otherwise disable every
+// other assertion in the script at once.
+const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 
 if (isEntrypoint) {
   const url = need('MCP_URL');
@@ -170,13 +229,12 @@ if (isEntrypoint) {
     const manual = await timed('modern ask_manual (knowledge base)', () =>
       client.callTool({ name: 'ask_manual', arguments: { question: 'What does error code F21 mean on the washer?' } })
     );
-    const passages = (manual.structuredContent as { passages: Array<{ text: string; docTitle: string; page: number | null }> }).passages;
-    if (passages.length === 0) throw new Error('ask_manual returned no passages; run seed:manual and confirm the ingestion job completed');
-    if (!passages.some(p => p.text.includes('F21'))) throw new Error(`ask_manual returned no F21 passage: ${passages.map(p => p.docTitle).join(', ')}`);
+    const passages = (manual.structuredContent as { passages: ManualPassage[] }).passages;
+    assertManualPassages(passages);
     console.log(`ask_manual: ${passages.length} passage(s), first from ${passages[0]!.docTitle} page ${passages[0]!.page}`);
 
     const manualText = (manual.content as Array<{ text?: string }>)[0]?.text ?? '';
-    if (/[{}[\]]/.test(manualText)) throw new Error(`ask_manual spoke JSON: ${manualText}`);
+    assertSpokenProse(manualText);
 
     await client.close();
   }
@@ -185,14 +243,27 @@ if (isEntrypoint) {
   {
     const client = new LegacyClient({ name: 'Alexa+ MCP Client', version: '1.0.0' }, { capabilities: { elicitation: {} } });
     const asked: string[] = [];
+    // Captured and re-thrown below rather than left to the SDK
+    // (task-13-review.md Minor 7): a throw from inside this request handler
+    // is converted by the SDK into a JSON-RPC error response instead of
+    // failing the process, so without this the operator only ever sees the
+    // vaguer downstream comparison failure ("legacy book_service asked
+    // provider") instead of the specific cause ("elicitation for provider
+    // offered 0 options").
+    let elicitError: Error | undefined;
     client.setRequestHandler(ElicitRequestSchema, async request => {
-      // ElicitRequestSchema.params is a form/url mode union in this SDK
-      // version (the brief predates url-mode elicitation); homeledger's own
-      // elicit.ts only ever builds form-mode requests (enumField/
-      // booleanField), so url mode here would itself be a regression worth
-      // failing loudly on rather than a case to silently handle.
-      if (request.params.mode === 'url') throw new Error(`legacy elicitation arrived in url mode: ${request.params.url}`);
-      return buildElicitResponse(request.params.requestedSchema as ElicitRequestedSchema, asked);
+      try {
+        // ElicitRequestSchema.params is a form/url mode union in this SDK
+        // version (the brief predates url-mode elicitation); homeledger's own
+        // elicit.ts only ever builds form-mode requests (enumField/
+        // booleanField), so url mode here would itself be a regression worth
+        // failing loudly on rather than a case to silently handle.
+        if (request.params.mode === 'url') throw new Error(`legacy elicitation arrived in url mode: ${request.params.url}`);
+        return buildElicitResponse(request.params.requestedSchema as ElicitRequestedSchema, asked);
+      } catch (err) {
+        elicitError = err instanceof Error ? err : new Error(String(err));
+        throw err;
+      }
     });
     const transport = new LegacyTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${bearer}` } } });
     await timed('legacy initialize (cold)', () => client.connect(transport), false);
@@ -200,6 +271,7 @@ if (isEntrypoint) {
     console.log(`legacy session: ${transport.sessionId}`);
 
     const echo = await timed('legacy echo_confirm (elicitation)', () => client.callTool({ name: 'echo_confirm', arguments: { message: 'smoke' } }));
+    if (elicitError) throw elicitError;
     if (JSON.stringify(echo.structuredContent) !== JSON.stringify({ confirmed: true, message: 'smoke' }))
       throw new Error(`legacy elicitation result ${JSON.stringify(echo.structuredContent)}`);
 
@@ -217,15 +289,22 @@ if (isEntrypoint) {
         }),
       false
     );
+    if (elicitError) throw elicitError;
     if (JSON.stringify(asked) !== JSON.stringify(['provider', 'window', 'confirm'])) throw new Error(`legacy book_service asked ${asked.join(',')}`);
     const visit = booked.structuredContent as { visitId: string; provider: string; status: string };
     if (visit.status !== 'scheduled') throw new Error(`legacy book_service status ${visit.status}`);
     if (!/^visit_[a-z2-7]{16}$/.test(visit.visitId)) throw new Error(`legacy book_service visitId ${visit.visitId}`);
+    if (!visit.provider) throw new Error('legacy book_service returned an empty provider name');
     console.log(`legacy book_service: ${visit.provider} ${visit.visitId}, progress ${progress.join(',') || 'none'}`);
 
+    // Both fields checked, not just providerName (task-13-review.md Minor
+    // 5): comparing only providerName leaves an `undefined !== undefined`
+    // blind spot if both sides ever lost the field at once; id is a second,
+    // independent point of agreement between the two tools' responses.
     const fetched = await timed('legacy get_visit', () => client.callTool({ name: 'get_visit', arguments: { visitId: visit.visitId } }));
-    const fetchedVisit = (fetched.structuredContent as { visit: { providerName: string }; snapshotUrl: string | null }).visit;
-    if (fetchedVisit.providerName !== visit.provider) throw new Error(`get_visit returned ${fetchedVisit.providerName}`);
+    const fetchedVisit = (fetched.structuredContent as { visit: { id: string; providerName: string }; snapshotUrl: string | null }).visit;
+    if (fetchedVisit.id !== visit.visitId) throw new Error(`get_visit returned visit ${fetchedVisit.id}, expected ${visit.visitId}`);
+    if (fetchedVisit.providerName !== visit.provider) throw new Error(`get_visit returned provider ${fetchedVisit.providerName}, expected ${visit.provider}`);
 
     try {
       await transport.terminateSession();
@@ -236,7 +315,7 @@ if (isEntrypoint) {
       // round trips above) did route correctly — see FL-022. AgentCore manages
       // session lifecycle itself via idle timeout, so an on-demand DELETE is
       // best-effort cleanup, not part of the smoke contract; log and continue.
-      console.log(`legacy terminateSession: non-fatal - ${(err as Error).message}`);
+      console.log(`legacy terminateSession: non-fatal - ${err instanceof Error ? err.message : String(err)}`);
     }
     await client.close();
   }

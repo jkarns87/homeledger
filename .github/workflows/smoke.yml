@@ -75,7 +75,15 @@ jobs:
       - name: Run smoke
         env:
           COGNITO_CLIENT_SECRET: ${{ steps.tf-outputs.outputs.client_secret }}
-        run: pnpm smoke
+        # The trailing grep is not redundant with pnpm smoke's own exit code
+        # (task-13-review.md Finding 2, IMPORTANT): a symlinked workspace can
+        # make smoke.ts's entrypoint guard skip the entire script - no
+        # assertions run, nothing printed, process exits 0 anyway. Requiring
+        # the sentinel the script only ever prints as its last line means
+        # this step cannot pass without the script actually having reached
+        # its end, independent of and in addition to the realpath fix in
+        # smoke.ts itself.
+        run: pnpm smoke | tee smoke.log && grep -q '^SMOKE OK$' smoke.log
 
       - name: Tail runtime logs
         if: always()

@@ -1,7 +1,10 @@
-import { SEED_APPLIANCE_COUNT } from '@homeledger/core';
+import { SAMPLE_MANUAL_PASSAGES, SEED_APPLIANCE_COUNT } from '@homeledger/core';
 import { describe, expect, it } from 'vitest';
+import { SMOKE_MANUAL_TITLE } from '../seed-manual.js';
 import {
   assertApplianceCount,
+  assertManualPassages,
+  assertSpokenProse,
   assertToolOrder,
   assertWidgetWiring,
   buildElicitResponse,
@@ -10,6 +13,7 @@ import {
   timedWithBudget,
   widgetUriOf,
   WIDGET_EXPECTATIONS,
+  type ManualPassage,
   type SmokeTool
 } from '../smoke.js';
 
@@ -183,6 +187,55 @@ describe('assertApplianceCount', () => {
 
   it('throws when the count is short of SEED_APPLIANCE_COUNT too (not just a floor)', () => {
     expect(() => assertApplianceCount(SEED_APPLIANCE_COUNT - 1)).toThrow(`expected ${SEED_APPLIANCE_COUNT} seeded appliances, got ${SEED_APPLIANCE_COUNT - 1}`);
+  });
+});
+
+// task-13-review.md Finding 1, CRITICAL: a bare F21-substring check cannot
+// tell the deployed Knowledge Base apart from apps/mcp-server/src/deps.ts's
+// own createFixtureRetriever fallback, because SAMPLE_MANUAL_PASSAGES[0]
+// (the fixture data) matches this smoke's exact question and contains
+// "F21". These tests feed the guard fixture-shaped content directly - the
+// actual shape a KB-less runtime would return - rather than a synthetic
+// mutation, since the trap here lives in the DATA, not in a code path this
+// task could mutate.
+describe('assertManualPassages', () => {
+  it('throws when there are no passages at all', () => {
+    expect(() => assertManualPassages([])).toThrow('ask_manual returned no passages');
+  });
+
+  it('throws when the only match is fixture-shaped content (the actual Finding 1 scenario)', () => {
+    const fixturePassages: ManualPassage[] = SAMPLE_MANUAL_PASSAGES.map(p => ({ text: p.text, docTitle: p.docTitle, page: p.page }));
+    // Sanity check that the trap is real, not a stale assumption: if this
+    // ever stops being true, the test above it is not exercising Finding 1
+    // anymore and needs to be revisited.
+    expect(fixturePassages.some(p => p.text.includes('F21'))).toBe(true);
+    expect(() => assertManualPassages(fixturePassages)).toThrow(/did not return the seeded KB document/);
+  });
+
+  it('does not throw when a passage carries the seeded title and the F21 text', () => {
+    const passages: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: SMOKE_MANUAL_TITLE, page: 1 }];
+    expect(() => assertManualPassages(passages)).not.toThrow();
+  });
+
+  it('throws when the title matches but the text does not mention F21', () => {
+    const passages: ManualPassage[] = [{ text: 'Unrelated maintenance content.', docTitle: SMOKE_MANUAL_TITLE, page: 1 }];
+    expect(() => assertManualPassages(passages)).toThrow(/did not return the seeded KB document/);
+  });
+});
+
+// task-13-review.md Finding 3, IMPORTANT: `(content[0]?.text ?? '')` made
+// the old JSON-shape check vacuous on an empty/missing content block.
+describe('assertSpokenProse', () => {
+  it('does not throw for plain prose', () => {
+    expect(() => assertSpokenProse('3 passages, first from the washer manual.')).not.toThrow();
+  });
+
+  it('throws when the text is empty (the vacuous-check scenario)', () => {
+    expect(() => assertSpokenProse('')).toThrow('ask_manual returned no spoken text');
+  });
+
+  it('throws when the text looks like JSON', () => {
+    expect(() => assertSpokenProse('{"passages":[]}')).toThrow(/spoke JSON/);
   });
 });
 
