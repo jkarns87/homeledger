@@ -221,6 +221,30 @@ describe('assertManualPassages', () => {
     const passages: ManualPassage[] = [{ text: 'Unrelated maintenance content.', docTitle: SMOKE_MANUAL_TITLE, page: 1 }];
     expect(() => assertManualPassages(passages)).toThrow(/did not return the seeded KB document/);
   });
+
+  // The `===` in assertManualPassages is load-bearing, and until these two
+  // cases existed nothing guarded it: every other case above feeds the guard
+  // SMOKE_MANUAL_TITLE exactly as the guard reads it, so they prove the
+  // comparison is WIRED, never that it is EXACT - relaxing `===` to
+  // `.includes()` in either direction was caught by nothing. The standing
+  // rule from Task 11 applies verbatim: a test that reads the same symbol
+  // the code reads verifies wiring, not value.
+  //
+  // One case per direction, because `.includes()` can be written either way
+  // round and only one of these catches each:
+  //   p.docTitle.includes(SMOKE_MANUAL_TITLE) -> the superstring passes
+  //   SMOKE_MANUAL_TITLE.includes(p.docTitle) -> the prefix passes
+  it('throws on a title that merely CONTAINS the seeded title (a superstring, not an equal)', () => {
+    const passages: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: `${SMOKE_MANUAL_TITLE} (archived copy)`, page: 1 }];
+    expect(() => assertManualPassages(passages)).toThrow(/did not return the seeded KB document/);
+  });
+
+  it('throws on a title the seeded title merely contains (a prefix, not an equal)', () => {
+    const prefix = SMOKE_MANUAL_TITLE.slice(0, -' manual'.length);
+    expect(prefix).not.toBe(SMOKE_MANUAL_TITLE);
+    const passages: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: prefix, page: 1 }];
+    expect(() => assertManualPassages(passages)).toThrow(/did not return the seeded KB document/);
+  });
 });
 
 // task-13-review.md Finding 3, IMPORTANT: `(content[0]?.text ?? '')` made
