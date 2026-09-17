@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { createDynamoRepository } from '@homeledger/core';
 import { uploadManual } from './manuals.js';
@@ -59,7 +60,19 @@ export function buildSmokePdf(lines: string[]): Uint8Array {
 // and SMOKE_MANUAL_TITLE importable (by scripts/test/seed-manual.test.ts, and
 // any future caller) without requiring AWS_REGION/HOUSEHOLD_ID/TABLE_NAME or
 // touching the network merely to import this module.
-const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+//
+// realpathSync on process.argv[1] is required, not cosmetic
+// (task-13-review.md Finding 2, IMPORTANT): Node's ESM loader resolves
+// import.meta.url through symlinks, but process.argv[1] is the path as
+// typed. On a symlinked workspace (a self-hosted runner, a container
+// bind-mount, macOS /tmp -> /private/tmp) the two disagree without it, this
+// whole block is silently skipped, and the process exits 0 having seeded
+// nothing. This script is the producer of the exact document
+// smoke.ts's assertManualPassages requires, so a silent exit-0 no-op here
+// makes the smoke fail later blaming the wrong thing entirely - it points
+// at KNOWLEDGE_BASE_ID and Terraform rather than at the seeding step that
+// quietly did nothing.
+const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 
 if (isEntrypoint) {
   const region = need('AWS_REGION');

@@ -166,10 +166,12 @@ export function buildElicitResponse(requestedSchema: ElicitRequestedSchema, aske
   return { action: 'accept', content: { [field]: options[0] } };
 }
 
-// ESM's canonical "am I the entrypoint" check (same pattern as manuals.ts
-// and seed-manual.ts): keeps every export above importable - and therefore
-// unit-testable - without requiring MCP_URL/COGNITO_* or touching the
-// network merely to import this module.
+// ESM's canonical "am I the entrypoint" check. manuals.ts and seed-manual.ts
+// now carry the identical realpathSync form; for a period they carried the
+// unhardened version this comment claimed they matched, which pointed a
+// reader at the two defective copies as the reference. Keeps every export
+// above importable - and therefore unit-testable - without requiring
+// MCP_URL/COGNITO_* or touching the network merely to import this module.
 //
 // realpathSync on process.argv[1] is required, not cosmetic
 // (task-13-review.md Finding 2, IMPORTANT): Node's ESM loader resolves

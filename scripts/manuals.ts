@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import {
@@ -182,7 +183,17 @@ export async function uploadManual(options: UploadManualOptions): Promise<{ docI
 // identically under `tsx manuals.ts` and `node --import tsx manuals.ts`, and
 // is immune to the relative-vs-absolute or separator mismatches a plain
 // string/basename comparison of process.argv[1] can fall into.
-const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+//
+// realpathSync on process.argv[1] is required, not cosmetic
+// (task-13-review.md Finding 2, IMPORTANT): Node's ESM loader resolves
+// import.meta.url through symlinks, but process.argv[1] is the path as
+// typed. On a symlinked workspace (a self-hosted runner, a container
+// bind-mount, macOS /tmp -> /private/tmp) the two disagree without it, this
+// whole block is silently skipped, and the process exits 0 having done
+// nothing at all. That is the worst outcome for this file in particular: it
+// is the operator-facing CLI the README documents, so a silent no-op reads
+// as a successful upload.
+const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
 
 if (isEntrypoint) {
   const applianceId = flag('appliance');
