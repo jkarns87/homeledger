@@ -90,6 +90,71 @@ docker run --rm -p 8010:8000 -e HOUSEHOLD_ID=hh_harlow -e MEMORY_REPO=1 -e HOMEL
 
 `HOMELEDGER_DEV_TOOLS=1` registers the developer-only `echo_confirm` tool — it is how the elicitation demo (a real `elicitation/create` round trip) gets reproduced locally.
 
+## Talking to HomeLedger from Claude Code
+
+Claude Code runs on the Anthropic API rather than Bedrock, so it can drive this server today regardless of the account-wide Bedrock model block (FL-019). It is the only way a person, rather than a smoke script, has used the system.
+
+There are two ways in. The local one needs no AWS at all and is the right one for poking at tools; the deployed one exercises the real runtime.
+
+### Local, no auth
+
+The server speaks Streamable HTTP, which Claude Code connects to directly — no bridge.
+
+```bash
+HOUSEHOLD_ID=hh_harlow MEMORY_REPO=1 HOMELEDGER_DEV_TOOLS=1 PORT=8010 pnpm --filter @homeledger/mcp-server dev
+claude mcp add --transport http homeledger-local http://127.0.0.1:8010/mcp
+```
+
+`MEMORY_REPO=1` seeds an in-memory household, so this needs neither DynamoDB nor credentials. Then ask Claude Code to book a service visit for the water heater and answer the three questions it relays.
+
+### Deployed, through the bridge
+
+The deployed runtime sits behind AgentCore with a Cognito JWT authorizer, and the token it wants expires in about an hour — so a static header in a config file breaks an hour in. `apps/mcp-bridge` is a stdio MCP server that Claude Code spawns: it mints the token, refreshes it before it expires, and relays MCP traffic in both directions.
+
+**You need an AWS SSO session.** Sign in first — the bridge reads the Cognito client secret from Secrets Manager at startup and needs the session only for that one call:
+
+```bash
+aws login --profile homeledger-admin
+```
+
+Then print the exact command, with your runtime's own values filled in:
+
+```bash
+pnpm build                                          # the bridge runs from dist/
+pnpm --filter @homeledger/mcp-bridge setup          # reads Terraform outputs, prints the command below
+```
+
+It prints something of this shape — run what it prints, not this:
+
+```bash
+claude mcp add homeledger \
+  --scope user \
+  -e HOMELEDGER_RUNTIME_ARN='arn:aws:bedrock-agentcore:us-east-1:<account-id>:runtime/<runtime>' \
+  -e HOMELEDGER_COGNITO_TOKEN_URL='https://<domain>.auth.us-east-1.amazoncognito.com/oauth2/token' \
+  -e HOMELEDGER_COGNITO_CLIENT_ID='<client id>' \
+  -e AWS_REGION='us-east-1' \
+  -e AWS_PROFILE='homeledger-admin' \
+  -- node /absolute/path/to/homeledger/apps/mcp-bridge/dist/index.js
+```
+
+No client secret appears on that command line, and none should: `claude mcp add --scope user` writes these values into `~/.claude.json`, and at project scope it would write them into a tracked `.mcp.json`. The secret is read from Secrets Manager (`demo-homeledger/cognito/client-secret`) with the local profile instead. `HOMELEDGER_COGNITO_CLIENT_SECRET` is supported for CI and containers, where there is no SSO session.
+
+Every diagnostic goes to stderr, which Claude Code shows under `/mcp`; stdout carries JSON-RPC only. The failure you will actually hit is the SSO session, and it says so in one line:
+
+```
+[homeledger-bridge] Your AWS SSO session expired, run `aws login --profile homeledger-admin`
+```
+
+Other variables, none of them required:
+
+- `HOMELEDGER_MCP_URL` — the full invocation URL, instead of `HOMELEDGER_RUNTIME_ARN`.
+- `HOMELEDGER_COGNITO_SCOPE` — defaults to `homeledger/mcp`.
+- `HOMELEDGER_COGNITO_SECRET_ID` — defaults to `demo-homeledger/cognito/client-secret`.
+- `HOMELEDGER_AGENTCORE_SESSION_ID` — the bridge pins one runtime session per process by default so that a session's later requests reach the instance holding it (FL-022, FL-033). `off` sends no session header, which is exactly what `pnpm smoke` does. A pinned value must be at least 33 characters.
+- `HOMELEDGER_BRIDGE_SSE=off` — stops the bridge holding open the spec's optional standalone `GET` event stream. Nothing this server sends arrives on it.
+
+What the bridge does **not** do is translate between protocol revisions. Claude Code 2.1.56 negotiates `2025-11-25` and answers elicitation with session-based `elicitation/create` over the call's own event stream — not the 2026-07-28 multi round-trip requests the modern client uses — so it lands on the server's legacy shim, which is the same path `pnpm smoke`'s legacy block exercises. FL-033 records what that means for a proxy; the short version is that the response stream must be relayed as it arrives and requests must be allowed to overlap, or `book_service` deadlocks on its first question.
+
 ## Deployed endpoint
 
 The MCP server runs as an Amazon Bedrock AgentCore Runtime in `us-east-1` (AWS account `<account-id>`), built and deployed entirely through GitHub Actions — there are no local AWS credentials for this repo. `infra/live/demo/platform` is the Terraform root; its `agent_runtime_invocation_url` output is the runtime's DEFAULT-qualifier invocation endpoint:
