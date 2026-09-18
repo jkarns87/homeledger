@@ -9,15 +9,19 @@ import {
   assertSpokenProse,
   assertToolOrder,
   assertWidgetWiring,
+  askManualRetrievalUnavailableLine,
   buildElicitResponse,
   checkManualPassages,
   EXPECTED_TOOLS,
+  firstTextBlock,
   manualIngestionSkipped,
   need,
+  readManualResult,
   timedWithBudget,
   widgetUriOf,
   WIDGET_EXPECTATIONS,
   type ManualPassage,
+  type ManualResult,
   type SmokeTool
 } from '../smoke.js';
 
@@ -26,10 +30,12 @@ import {
 // endpoint - none of which are reachable from this test run. The Knowledge
 // Base itself DOES now exist (it applied cleanly on the first post-merge
 // deploy; an earlier version of this comment wrongly said it was never
-// applied - see FL-032), but nothing has been ingested into it, because
-// Bedrock model invocation is blocked account-wide and the Knowledge Base
-// role's embedding call is refused (FL-019). What IS pure, offline logic -
-// need(), the tool-order and widget-wiring assertions, the three-state
+// applied - see FL-032), but it can neither be ingested into nor queried,
+// because Bedrock model invocation is blocked account-wide and BOTH halves
+// need the embedding model - ingestion to embed the documents, Retrieve to
+// embed the question (FL-019, FL-032). What IS pure, offline logic -
+// need(), the tool-order and widget-wiring assertions, the total
+// result-classification in readManualResult/firstTextBlock, the five-state
 // Knowledge Base decision, the budget enforcement in timedWithBudget, and
 // the legacy elicitation auto-fulfilment in buildElicitResponse - is
 // exercised here.
@@ -254,6 +260,21 @@ describe('assertManualPassages', () => {
     const passages: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: prefix, page: 1 }];
     expect(() => assertManualPassages(passages)).toThrow(/did not return the seeded KB document/);
   });
+
+  // Same class of bug as the run-35290491286 crash, one level deeper: a
+  // malformed passage must make the MATCH fail, not make the comparison
+  // throw a TypeError. Each of these has to reach the "did not return the
+  // seeded KB document" message, which is only possible if both the `.some`
+  // predicate and the message's own `.map` survive the bad entry.
+  it.each([
+    ['a passage with no text field', [{ docTitle: SMOKE_MANUAL_TITLE, page: 1 }]],
+    ['a passage whose text is not a string', [{ text: 42, docTitle: SMOKE_MANUAL_TITLE, page: 1 }]],
+    ['a passage with no docTitle', [{ text: 'Error code F21 indicates a long drain time.', page: 1 }]],
+    ['a null entry', [null]],
+    ['an undefined entry', [undefined]]
+  ])('fails the match rather than throwing a TypeError on %s', (_label, passages) => {
+    expect(() => assertManualPassages(passages as unknown as ManualPassage[])).toThrow(/did not return the seeded KB document/);
+  });
 });
 
 // Fails closed by design: only an explicit affirmative disables the
@@ -280,11 +301,120 @@ describe('manualIngestionSkipped', () => {
   });
 });
 
-// The four states the owner asked for explicitly. States 3 and 4 are the
-// point of the whole function: once a Knowledge Base is configured AND
-// ingestion actually happened, wrong content must still fail hard. The skips
-// exist for "there is no Knowledge Base" and "there is one but nothing could
-// be put into it" - never for "the Knowledge Base returned the wrong thing".
+// readManualResult must be TOTAL: every one of these inputs is something a
+// real tool call has returned or could return, and not one of them may throw.
+// Run 35290491286 died on `(manual.structuredContent as {...}).passages`
+// against the very first case below, taking every later assertion in the
+// script with it.
+describe('readManualResult', () => {
+  it('reads passages out of a well-formed result', () => {
+    const result = readManualResult({
+      content: [{ type: 'text', text: 'one passage' }],
+      structuredContent: { passages: [{ text: 'F21', docTitle: 'T', page: 1 }] }
+    });
+    expect(result.kind).toBe('passages');
+    expect(result.kind === 'passages' && result.passages).toHaveLength(1);
+  });
+
+  it('reads an empty passage list as passages, not as an error', () => {
+    const result = readManualResult({ content: [{ type: 'text', text: "I couldn't find anything." }], structuredContent: { passages: [] } });
+    expect(result.kind).toBe('passages');
+    expect(result.kind === 'passages' && result.passages).toEqual([]);
+  });
+
+  // The exact shape the MCP SDK produces when a tool handler throws, which
+  // is what ask_manual does today when Retrieve is refused: isError with a
+  // text block and NO structuredContent at all.
+  it('classifies the isError result a thrown handler produces, and keeps the server text in the detail', () => {
+    const result = readManualResult({
+      isError: true,
+      content: [{ type: 'text', text: 'Error: ValidationException: Access to Bedrock models is not allowed for this account' }]
+    });
+    expect(result.kind).toBe('error');
+    expect(result.kind === 'error' && result.detail).toContain('Access to Bedrock models is not allowed for this account');
+    // Names the branch it took, not just that it errored: without this, a
+    // result with isError and no structuredContent reaches the SAME verdict
+    // through the next branch down, so deleting the isError check entirely
+    // would go unnoticed. Confirmed by mutation - see the task report's N6.
+    expect(result.kind === 'error' && result.detail).toContain('isError result:');
+  });
+
+  // The case that makes the isError branch load-bearing on its own. A tool
+  // may return isError alongside a well-formed structuredContent, and the
+  // server is free to start doing exactly that for ask_manual (see the
+  // report's note on a typed error shape). `isError` is the authoritative
+  // signal; a readable payload underneath it does not make the call a
+  // success, and reading it as one would report 'skipped-ingestion-blocked'
+  // for a run where retrieval actually failed.
+  it('classifies an isError result as an error even when it also carries a well-formed structuredContent', () => {
+    const result = readManualResult({ isError: true, content: [{ type: 'text', text: 'Error: Retrieve refused' }], structuredContent: { passages: [] } });
+    expect(result.kind).toBe('error');
+    expect(result.kind === 'error' && result.detail).toContain('Retrieve refused');
+  });
+
+  it.each([
+    ['structuredContent missing entirely', { content: [{ type: 'text', text: 'hi' }] }],
+    ['structuredContent undefined', { content: [], structuredContent: undefined }],
+    ['structuredContent null', { structuredContent: null }],
+    ['structuredContent a string', { structuredContent: 'passages' }],
+    ['passages missing', { structuredContent: {} }],
+    ['passages not an array', { structuredContent: { passages: 'none' } }],
+    ['passages null', { structuredContent: { passages: null } }],
+    ['the whole result undefined', undefined],
+    ['the whole result null', null],
+    ['the whole result a string', 'boom']
+  ])('classifies %s as an error rather than throwing', (_label, input) => {
+    const result = readManualResult(input);
+    expect(result.kind).toBe('error');
+    expect(result.kind === 'error' && result.detail.length).toBeGreaterThan(0);
+  });
+
+  it('does not treat isError: false as an error when the payload is well formed', () => {
+    expect(readManualResult({ isError: false, structuredContent: { passages: [] } }).kind).toBe('passages');
+  });
+});
+
+describe('firstTextBlock', () => {
+  it('returns the first block text', () => {
+    expect(
+      firstTextBlock([
+        { type: 'text', text: 'spoken' },
+        { type: 'text', text: 'second' }
+      ])
+    ).toBe('spoken');
+  });
+
+  // `(undefined as unknown[])[0]` throws, which is why the old call site's
+  // `?.` was reassurance one level too late.
+  it.each([
+    ['undefined', undefined],
+    ['null', null],
+    ['an empty array', []],
+    ['a non-array', { text: 'nope' }],
+    ['an array of nulls', [null]],
+    ['a block with no text', [{ type: 'image' }]],
+    ['a block whose text is not a string', [{ type: 'text', text: 42 }]]
+  ])('returns an empty string for %s instead of throwing', (_label, input) => {
+    expect(firstTextBlock(input)).toBe('');
+  });
+});
+
+function passageResult(passages: ManualPassage[]): ManualResult {
+  return { kind: 'passages', passages };
+}
+
+const BEDROCK_ERROR_RESULT: ManualResult = {
+  kind: 'error',
+  detail: 'isError result: Error: ValidationException: Access to Bedrock models is not allowed for this account'
+};
+
+// The five states. States 3 and 4 are the point of the whole function: once a
+// Knowledge Base is configured AND ingestion actually happened, anything that
+// is not a real passage set with a matching title must fail hard. The skips
+// exist for "there is no Knowledge Base", "there is one but nothing could be
+// put into it", and "there is one but retrieval itself is refused" - never
+// for "the Knowledge Base returned the wrong thing", and never for an error
+// result outside the one state that positively explains it.
 describe('checkManualPassages', () => {
   const fixtureShaped: ManualPassage[] = SAMPLE_MANUAL_PASSAGES.map(p => ({ text: p.text, docTitle: p.docTitle, page: p.page }));
   const seeded: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: SMOKE_MANUAL_TITLE, page: 1 }];
@@ -295,14 +425,14 @@ describe('checkManualPassages', () => {
     ['empty', ''],
     ['whitespace only', '   ']
   ])('skips, without throwing, when KNOWLEDGE_BASE_ID is %s', (_label, kbId) => {
-    expect(checkManualPassages(kbId, false, fixtureShaped)).toBe('skipped-no-knowledge-base');
+    expect(checkManualPassages(kbId, false, passageResult(fixtureShaped))).toBe('skipped-no-knowledge-base');
     // Also with no passages at all: a runtime with no Knowledge Base can
     // legitimately return nothing, and the skip must not trip over that.
-    expect(checkManualPassages(kbId, false, [])).toBe('skipped-no-knowledge-base');
+    expect(checkManualPassages(kbId, false, passageResult([]))).toBe('skipped-no-knowledge-base');
     // And the absent Knowledge Base is reported as such even if the seed
     // step somehow also signalled a skip - the more fundamental state wins,
     // so the log names the real reason rather than the downstream symptom.
-    expect(checkManualPassages(kbId, true, [])).toBe('skipped-no-knowledge-base');
+    expect(checkManualPassages(kbId, true, passageResult([]))).toBe('skipped-no-knowledge-base');
   });
 
   // State 2: a Knowledge Base exists, but seed:manual could not ingest into
@@ -311,16 +441,23 @@ describe('checkManualPassages', () => {
   // the content state 4 must reject - identical input, opposite outcome,
   // decided solely by the signal from the seed step.
   it('skips when a Knowledge Base is configured but ingestion was skipped', () => {
-    expect(checkManualPassages('kb-1234567890', true, fixtureShaped)).toBe('skipped-ingestion-blocked');
-    expect(checkManualPassages('kb-1234567890', true, [])).toBe('skipped-ingestion-blocked');
+    expect(checkManualPassages('kb-1234567890', true, passageResult(fixtureShaped))).toBe('skipped-ingestion-blocked');
+    expect(checkManualPassages('kb-1234567890', true, passageResult([]))).toBe('skipped-ingestion-blocked');
     // Even content that WOULD have passed: the run still proved nothing,
     // because nothing was ingested for it to have come from.
-    expect(checkManualPassages('kb-1234567890', true, seeded)).toBe('skipped-ingestion-blocked');
+    expect(checkManualPassages('kb-1234567890', true, passageResult(seeded))).toBe('skipped-ingestion-blocked');
+  });
+
+  // State 2b, found by live run 35290491286: retrieval embeds the query too,
+  // so under the account block Retrieve is refused and the tool returns an
+  // error result rather than an empty passage list. Tolerated ONLY here.
+  it('skips when a Knowledge Base is configured, ingestion was skipped, and retrieval itself returned an error result', () => {
+    expect(checkManualPassages('kb-1234567890', true, BEDROCK_ERROR_RESULT)).toBe('skipped-retrieval-unavailable');
   });
 
   // State 3: configured, ingested, title matches.
   it('asserts and passes when a Knowledge Base is configured, ingestion happened, and the seeded document came back', () => {
-    expect(checkManualPassages('kb-1234567890', false, seeded)).toBe('asserted');
+    expect(checkManualPassages('kb-1234567890', false, passageResult(seeded))).toBe('asserted');
   });
 
   // State 4, THE INVARIANT. The false green this whole assertion exists to
@@ -328,20 +465,43 @@ describe('checkManualPassages', () => {
   // revision still has the variable unset and is quietly serving
   // @homeledger/core's SAMPLE_MANUAL_PASSAGES (which match this smoke's
   // exact question and contain "F21"). Not skippable, at any
-  // KNOWLEDGE_BASE_ID, and specifically not made skippable by the new third
-  // state - which is why each of these passes ingestionSkipped=false
+  // KNOWLEDGE_BASE_ID, and specifically not made skippable by either new
+  // skip state - which is why each of these passes ingestionSkipped=false
   // explicitly rather than relying on a default.
   it('STILL THROWS when a Knowledge Base is configured, ingestion happened, and the content is fixture-shaped', () => {
-    expect(() => checkManualPassages('kb-1234567890', false, fixtureShaped)).toThrow(/did not return the seeded KB document/);
+    expect(() => checkManualPassages('kb-1234567890', false, passageResult(fixtureShaped))).toThrow(/did not return the seeded KB document/);
   });
 
   it('still throws when ingestion happened and the title merely resembles the seeded one', () => {
     const nearMiss: ManualPassage[] = [{ text: 'Error code F21 indicates a long drain time.', docTitle: `${SMOKE_MANUAL_TITLE} (archived copy)`, page: 1 }];
-    expect(() => checkManualPassages('kb-1234567890', false, nearMiss)).toThrow(/did not return the seeded KB document/);
+    expect(() => checkManualPassages('kb-1234567890', false, passageResult(nearMiss))).toThrow(/did not return the seeded KB document/);
   });
 
   it('still throws when a Knowledge Base is configured, ingestion happened, and no passages came back at all', () => {
-    expect(() => checkManualPassages('kb-1234567890', false, [])).toThrow('ask_manual returned no passages');
+    expect(() => checkManualPassages('kb-1234567890', false, passageResult([]))).toThrow('ask_manual returned no passages');
+  });
+
+  // THE INVARIANT, error-result half - the leak the new tolerance must not
+  // spring. An error result is exactly as damning as fixture content when
+  // nothing signalled that ingestion was skipped: retrieval is broken, or the
+  // runtime cannot reach the Knowledge Base, and neither is a pass.
+  it('STILL THROWS on an error result when ingestion was NOT skipped', () => {
+    expect(() => checkManualPassages('kb-1234567890', false, BEDROCK_ERROR_RESULT)).toThrow(/returned an error result instead of passages/);
+  });
+
+  // Same, with no Knowledge Base configured: the runtime serves in-memory
+  // fixtures in that state and has nothing that can legitimately error, so
+  // an error result there is unexplained and must not be swallowed by the
+  // no-Knowledge-Base skip.
+  it.each([
+    ['unset', undefined],
+    ['empty', '']
+  ])('STILL THROWS on an error result when KNOWLEDGE_BASE_ID is %s and nothing signalled a skip', (_label, kbId) => {
+    expect(() => checkManualPassages(kbId, false, BEDROCK_ERROR_RESULT)).toThrow(/returned an error result instead of passages/);
+  });
+
+  it('names the server detail in the thrown message, so the log says what actually came back', () => {
+    expect(() => checkManualPassages('kb-1234567890', false, BEDROCK_ERROR_RESULT)).toThrow(/Access to Bedrock models is not allowed for this account/);
   });
 
   it('names KNOWLEDGE_BASE_ID in the no-Knowledge-Base skip line so the log says why nothing was proved', () => {
@@ -349,15 +509,28 @@ describe('checkManualPassages', () => {
     expect(ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE).toContain('KNOWLEDGE_BASE_ID');
   });
 
-  // Two skips, two different causes, two different lines: reusing one line
-  // for both would leave the log unable to distinguish "no Knowledge Base
-  // was ever built" from "one was built and could not be filled", which are
-  // very different things to read on a Monday morning.
+  // Three skips, three different causes, three different lines: reusing one
+  // line would leave the log unable to distinguish "no Knowledge Base was
+  // ever built" from "one was built and could not be filled" from "one was
+  // built and cannot even be queried", which are very different things to
+  // read on a Monday morning.
   it('says something different, and names the Bedrock block, in the ingestion-skipped line', () => {
     expect(ASK_MANUAL_SKIP_INGESTION_BLOCKED).toContain('SKIPPED');
     expect(ASK_MANUAL_SKIP_INGESTION_BLOCKED).toContain('Bedrock');
     expect(ASK_MANUAL_SKIP_INGESTION_BLOCKED).toContain('FL-032');
     expect(ASK_MANUAL_SKIP_INGESTION_BLOCKED).not.toBe(ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE);
+  });
+
+  it('explains the query-embedding cause, and quotes the server, in the retrieval-unavailable line', () => {
+    const line = askManualRetrievalUnavailableLine('isError result: Error: ValidationException: Access to Bedrock models is not allowed for this account');
+    expect(line).toContain('SKIPPED');
+    expect(line).toContain('FL-032');
+    // The sharper finding, and the reason this state exists at all: it is
+    // the QUERY that has to be embedded, not only the documents.
+    expect(line).toContain('QUERY');
+    expect(line).toContain('Access to Bedrock models is not allowed for this account');
+    expect(line).not.toBe(ASK_MANUAL_SKIP_INGESTION_BLOCKED);
+    expect(line).not.toBe(ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE);
   });
 });
 
