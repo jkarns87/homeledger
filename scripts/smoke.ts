@@ -114,10 +114,81 @@ export interface ManualPassage {
  */
 export function assertManualPassages(passages: readonly ManualPassage[]): void {
   if (passages.length === 0) throw new Error('ask_manual returned no passages; run seed:manual and confirm the ingestion job completed');
-  if (!passages.some(p => p.docTitle === SMOKE_MANUAL_TITLE && p.text.includes('F21')))
+  // Every field access here is optional-chained and type-checked before use.
+  // Not defensive decoration: this is the same class of bug as the
+  // `structuredContent.passages` crash in run 35290491286 - a malformed
+  // passage (missing `text`, a null entry) would make `p.text.includes`
+  // throw a TypeError and kill the run before the legacy block, which is
+  // exactly the outcome readManualResult exists to prevent one level up. A
+  // passage that is not the right SHAPE is not the seeded document, so it
+  // correctly fails the match rather than crashing the comparison.
+  if (!passages.some(p => p?.docTitle === SMOKE_MANUAL_TITLE && typeof p?.text === 'string' && p.text.includes('F21')))
     throw new Error(
-      `ask_manual did not return the seeded KB document; got: ${passages.map(p => `${p.docTitle} p${p.page}`).join(', ')} - the runtime may be falling back to the fixture retriever (KNOWLEDGE_BASE_ID unset on this revision)`
+      `ask_manual did not return the seeded KB document; got: ${passages.map(p => `${p?.docTitle} p${p?.page}`).join(', ')} - the runtime may be falling back to the fixture retriever (KNOWLEDGE_BASE_ID unset on this revision)`
     );
+}
+
+/**
+ * The first content block's text, or '' when there is not one.
+ *
+ * `content` is typed as an array by the SDK but is genuinely absent on some
+ * results, and `(undefined as unknown[])[0]` throws rather than yielding
+ * undefined - so the call site's old `(manual.content as Array<...>)[0]?.text`
+ * was a TypeError waiting for the same result shape that crashed
+ * run 35290491286, with the `?.` giving false reassurance one level too late.
+ */
+export function firstTextBlock(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  const first: unknown = content[0];
+  if (typeof first !== 'object' || first === null) return '';
+  const text = (first as { text?: unknown }).text;
+  return typeof text === 'string' ? text : '';
+}
+
+export type ManualResult = { kind: 'passages'; passages: ManualPassage[] } | { kind: 'error'; detail: string };
+
+/**
+ * Classifies an `ask_manual` tool result without ever dereferencing a field
+ * that may be absent.
+ *
+ * Run 35290491286 died on `(manual.structuredContent as {...}).passages` with
+ * `TypeError: Cannot read properties of undefined`. The cause is sharper than
+ * the state it exposed: retrieval embeds the QUERY, not just the documents,
+ * so under the account-wide Bedrock block `Retrieve` is refused server-side
+ * even against a Knowledge Base that exists. `createKnowledgeBaseRetriever`
+ * does not catch that (packages/core/src/retrieval/bedrock.ts calls
+ * `sender.send` bare), `ask_manual` does not catch it either
+ * (apps/mcp-server/src/tools/manual.ts), so it propagates to the MCP SDK,
+ * which converts a thrown handler into `{ isError: true, content: [...] }`
+ * with NO `structuredContent` at all.
+ *
+ * This function is deliberately total: every input, including `undefined`, a
+ * string, a result with no `structuredContent`, and a `structuredContent`
+ * whose `passages` is not an array, maps to a `ManualResult` rather than to a
+ * throw. A smoke script must fail with a sentence that names what went wrong
+ * or skip with a sentence that says why - never with a stack trace from a
+ * property access, which says nothing about the system under test and stops
+ * every later assertion from running.
+ *
+ * Classifying is ALL it does. Whether an error result is tolerable is
+ * `checkManualPassages`'s decision and only its decision.
+ */
+export function readManualResult(result: unknown): ManualResult {
+  if (typeof result !== 'object' || result === null)
+    return { kind: 'error', detail: `tool result was ${result === null ? 'null' : typeof result}, not an object` };
+  const row = result as { isError?: unknown; content?: unknown; structuredContent?: unknown };
+  const spoken = firstTextBlock(row.content);
+  if (row.isError === true) return { kind: 'error', detail: `isError result: ${spoken || '(no text content)'}` };
+  const structured: unknown = row.structuredContent;
+  if (typeof structured !== 'object' || structured === null)
+    return {
+      kind: 'error',
+      detail: `result carried no structuredContent (got ${structured === null ? 'null' : typeof structured}); first text block: ${spoken || '(none)'}`
+    };
+  const passages: unknown = (structured as { passages?: unknown }).passages;
+  if (!Array.isArray(passages))
+    return { kind: 'error', detail: `structuredContent.passages was ${passages === null ? 'null' : typeof passages}, not an array` };
+  return { kind: 'passages', passages: passages as ManualPassage[] };
 }
 
 export const ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE =
@@ -144,7 +215,16 @@ export function manualIngestionSkipped(raw: string | undefined): boolean {
   return value === '1' || value === 'true' || value === 'yes';
 }
 
-export type ManualCheckOutcome = 'skipped-no-knowledge-base' | 'skipped-ingestion-blocked' | 'asserted';
+/**
+ * The fourth state's line, built around the detail readManualResult
+ * extracted, so the log carries the server's own words rather than this
+ * script's guess about them.
+ */
+export function askManualRetrievalUnavailableLine(detail: string): string {
+  return `\n!! ask_manual: SKIPPED - a Knowledge Base IS provisioned, but RETRIEVAL ITSELF is impossible: Bedrock has to embed the QUERY, not just the documents, so Retrieve is refused server-side under the account-wide model block even against a Knowledge Base that exists (FRICTION-LOG.md FL-019, FL-032). ask_manual returned an error result instead of passages, which is expected in this state and is why it is tolerated HERE and nowhere else. The tool was still reached, invoked and answered in budget. Server said: ${detail}\n`;
+}
+
+export type ManualCheckOutcome = 'skipped-no-knowledge-base' | 'skipped-ingestion-blocked' | 'skipped-retrieval-unavailable' | 'asserted';
 
 /**
  * Decides between skipping the Knowledge Base check and enforcing it, and is
@@ -166,6 +246,16 @@ export type ManualCheckOutcome = 'skipped-no-knowledge-base' | 'skipped-ingestio
  *    is a third state, and treating it as state 3 made one blocked embedding
  *    call hide the eight tools that do work. Skip, loudly. See FL-032.
  *
+ * 2b. `KNOWLEDGE_BASE_ID` set, ingestion was skipped, AND ask_manual came
+ *    back an error result rather than passages. Found by live run
+ *    35290491286, which is where the previous version of this function died:
+ *    it assumed a provisioned-but-empty Knowledge Base would at least
+ *    RETRIEVE, returning an empty passage list. It does not. Retrieval
+ *    embeds the query as well as the documents, so the same account-level
+ *    block that refuses ingestion also refuses `Retrieve`, and the tool
+ *    returns `isError` with no `structuredContent`. Skip, loudly, quoting
+ *    the server's own message.
+ *
  * 3. `KNOWLEDGE_BASE_ID` set and ingestion happened -> enforce, no opt-out.
  *
  * What separates state 2 from state 3 is NOT anything observable in the
@@ -186,12 +276,25 @@ export type ManualCheckOutcome = 'skipped-no-knowledge-base' | 'skipped-ingestio
  * carry SMOKE_MANUAL_TITLE, is the "apply didn't replace the revision" case
  * - Terraform's output populated, the running revision still unset, fixtures
  * being served, `SMOKE OK` printed against a system with no real retrieval
- * at all. It throws, exactly as before.
+ * at all. It throws, exactly as before. And state 2b's tolerance of an error
+ * result does NOT leak into it: when ingestion was not skipped, an error
+ * result, an absent `structuredContent`, an empty passage list and a wrong
+ * title all still fail hard. The error-result branch is checked FIRST and
+ * gated on `ingestionSkipped` precisely so that tolerance cannot be reached
+ * any other way - including with no Knowledge Base at all, where the runtime
+ * serves in-memory fixtures and therefore has nothing that can legitimately
+ * error.
  */
-export function checkManualPassages(knowledgeBaseId: string | undefined, ingestionSkipped: boolean, passages: readonly ManualPassage[]): ManualCheckOutcome {
+export function checkManualPassages(knowledgeBaseId: string | undefined, ingestionSkipped: boolean, result: ManualResult): ManualCheckOutcome {
+  if (result.kind === 'error') {
+    if (ingestionSkipped) return 'skipped-retrieval-unavailable';
+    throw new Error(
+      `ask_manual returned an error result instead of passages: ${result.detail} - retrieval is broken, or the runtime cannot reach the Knowledge Base. Not skippable: nothing signalled that ingestion was skipped, so a working retrieval path was expected here.`
+    );
+  }
   if (!knowledgeBaseId || knowledgeBaseId.trim() === '') return 'skipped-no-knowledge-base';
   if (ingestionSkipped) return 'skipped-ingestion-blocked';
-  assertManualPassages(passages);
+  assertManualPassages(result.passages);
   return 'asserted';
 }
 
@@ -315,17 +418,39 @@ if (isEntrypoint) {
     // below, so one blocked embedding call would take the other eight tools'
     // coverage down with it. Nothing else is relaxed: the call still has to
     // succeed, come back in budget, and speak prose, in every state.
+    // The call is made in EVERY state, including the two skips, and that is
+    // deliberate. It is the only assertion that proves ask_manual is
+    // registered, reachable through the deployed runtime, accepts its input
+    // schema, and answers inside the budget - tools/list proves registration
+    // but never invocation, so skipping the call outright would drop the
+    // ninth tool's coverage entirely to avoid an error the script can simply
+    // recognise. It is also the signal that says when Bedrock comes back:
+    // the day the block lifts, this stops being an error result and starts
+    // being passages, and the run says so instead of silently continuing to
+    // skip. What changes per state is how the RESULT is read, never whether
+    // the call happens.
     const manual = await timed('modern ask_manual (knowledge base)', () =>
       client.callTool({ name: 'ask_manual', arguments: { question: 'What does error code F21 mean on the washer?' } })
     );
-    const passages = (manual.structuredContent as { passages: ManualPassage[] }).passages;
-    const manualOutcome = checkManualPassages(process.env.KNOWLEDGE_BASE_ID, manualIngestionSkipped(process.env.MANUAL_INGESTION_SKIPPED), passages);
+    const manualResult = readManualResult(manual);
+    const manualOutcome = checkManualPassages(process.env.KNOWLEDGE_BASE_ID, manualIngestionSkipped(process.env.MANUAL_INGESTION_SKIPPED), manualResult);
     if (manualOutcome === 'skipped-no-knowledge-base') console.log(ASK_MANUAL_SKIP_NO_KNOWLEDGE_BASE);
     else if (manualOutcome === 'skipped-ingestion-blocked') console.log(ASK_MANUAL_SKIP_INGESTION_BLOCKED);
-    else console.log(`ask_manual: ${passages.length} passage(s), first from ${passages[0]!.docTitle} page ${passages[0]!.page}`);
+    else if (manualOutcome === 'skipped-retrieval-unavailable')
+      console.log(askManualRetrievalUnavailableLine(manualResult.kind === 'error' ? manualResult.detail : ''));
+    else if (manualResult.kind === 'passages')
+      console.log(
+        `ask_manual: ${manualResult.passages.length} passage(s), first from ${manualResult.passages[0]!.docTitle} page ${manualResult.passages[0]!.page}`
+      );
 
-    const manualText = (manual.content as Array<{ text?: string }>)[0]?.text ?? '';
-    assertSpokenProse(manualText);
+    // Gated on the outcome, not skipped wholesale. In the retrieval-
+    // unavailable state the first content block is the SDK's rendering of a
+    // thrown handler, so "did the tool speak prose?" is not a question about
+    // this system at all - the answer would be about AWS's error string. In
+    // every other state, including both other skips (where the tool really
+    // does answer, from fixtures or with "I couldn't find anything"), the
+    // voice-first contract is enforced exactly as before.
+    if (manualOutcome !== 'skipped-retrieval-unavailable') assertSpokenProse(firstTextBlock(manual.content));
 
     await client.close();
   }
