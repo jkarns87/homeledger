@@ -46,7 +46,7 @@ Real today: appliances, warranties, and maintenance history are the author's own
 
 **Not yet built — do not read these as working features:**
 
-- **Manual retrieval against Bedrock.** The Knowledge Base, S3 Vectors bucket, and index are authored in `infra/modules/knowledge-base` and unit-tested offline, but have never been applied: Bedrock model invocation is blocked account-wide on this AWS account (`FRICTION-LOG.md` FL-019, re-verified 2026-09-16). With `KNOWLEDGE_BASE_ID` unset — the state today — `ask_manual` serves a small in-memory fixture set. The Bedrock adapter in `packages/core/src/retrieval/bedrock.ts` is written and tested against a stubbed sender, never against a live index. The deployed smoke reflects this rather than papering over it: with `KNOWLEDGE_BASE_ID` empty it prints `ask_manual: SKIPPED` and moves on, and it skips the `seed:manual` step for the same reason. Once a Knowledge Base *is* provisioned the check is enforced with no way to opt out — content that does not carry the seeded document's exact title fails the run, which is the point of the assertion.
+- **Manual retrieval against Bedrock.** The Knowledge Base, S3 Vectors bucket, and index in `infra/modules/knowledge-base` **are applied and exist** — that part works. What does not is putting anything into them: starting an ingestion job makes the Knowledge Base role call the Titan embedding model, and Bedrock model invocation is blocked account-wide on this AWS account (`FRICTION-LOG.md` FL-019, re-verified 2026-09-16; FL-032 for why "provisioned" and "usable" turned out to be different things). So the Knowledge Base is real, addressable, wired into the runtime, and permanently empty, and `ask_manual` serves a small in-memory fixture set. The Bedrock adapter in `packages/core/src/retrieval/bedrock.ts` is written and tested against a stubbed sender, never against a live index. The deployed smoke reflects this rather than papering over it: it prints a loud `ask_manual: SKIPPED` naming the cause and carries on running every other assertion, both when no Knowledge Base is configured and when one exists but ingestion was skipped for the Bedrock block. Once a Knowledge Base is provisioned *and* content has actually been ingested, the check is enforced with no way to opt out — content that does not carry the seeded document's exact title fails the run, which is the point of the assertion.
 - **Ring events.** No Ring integration exists in this repository. `recent_events` reads door and sensor rows from DynamoDB and returns only what something else has written there; nothing writes them yet. The webhook, correlation, snapshot, and vision-description pipeline is a later plan.
 - **The Echo Show simulator.** Planned as `apps/simulator`: a Strands agent driving the deployed server and rendering the documented Alexa+ visual foundations. It does not exist in this tree — `apps/` contains `mcp-server` only.
 
@@ -65,7 +65,8 @@ Without `docker compose up -d` and `test:dynamo`, `packages/core/test/dynamo.tes
 
 `.env.example` documents every variable. The ones Plan 2 added:
 
-- `KNOWLEDGE_BASE_ID` — when set, `ask_manual` calls the real Bedrock Knowledge Base; when unset it serves fixtures. Unset everywhere today (see "Not yet built" above).
+- `KNOWLEDGE_BASE_ID` — when set, `ask_manual` calls the real Bedrock Knowledge Base; when unset it serves fixtures. Set on the deployed runtime today, and the Knowledge Base it names is real but empty (see "Not yet built" above).
+- `MANUAL_INGESTION_SKIPPED` — CI only, set by `.github/workflows/smoke.yml` from the seed step's log when ingestion was skipped for the account-wide Bedrock block. It is the only way the smoke can tell "the Knowledge Base is empty because nothing could be ingested" (skip) from "the Knowledge Base returned the wrong document" (fail hard); the two are identical from the retrieval side. Only `1`, `true`, or `yes` count — anything else, including `false` or a typo, leaves the assertion enforced.
 - `REQUEST_STATE_KEY` — at least 32 bytes, signs `book_service`'s cross-round state. Unset generates a per-process key and logs that it did; set-but-shorter-than-32-bytes throws rather than falling back.
 - `AVAILABILITY_DELAY_MS` — total budget for the simulated availability check, default 600.
 
@@ -108,7 +109,7 @@ gh workflow run smoke.yml --ref <branch>    # seeds the table, then drives a mod
 
 ## Manuals and the knowledge base
 
-**Status: authored, never applied.** Everything in this section is written, formatted, and unit-tested offline, but no ingestion job has ever run — Bedrock model invocation is blocked account-wide on this account (FL-019). Treat it as the documented path for when that clears, not as a working pipeline.
+**Status: applied, never ingested.** The infrastructure in this section is real — the manuals bucket, the S3 Vectors index, the Knowledge Base, its data source, and its IAM role were all created by the first post-merge deploy. What has never run is an ingestion job: starting one makes the Knowledge Base role invoke the Titan embedding model, and Bedrock model invocation is blocked account-wide on this account (FL-019, FL-032). Uploads work and are kept; embedding does not. Treat the retrieval half as the documented path for when that clears, not as a working pipeline.
 
 Manuals live in S3 at `manuals/<householdId>/<docId>.pdf`, each beside a `<docId>.pdf.metadata.json` sidecar carrying `applianceId` and `title`. A Bedrock Knowledge Base is configured to ingest that prefix into an S3 Vectors index using Titan Text Embeddings v2; `ask_manual` calls `Retrieve` with an `equals` filter on `applianceId` when the caller supplies one, asks for three passages, and caches each question for ten minutes.
 
@@ -128,7 +129,9 @@ pnpm manuals -- --appliance appl_washer2222222222 --title "LG WM4000HWA washer o
 
 The script uploads both objects, writes the `DOC#` row, points the appliance's `manualDocId` at it, starts one ingestion job, polls until it reaches a terminal status, flips `kbSync` to `synced` on `COMPLETE` (and to `failed` otherwise, then throws), and prints the doc id.
 
-Without `KNOWLEDGE_BASE_ID`, the server falls back to a small in-memory fixture set so `pnpm dev` and the whole test suite run with no AWS account. That fallback is the only path exercised today.
+One ingestion failure is tolerated and exactly one: if `StartIngestionJob` is refused because Bedrock model access is blocked account-wide, the script prints a loud skip banner and exits 0, leaving the uploaded PDF, its sidecar, and the `DOC#` row in place at `kbSync.status` `pending` — so re-running once the block clears ingests them with no re-upload, replacing rather than duplicating, because `docId` and the S3 key are derived deterministically from the appliance id. Every other ingestion failure still exits non-zero: a malformed metadata sidecar, an S3 key outside the data source's prefix, a data source that does not belong to the knowledge base, an unrelated permissions error, and a job that starts and then reports `FAILED` all fail the run.
+
+Without `KNOWLEDGE_BASE_ID`, the server falls back to a small in-memory fixture set so `pnpm dev` and the whole test suite run with no AWS account. That fallback is the only retrieval path exercised today, whether or not a Knowledge Base exists, because none has any content in it.
 
 ## License
 
