@@ -1,7 +1,7 @@
 import { acceptedContent, inputRequired, type McpServer, type RequestStateCodec, type ServerContext } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import { VisitStatus, derivedId, providersForCategory } from '@homeledger/core';
-import { booleanField, elicitOutcome, enumField } from '../elicit.js';
+import { booleanField, elicitOutcome, enumField, supportsFormElicitation } from '../elicit.js';
 import { runAvailabilityCheck } from '../progress.js';
 import type { ServerDeps } from '../server.js';
 import { speakWeekdayDate } from '../voice.js';
@@ -49,6 +49,21 @@ const ConfirmAnswer = z.object({ confirm: z.boolean() });
 
 const notBooked = () => ({ content: [{ type: 'text' as const, text: "Okay, I haven't booked anything." }], isError: true });
 
+/**
+ * What a person hears when their client cannot be asked anything.
+ *
+ * Prose, because every tool here is read aloud. It names the three questions by
+ * what they are for rather than by protocol vocabulary, then says the one thing
+ * the person can act on: a different client. Claude Code gates elicitation
+ * behind `tengu_mcp_elicitation`, a remote feature flag that defaults to FALSE
+ * (FL-033), so this is the DEFAULT experience for most people who add this
+ * server — not an edge case.
+ */
+export const BOOKING_NEEDS_ELICITATION_MESSAGE =
+  "I can't book a service visit from this app. Booking has to ask you three things first, which provider to send, which arrival window to take, and whether to go ahead, and this app can't show me those questions. Everything else still works. To book, come back from an app that can prompt you for answers.";
+
+const cannotAskAnything = () => ({ content: [{ type: 'text' as const, text: BOOKING_NEEDS_ELICITATION_MESSAGE }], isError: true });
+
 export function registerServiceTools(server: McpServer, deps: ServerDeps, codec: RequestStateCodec<BookingState>): void {
   server.registerTool(
     'book_service',
@@ -67,6 +82,26 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       _meta: uiMeta(WIDGET_URIS.visit)
     },
     async ({ applianceId, issue }, ctx: ServerContext) => {
+      // Checked before anything else, including the appliance lookup, because
+      // it is a precondition on the CLIENT rather than on the arguments: every
+      // path through this handler reaches at least the confirm question, so a
+      // client that cannot be asked cannot complete a booking under any input.
+      //
+      // Answering here rather than letting the SDK's own gate fire is the whole
+      // point. On the 2026-07-28 path that gate throws
+      // MissingRequiredClientCapabilityError, which reaches the person as a
+      // JSON-RPC -32021 and not as a tool result at all; on the 2025-era path it
+      // returns protocol jargon ("Cannot request input 'provider'
+      // (elicitation/create): the client on this 2025-era connection did not
+      // declare the required capability"). Neither is something a person can
+      // act on, and both differ by era for what is one situation.
+      //
+      // Deliberately NOT a degraded booking that skips the questions: writing a
+      // visit without confirming the provider and the window is worse than
+      // declining to write one, because the person finds out what was booked
+      // when someone arrives.
+      if (!supportsFormElicitation(server)) return cannotAskAnything();
+
       const appliance = await deps.repo.getAppliance(applianceId);
       if (!appliance) return { content: [{ type: 'text', text: "I couldn't find that appliance." }], isError: true };
 

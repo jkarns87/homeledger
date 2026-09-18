@@ -29,6 +29,123 @@ export const SOURCE_URI_METADATA_KEY = 'x-amz-bedrock-kb-source-uri';
  */
 export const APPLIANCE_ID_METADATA_KEY = 'applianceId';
 
+/**
+ * The exact sentence AWS returns when Bedrock model invocation is refused at
+ * the ACCOUNT level (FRICTION-LOG.md FL-019, support case 178941623300459).
+ * Observed byte-identical across three independent probes on two days, from
+ * two different principals, for two different models.
+ *
+ * It lives here rather than in `scripts/manuals.ts` (which owns the
+ * INGESTION-side matcher and re-exports this symbol) so the two sides of the
+ * same condition cannot silently diverge — the same reason
+ * `APPLIANCE_ID_METADATA_KEY` is imported there instead of retyped.
+ *
+ * Deliberately just this sentence, and deliberately not the rest of the
+ * message. The full text AWS sends on the control plane is:
+ *
+ *   Knowledge base role arn:aws:iam::<account>:role/demo-homeledger-knowledge-base
+ *   is not able to call specified bedrock embedding model
+ *   arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0:
+ *   Error 002: Access to Bedrock models is not allowed for this account
+ *   (Service: BedrockRuntime, Status Code: 400)
+ *
+ * Everything around this sentence is a moving part: the role ARN is
+ * account-specific, the model ARN changes the moment the Knowledge Base is
+ * re-pointed at a different embedding model or region, `Error 002` is an
+ * undocumented internal identifier, and the `(Service: ..., Status Code: ...)`
+ * suffix is a Java-SDK-style wrapper this Node client only sees because the
+ * control plane passes the downstream error through verbatim.
+ */
+export const BEDROCK_ACCOUNT_BLOCK_MESSAGE = 'Access to Bedrock models is not allowed for this account';
+
+/**
+ * The sentence `bedrock-agent-runtime`'s `Retrieve` returns when the Knowledge
+ * Base cannot serve the query — the one a person reading `ask_manual`'s output
+ * through Claude Code actually saw, in full:
+ *
+ *   Invalid input or configuration provided. Check the input and Knowledge
+ *   Base configuration and try your request again.
+ *
+ * Only the first sentence is pinned. The second is remediation advice AWS is
+ * free to reword, and pinning it would break this matcher on a change that has
+ * nothing to do with the condition.
+ *
+ * This wording is NOT the shape AWS uses for a caller-side malformed request.
+ * A request whose parameters fail shape validation — a `knowledgeBaseId` that
+ * does not match the service's pattern, a `numberOfResults` out of range — comes
+ * back in the standard Smithy constraint form, `N validation error(s) detected:
+ * Value '...' at '<field>' failed to satisfy constraint: ...`, which does not
+ * contain this sentence and therefore does NOT match. That is the distinction
+ * the two literals below are chosen to draw, and
+ * `packages/core/test/bedrock-retriever.test.ts` pins it with the real
+ * constraint-violation text as an explicit non-match.
+ */
+export const RETRIEVE_INVALID_CONFIGURATION_MESSAGE = 'Invalid input or configuration provided';
+
+/**
+ * Why a `Retrieve` call failed, to the resolution a caller can act on.
+ *
+ * Deliberately three outcomes and not two: `unclassified` exists so that
+ * anything this module has NOT positively recognised is reported as an
+ * unexplained failure rather than attributed to the Bedrock block. Attributing
+ * every failure to the block is the same class of mistake as the raw AWS string
+ * `ask_manual` used to surface — a confident, wrong explanation — just in the
+ * opposite direction.
+ */
+export type RetrievalFailure = 'bedrock-model-access-blocked' | 'knowledge-base-missing' | 'unclassified';
+
+function awsErrorFields(error: unknown): { name?: unknown; message?: unknown; status?: unknown } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const candidate = error as { name?: unknown; message?: unknown; $metadata?: { httpStatusCode?: unknown } | null };
+  return { name: candidate.name, message: candidate.message, status: candidate.$metadata?.httpStatusCode };
+}
+
+/**
+ * Classifies a thrown `Retrieve` failure. Same detection discipline as
+ * `scripts/manuals.ts`'s `isBedrockAccountBlock`, applied to the read path:
+ * every branch requires the AWS error CLASS, the HTTP STATUS, and (for the
+ * model block) a pinned MESSAGE literal. None of the three is sufficient alone,
+ * and `packages/core/test/bedrock-retriever.test.ts` removes each one in turn
+ * so no condition can be deleted without a test going red.
+ *
+ *  - Class, duck-typed on `name` rather than `instanceof`: each AWS SDK v3
+ *    client bundles its own copy of the exception classes, so `instanceof` is
+ *    unreliable across client and version boundaries (and across a pnpm store
+ *    holding two resolutions of the same package). Branching on `name` is AWS's
+ *    own documented v3 guidance.
+ *  - Status: pins the error to a client-fault response the service actually
+ *    returned, not a locally constructed or re-thrown lookalike, and rules out
+ *    a 5xx that happened to carry the same text. A transient Bedrock outage
+ *    that echoed the sentence must NOT be reported to a person as "model access
+ *    is blocked on this account" — that sends them to open a support case for a
+ *    condition that will clear on its own.
+ *  - Message, for the model block only: `ValidationException` + 400 is also what
+ *    `Retrieve` returns for a genuinely malformed request, which is a bug in
+ *    this repository and must keep reading as an unexplained failure.
+ *
+ * `ResourceNotFoundException` needs no message literal because the class itself
+ * already names the condition exactly: the Knowledge Base id this deployment
+ * was configured with does not resolve. There is no second cause behind that
+ * class on this API to separate out.
+ *
+ * Matching is case-sensitive. If AWS rewords either sentence this returns
+ * `unclassified` and the caller says "the manual service returned an error"
+ * instead of naming a cause — which is the correct direction to fail, since the
+ * alternative is a matcher loose enough to explain failures it has not actually
+ * recognised.
+ */
+export function classifyRetrievalFailure(error: unknown): RetrievalFailure {
+  const fields = awsErrorFields(error);
+  if (fields === undefined) return 'unclassified';
+  const message = typeof fields.message === 'string' ? fields.message : '';
+  if (fields.name === 'ValidationException' && fields.status === 400) {
+    if (message.includes(BEDROCK_ACCOUNT_BLOCK_MESSAGE) || message.includes(RETRIEVE_INVALID_CONFIGURATION_MESSAGE)) return 'bedrock-model-access-blocked';
+    return 'unclassified';
+  }
+  if (fields.name === 'ResourceNotFoundException' && fields.status === 404) return 'knowledge-base-missing';
+  return 'unclassified';
+}
+
 export interface KnowledgeBaseRetrieverOptions {
   knowledgeBaseId: string;
   client?: RetrieveSender;

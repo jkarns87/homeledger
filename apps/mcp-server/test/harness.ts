@@ -50,7 +50,15 @@ export type ElicitAnswer = { action: 'accept'; content: Record<string, unknown> 
 export async function modernElicitClient(
   answer: (field: string, message: string) => ElicitAnswer,
   over: Partial<ServerDeps> = {},
-  schemas?: Array<Record<string, unknown>>
+  schemas?: Array<Record<string, unknown>>,
+  /**
+   * The elicitation capability to declare. Defaults to the explicit form-mode
+   * shape a 2026-07-28 client normally sends; a test overrides it to drive the
+   * shapes `supportsFormElicitation` has to tell apart. The modern era does NOT
+   * normalise this value on the way in, unlike the 2025-era `initialize` decode,
+   * so whatever is passed here is what the server reads back.
+   */
+  elicitation: Record<string, unknown> = { form: {} }
 ) {
   const deps = { ...(await seededDeps()), ...over };
   const handler = createMcpHandler(() => buildServer(deps));
@@ -59,7 +67,7 @@ export async function modernElicitClient(
   });
   const client = new Client(
     { name: 'modern-elicit', version: '1.0.0' },
-    { capabilities: { elicitation: { form: {} } }, inputRequired: { maxRounds: 6 }, versionNegotiation: { mode: 'auto' } }
+    { capabilities: { elicitation }, inputRequired: { maxRounds: 6 }, versionNegotiation: { mode: 'auto' } }
   );
   const asked: Array<{ field: string; message: string }> = [];
   client.setRequestHandler('elicitation/create', async request => {

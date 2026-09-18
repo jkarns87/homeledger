@@ -443,13 +443,25 @@ if (isEntrypoint) {
         `ask_manual: ${manualResult.passages.length} passage(s), first from ${manualResult.passages[0]!.docTitle} page ${manualResult.passages[0]!.page}`
       );
 
-    // Gated on the outcome, not skipped wholesale. In the retrieval-
-    // unavailable state the first content block is the SDK's rendering of a
-    // thrown handler, so "did the tool speak prose?" is not a question about
-    // this system at all - the answer would be about AWS's error string. In
-    // every other state, including both other skips (where the tool really
-    // does answer, from fixtures or with "I couldn't find anything"), the
-    // voice-first contract is enforced exactly as before.
+    // Gated on the outcome, not skipped wholesale. In every other state,
+    // including both other skips (where the tool really does answer, from
+    // fixtures or with "I couldn't find anything"), the voice-first contract is
+    // enforced exactly as before.
+    //
+    // The retrieval-unavailable state is exempt for a reason that has now
+    // CHANGED but not yet gone away. It was exempt because the first content
+    // block was the SDK's rendering of a thrown handler, so "did the tool speak
+    // prose?" was a question about AWS's error string rather than about this
+    // system. apps/mcp-server/src/tools/manual.ts now catches that refusal and
+    // answers in prose of its own (MANUALS_MODEL_ACCESS_BLOCKED_MESSAGE), which
+    // is asserted in-process by apps/mcp-server/test/manual.test.ts. The exempt
+    // branch stays because this script runs against whatever revision is
+    // DEPLOYED, and a runtime that predates that fix still returns the AWS
+    // string - enforcing prose here would turn "the deploy has not happened
+    // yet" into a red smoke that names the wrong problem. Once a revision
+    // carrying the fix is live, delete the gate and let this line run
+    // unconditionally; the deployed run is then the only place the prose is
+    // proved end to end.
     if (manualOutcome !== 'skipped-retrieval-unavailable') assertSpokenProse(firstTextBlock(manual.content));
 
     await client.close();

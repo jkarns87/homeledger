@@ -43,7 +43,7 @@ function required(env: NodeJS.ProcessEnv, key: string, hint: string): string {
   const value = env[key]?.trim();
   if (value) return value;
   throw new ConfigError(
-    `${key} is not set. ${hint}\nRun \`pnpm --filter @homeledger/mcp-bridge setup\` to print the exact \`claude mcp add\` command with every value filled in.`
+    `${key} is not set. ${hint}\nRun \`pnpm --filter @homeledger/mcp-bridge run print-setup\` to print the exact \`claude mcp add\` command with every value filled in.`
   );
 }
 
@@ -95,7 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): BridgeConfig {
   const runtimeArn = env.HOMELEDGER_RUNTIME_ARN?.trim();
   if (!directUrl && !runtimeArn)
     throw new ConfigError(
-      'Neither HOMELEDGER_MCP_URL nor HOMELEDGER_RUNTIME_ARN is set, so the bridge does not know which runtime to reach.\nRun `pnpm --filter @homeledger/mcp-bridge setup` to print the exact `claude mcp add` command with every value filled in.'
+      'Neither HOMELEDGER_MCP_URL nor HOMELEDGER_RUNTIME_ARN is set, so the bridge does not know which runtime to reach.\nRun `pnpm --filter @homeledger/mcp-bridge run print-setup` to print the exact `claude mcp add` command with every value filled in.'
     );
   const mcpUrl = directUrl ?? invocationUrlFromArn(runtimeArn!, region, qualifier);
 
