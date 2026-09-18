@@ -8,7 +8,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "dev": "tsx src/index.ts",
-    "setup": "tsx src/index.ts --print-setup"
+    "print-setup": "tsx src/index.ts --print-setup"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.900.0"

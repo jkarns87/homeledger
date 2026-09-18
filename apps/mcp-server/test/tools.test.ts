@@ -25,6 +25,27 @@ describe('tools/list', () => {
     ]);
     for (const t of tools) expect(t.outputSchema).toBeDefined();
   });
+
+  /**
+   * `echo_confirm` is exposed on the DEPLOYED demo runtime on purpose
+   * (`HOMELEDGER_DEV_TOOLS=1`, README "What the server exposes"), so the only
+   * thing standing between someone listing tools in Claude Code and mistaking a
+   * development probe for a product feature is this string. The README carries
+   * the reasoning; a client never reads the README.
+   *
+   * Pinned by what it must COMMUNICATE rather than by its exact wording, so the
+   * sentence can be improved without a test edit but cannot quietly lose the
+   * part that matters. The `title` is checked too: some clients show only that.
+   */
+  it('marks echo_confirm as a development probe in the string a client actually displays', async () => {
+    const h = await modernClient();
+    close = h.close;
+    const { tools } = await h.client.listTools();
+    const echo = tools.find(t => t.name === 'echo_confirm');
+    expect(echo).toBeDefined();
+    expect(echo?.description ?? '').toMatch(/development-only|development probe/i);
+    expect(echo?.title ?? '').toMatch(/dev/i);
+  });
 });
 
 describe('list_appliances', () => {
