@@ -9,7 +9,7 @@ import {
   type StartIngestionJobCommandOutput
 } from '@aws-sdk/client-bedrock-agent';
 import { PutObjectCommand, S3Client, type PutObjectCommandOutput } from '@aws-sdk/client-s3';
-import { APPLIANCE_ID_METADATA_KEY, createDynamoRepository, derivedId, type Repository } from '@homeledger/core';
+import { APPLIANCE_ID_METADATA_KEY, BEDROCK_ACCOUNT_BLOCK_MESSAGE, createDynamoRepository, derivedId, type Repository } from '@homeledger/core';
 
 const need = (key: string): string => {
   const value = process.env[key];
@@ -91,39 +91,25 @@ const TERMINAL_STATUSES = new Set(['COMPLETE', 'FAILED', 'STOPPED']);
 /**
  * The exact sentence AWS returns when Bedrock model invocation is refused at
  * the ACCOUNT level (FRICTION-LOG.md FL-019, support case 178941623300459).
- * Observed byte-identical across three independent probes on two days, from
- * two different principals, for two different models.
  *
- * Deliberately just this sentence, and deliberately not the rest of the
- * message. The full text AWS sends is:
+ * Defined in `@homeledger/core` (`packages/core/src/retrieval/bedrock.ts`) and
+ * re-exported here rather than retyped, for the same reason
+ * `APPLIANCE_ID_METADATA_KEY` is imported above: the INGESTION-side matcher in
+ * this file and the RETRIEVAL-side classifier in core key on one condition, and
+ * two literals would let them silently diverge. See core for why the sentence
+ * is scoped to exactly this much of AWS's message.
  *
- *   Knowledge base role arn:aws:iam::<account>:role/demo-homeledger-knowledge-base
- *   is not able to call specified bedrock embedding model
- *   arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0:
- *   Error 002: Access to Bedrock models is not allowed for this account
- *   (Service: BedrockRuntime, Status Code: 400)
- *
- * Everything around this sentence is a moving part and would make the match
- * too tight: the role ARN is account-specific, the model ARN changes the
- * moment the Knowledge Base is re-pointed at a different embedding model or
- * region, the `Error 002` code is an undocumented internal identifier, and
- * the `(Service: ..., Status Code: ...)` suffix is a Java-SDK-style wrapper
- * this Node client only ever sees because the control plane passes the
- * downstream error through verbatim. Pinning any of those would break this
- * matcher on a change that has nothing to do with the condition it names.
- *
- * Equally it is NOT just "denied" or "Bedrock" or the `ValidationException`
- * class, which would be too loose: `StartIngestionJob` raises
- * `ValidationException` for a malformed metadata sidecar, an S3 key the data
- * source's prefix does not cover, and a `dataSourceId` that does not belong
- * to the knowledge base. Every one of those is a real bug in this repo and
- * must keep failing the run.
+ * It is NOT just "denied" or "Bedrock" or the `ValidationException` class,
+ * which would be too loose: `StartIngestionJob` raises `ValidationException`
+ * for a malformed metadata sidecar, an S3 key the data source's prefix does not
+ * cover, and a `dataSourceId` that does not belong to the knowledge base. Every
+ * one of those is a real bug in this repo and must keep failing the run.
  *
  * This sentence is the one part of the message that states the actual
  * condition — the account cannot invoke Bedrock models at all — and it is
  * the only part that cannot be true for any of those other causes.
  */
-export const BEDROCK_ACCOUNT_BLOCK_MESSAGE = 'Access to Bedrock models is not allowed for this account';
+export { BEDROCK_ACCOUNT_BLOCK_MESSAGE };
 
 /**
  * True only for the account-wide Bedrock model block, and false for every
