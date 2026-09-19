@@ -20,7 +20,6 @@
     "zod": "^4.2.0"
   },
   "devDependencies": {
-    "@homeledger/mcp-bridge": "workspace:*",
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@types/express": "^5.0.0",

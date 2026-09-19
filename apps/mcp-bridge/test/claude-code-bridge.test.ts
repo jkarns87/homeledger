@@ -5,18 +5,32 @@ import { Client as LegacyClient } from '@modelcontextprotocol/sdk/client/index.j
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createApp } from '../src/app.js';
-import { seededDeps } from './harness.js';
+import { createApp } from '../../mcp-server/src/app.js';
+import { seededDeps } from '../../mcp-server/test/harness.js';
 
 /**
- * End-to-end cover for the stdio bridge in `apps/mcp-bridge`, exercised the way
- * Claude Code exercises it: a child process spawned over stdio pipes, in front
- * of the real HomeLedger server over real HTTP.
+ * End-to-end cover for this bridge, exercised the way Claude Code exercises it:
+ * a child process spawned over stdio pipes, in front of the real HomeLedger
+ * server over real HTTP.
  *
- * It lives in this workspace rather than the bridge's because it needs the real
- * `createApp`, and because the bridge is spawned by path rather than imported —
- * which is exactly the coupling Claude Code has to it, and which no amount of
- * in-process wiring would reproduce.
+ * It lives here, and not in `apps/mcp-server`, because the dependency only runs
+ * one way: the bridge is a client of the server, and only the server is
+ * containerised. A devDependency pointing the other way was enough to break the
+ * deploy — `pnpm --prod deploy` resolves the whole workspace graph before it
+ * prunes dev dependencies, and the image's build context holds only
+ * `packages/core` and `apps/mcp-server`, so a dev-only link to a package that
+ * is not in the context fails the build. See FL-036.
+ *
+ * The server is reached by source path rather than by package specifier
+ * (`@homeledger/mcp-server` is a devDependency here, which is what puts it in
+ * the graph and orders the build): these are its real `createApp` and its real
+ * seed fixture, so the booking assertions below stay pinned to the same seed
+ * data the server's own suite asserts against, rather than to a copy that can
+ * drift.
+ *
+ * The bridge itself is still spawned by path rather than imported, which is
+ * exactly the coupling Claude Code has to it and which no amount of in-process
+ * wiring would reproduce.
  *
  * Fake here: the Cognito token endpoint (a local HTTP server issuing a known
  * token) and AgentCore itself (absent; the bridge posts straight at the local
@@ -27,7 +41,7 @@ import { seededDeps } from './harness.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const TSX_CLI = resolve(here, '../node_modules/tsx/dist/cli.mjs');
-const BRIDGE_ENTRY = resolve(here, '../node_modules/@homeledger/mcp-bridge/src/index.ts');
+const BRIDGE_ENTRY = resolve(here, '../src/index.ts');
 
 const CLIENT_ID = 'test-client-id';
 const CLIENT_SECRET = 'test-cognito-client-secret-value';

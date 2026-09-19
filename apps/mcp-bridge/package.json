@@ -16,6 +16,8 @@
     "@aws-sdk/client-secrets-manager": "^3.900.0"
   },
   "devDependencies": {
+    "@homeledger/mcp-server": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.25.2",
     "@types/node": "^22.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
