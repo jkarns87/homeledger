@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { FORBIDDEN_TERRAFORM_OUTPUTS, READABLE_TERRAFORM_OUTPUTS, readSetupValues, renderSetup } from '../src/setup.js';
+import {
+  FORBIDDEN_TERRAFORM_OUTPUTS,
+  READABLE_TERRAFORM_OUTPUTS,
+  readSetupValues,
+  renderSetup,
+  resolveSetupIdentity,
+  resolveSetupSource,
+  terraformFailureMessage
+} from '../src/setup.js';
 
-describe('the outputs the setup helper reads', () => {
+describe('the outputs the --from-terraform path reads', () => {
   it('never includes the client secret', () => {
     // Written as a literal, not as a lookup into FORBIDDEN_TERRAFORM_OUTPUTS,
     // so that emptying that list cannot make this assertion pass vacuously.
@@ -36,6 +44,66 @@ describe('readSetupValues', () => {
   });
 });
 
+describe('resolveSetupSource', () => {
+  it('reads AWS unless asked otherwise, so a clean checkout never meets Terraform', () => {
+    expect(resolveSetupSource(['node', 'index.js', '--print-setup'], {})).toBe('aws');
+  });
+
+  it('switches to Terraform only on an explicit flag', () => {
+    expect(resolveSetupSource(['node', 'index.js', '--print-setup', '--from-terraform'], {})).toBe('terraform');
+  });
+
+  it('accepts the environment form for a CI caller that cannot add a flag', () => {
+    expect(resolveSetupSource([], { HOMELEDGER_SETUP_SOURCE: 'terraform' })).toBe('terraform');
+  });
+
+  it('does not treat some other value, or the mere presence of the variable, as a request for Terraform', () => {
+    expect(resolveSetupSource([], { HOMELEDGER_SETUP_SOURCE: '' })).toBe('aws');
+    expect(resolveSetupSource([], { HOMELEDGER_SETUP_SOURCE: 'tf' })).toBe('aws');
+  });
+});
+
+describe('terraformFailureMessage', () => {
+  it('explains that terraform init would fail too, rather than repeating Terraform’s advice', () => {
+    const message = terraformFailureMessage(new Error('Error: Backend initialization required, please run "terraform init"'));
+    expect(message).toContain('Backend initialization required');
+    expect(message).toContain('-backend-config=bucket=');
+    expect(message).toContain('Drop --from-terraform to read the same values from AWS instead.');
+  });
+
+  it('says so plainly when terraform is not installed at all', () => {
+    const err = Object.assign(new Error('spawn terraform ENOENT'), { code: 'ENOENT' });
+    expect(terraformFailureMessage(err)).toContain('needs the terraform binary on PATH and it is not there');
+  });
+});
+
+describe('resolveSetupIdentity', () => {
+  it('uses AWS_PROFILE and records that the owner chose it', () => {
+    expect(resolveSetupIdentity({ AWS_PROFILE: 'homeledger-admin' })).toEqual({
+      region: 'us-east-1',
+      profile: 'homeledger-admin',
+      profileFromEnvironment: true
+    });
+  });
+
+  it('accepts the bridge’s own override with the same precedence loadConfig uses', () => {
+    expect(resolveSetupIdentity({ HOMELEDGER_AWS_PROFILE: 'other' })).toEqual({ region: 'us-east-1', profile: 'other', profileFromEnvironment: true });
+    expect(resolveSetupIdentity({ AWS_PROFILE: 'wins', HOMELEDGER_AWS_PROFILE: 'loses' }).profile).toBe('wins');
+  });
+
+  it('falls back to the stack owner’s profile and records that nobody chose it', () => {
+    expect(resolveSetupIdentity({})).toEqual({ region: 'us-east-1', profile: 'homeledger-admin', profileFromEnvironment: false });
+  });
+
+  it('treats a whitespace-only AWS_PROFILE as unset, which is what an unexpanded shell variable leaves behind', () => {
+    expect(resolveSetupIdentity({ AWS_PROFILE: '   ' })).toEqual({ region: 'us-east-1', profile: 'homeledger-admin', profileFromEnvironment: false });
+  });
+
+  it('carries AWS_REGION through', () => {
+    expect(resolveSetupIdentity({ AWS_REGION: 'eu-west-2' }).region).toBe('eu-west-2');
+  });
+});
+
 describe('renderSetup', () => {
   const values = {
     runtimeArn: 'arn:aws:bedrock-agentcore:us-east-1:111122223333:runtime/homeledger_mcp-AbC123xyZ',
@@ -64,5 +132,20 @@ describe('renderSetup', () => {
 
   it('names the sign-in command the owner needs before the first launch', () => {
     expect(renderSetup({ values, entrypoint: '/repo/x.js', profile: 'homeledger-admin' })).toContain('aws login --profile homeledger-admin');
+  });
+
+  it('pins the profile into the command so the spawned bridge cannot resolve a different one', () => {
+    expect(renderSetup({ values, entrypoint: '/repo/x.js', profile: 'homeledger-admin' })).toContain("-e AWS_PROFILE='homeledger-admin'");
+  });
+
+  it('says which profile the values came from when AWS_PROFILE was not set', () => {
+    const text = renderSetup({ values, entrypoint: '/repo/x.js', profile: 'homeledger-admin', profileFromEnvironment: false });
+    expect(text).toContain('AWS_PROFILE was not set, so homeledger-admin was used to look these up and is written into the command above.');
+  });
+
+  it('stays quiet about the profile when the owner chose it', () => {
+    expect(renderSetup({ values, entrypoint: '/repo/x.js', profile: 'homeledger-admin', profileFromEnvironment: true })).not.toContain(
+      'AWS_PROFILE was not set'
+    );
   });
 });

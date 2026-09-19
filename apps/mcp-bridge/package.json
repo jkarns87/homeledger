@@ -11,6 +11,8 @@
     "print-setup": "tsx src/index.ts --print-setup"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-agentcore-control": "^3.1136.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1136.0",
     "@aws-sdk/client-secrets-manager": "^3.900.0"
   },
   "devDependencies": {

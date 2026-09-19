@@ -1,50 +1,13 @@
 import type { BridgeConfig } from './config.js';
+import { expiredSessionMessage, isExpiredSessionError, isMissingProfileError, missingProfileMessage } from './aws-errors.js';
 import { protectSecret } from './redact.js';
 
-/**
- * Error names that mean "this machine has no usable AWS credentials right now".
- *
- * `CredentialsProviderError` covers both halves of the single most likely
- * failure the owner will hit — an SSO session that has expired, and one that
- * was never established — because the AWS SDK's credential chain raises the
- * same error name for both and the fix is the same sentence either way.
- * `SSOTokenProviderFailure` is what `@aws-sdk/token-providers` raises when the
- * cached SSO token in ~/.aws/sso/cache is past its expiry. The two STS names
- * cover a session that expired between the credential resolve and the API call.
- *
- * Deliberately excludes `AccessDeniedException`: a signed-in principal without
- * `secretsmanager:GetSecretValue` is a permissions problem, and telling that
- * owner to sign in again would send them round a loop that cannot terminate.
- */
-const EXPIRED_SESSION_ERROR_NAMES = new Set(['CredentialsProviderError', 'SSOTokenProviderFailure', 'ExpiredTokenException', 'ExpiredToken']);
-
-/**
- * Message fragments for the same condition arriving under a generic error name,
- * which is what STS does when the expiry is detected service-side rather than
- * by the local token provider.
- */
-const EXPIRED_SESSION_MESSAGE_MARKERS = ['sso session', 'could not be refreshed', 'security token included in the request is expired', 'token has expired'];
-
-export function isExpiredSessionError(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null) return false;
-  const { name, message } = err as { name?: unknown; message?: unknown };
-  if (typeof name === 'string' && EXPIRED_SESSION_ERROR_NAMES.has(name)) return true;
-  if (typeof message !== 'string') return false;
-  const lower = message.toLowerCase();
-  return EXPIRED_SESSION_MESSAGE_MARKERS.some(marker => lower.includes(marker));
-}
-
-/**
- * The one line the owner needs when the thing that broke is the SSO session.
- *
- * The brief calls this out as the single most likely failure, and it is the
- * only failure in this program whose remedy is one command — so it gets one
- * sentence, with the command in it, and no stack trace.
- */
-export function expiredSessionMessage(profile: string | undefined): string {
-  const flag = profile ? ` --profile ${profile}` : '';
-  return `Your AWS SSO session expired, run \`aws login${flag}\``;
-}
+// Re-exported because this module was the original home of both, and because
+// `test/secret.test.ts` and the README both name them here. The definitions
+// moved to `aws-errors.ts` when `--print-setup` started making AWS calls of its
+// own and needed the identical vocabulary; the alternative was two copies of
+// "your session expired" drifting apart.
+export { expiredSessionMessage, isExpiredSessionError };
 
 export class SecretError extends Error {}
 
@@ -79,6 +42,13 @@ export async function resolveClientSecret(config: BridgeConfig, readerFactory: (
     // neither imports the AWS SDK nor constructs a client it will not use.
     value = await (await readerFactory())(config.secretId);
   } catch (err) {
+    // Checked before the expiry branch, and for the same reason it is checked
+    // first in `awsFailureMessage`: both conditions arrive as
+    // `CredentialsProviderError`, and a wrong AWS_PROFILE in the generated
+    // `claude mcp add` command would otherwise be reported as an expired
+    // session for a profile that does not exist.
+    if (isMissingProfileError(err))
+      throw new SecretError(missingProfileMessage({ region: config.region, profile: config.awsProfile ?? '(default)', profileFromEnvironment: true }));
     if (isExpiredSessionError(err)) throw new SecretError(expiredSessionMessage(config.awsProfile));
     const name = typeof (err as { name?: unknown })?.name === 'string' ? (err as { name: string }).name : 'Error';
     const detail = err instanceof Error ? err.message : String(err);

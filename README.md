@@ -8,7 +8,9 @@ Built for the Build, Ship, Shape: Amazon Developer Hackathon (Alexa+ and Ring tr
 
 ## Prerequisites
 
-Node 22, pnpm 10, Docker, Terraform >= 1.10, AWS CLI v2.
+Node 22 and pnpm 10 for everything. Docker for the local DynamoDB and the container build. AWS CLI v2 to sign in, which you need only for "Deployed, through the bridge" below.
+
+Terraform >= 1.10 is listed for completeness and **you do not need it installed to run, test, or connect to anything here.** Every apply happens in GitHub Actions, and `infra/live/demo/platform` declares an empty `backend "s3" {}` whose bucket and region are supplied as `-backend-config` flags by `.github/workflows/deploy.yml` — so a local `terraform init` in that root does not work and is not meant to.
 
 ## What the server exposes
 
@@ -113,20 +115,27 @@ claude mcp add --transport http homeledger-local http://127.0.0.1:8010/mcp
 
 The deployed runtime sits behind AgentCore with a Cognito JWT authorizer, and the token it wants expires in about an hour — so a static header in a config file breaks an hour in. `apps/mcp-bridge` is a stdio MCP server that Claude Code spawns: it mints the token, refreshes it before it expires, and relays MCP traffic in both directions.
 
-**You need an AWS SSO session.** Sign in first — the bridge reads the Cognito client secret from Secrets Manager at startup and needs the session only for that one call:
+**Everything you need, and this is the whole list: Node 22, pnpm 10, the AWS CLI, and an AWS SSO session on the `homeledger-admin` profile.** No Terraform, no local state, no `terraform init`. Every Terraform apply in this project happens in GitHub Actions and the S3 backend is configured with flags the workflow passes, so there is nothing for a contributor to initialise and nothing to catch up on — FL-035, which is the entry about the version of this section that told you otherwise.
+
+The profile needs to be able to read five things, all of them read-only: `bedrock-agentcore:ListAgentRuntimes`, `cognito-idp:ListUserPools`, `cognito-idp:ListUserPoolClients`, `cognito-idp:DescribeUserPool`, and `secretsmanager:GetSecretValue` on `demo-homeledger/cognito/client-secret`. The first four are how the setup helper finds your runtime ARN, token URL and client id; the fifth is the one call the running bridge makes.
+
+From a clean checkout, in order — these are the commands, not a sketch of them:
 
 ```bash
-aws login --profile homeledger-admin
+pnpm install
+pnpm build                                                    # the bridge runs from dist/, so this is not optional
+
+aws login --profile homeledger-admin                          # on an AWS CLI older than v2.31: aws sso login --profile homeledger-admin
+export AWS_PROFILE=homeledger-admin                           # both the helper and the bridge read this
+
+pnpm --filter @homeledger/mcp-bridge run print-setup
 ```
 
-Then print the exact command, with your runtime's own values filled in:
-
-```bash
-pnpm build                                                    # the bridge runs from dist/
-pnpm --filter @homeledger/mcp-bridge run print-setup          # reads Terraform outputs, prints the command below
-```
+`export AWS_PROFILE` is optional only if your session is on `homeledger-admin` — the helper defaults to that profile, writes it into the command it prints, and tells you in a line of its output that it defaulted. If your session lives on any other profile, exporting it is required, because the default is what everything else in this section assumes.
 
 The `run` is not optional and the script is not called `setup`: `setup` is one of pnpm's own subcommands, so `pnpm --filter <pkg> setup` never reaches a package script of that name and fails with `Unknown option: 'recursive'`, which points at the filter flag rather than at the collision. FL-034.
+
+`print-setup` makes four read-only AWS calls and matches the resources by the names Terraform assigned them — `demo_homeledger_mcp` for the AgentCore runtime, `demo-homeledger-mcp` for the Cognito user pool, `homeledger-simulator` for its app client — never by position in a list. If a name matches nothing, or matches two resources with different ids, it says which and stops rather than picking one. It reads no secret: the app client is found with `ListUserPoolClients`, whose response shape has no room for a client secret, and never with `DescribeUserPoolClient`, whose response has one.
 
 It prints something of this shape — run what it prints, not this:
 
@@ -149,11 +158,22 @@ Every diagnostic goes to stderr, which Claude Code shows under `/mcp`; stdout ca
 [homeledger-bridge] Your AWS SSO session expired, run `aws login --profile homeledger-admin`
 ```
 
+The three other failures worth knowing the shape of, because they are the ones that look like a broken tool and are not:
+
+```
+AWS_PROFILE is not set, so this used the default profile homeledger-admin. If your session lives on a different profile, set AWS_PROFILE to it and run this again.
+
+AWS_PROFILE is set to typo-admin, and no profile of that name exists in ~/.aws/config. Set AWS_PROFILE to one that does — `aws configure list-profiles` lists them — or create it with `aws configure sso`.
+
+No AgentCore runtime named demo_homeledger_mcp in us-east-1 (profile homeledger-admin). The demo stack may not be deployed — `.github/workflows/deploy.yml` applies it on a push to main, and it creates the runtime only once an image has been pushed. Names present: …
+```
+
 Other variables, none of them required:
 
 - `HOMELEDGER_MCP_URL` — the full invocation URL, instead of `HOMELEDGER_RUNTIME_ARN`.
 - `HOMELEDGER_COGNITO_SCOPE` — defaults to `homeledger/mcp`.
 - `HOMELEDGER_COGNITO_SECRET_ID` — defaults to `demo-homeledger/cognito/client-secret`.
+- `HOMELEDGER_SETUP_SOURCE=terraform`, or `--from-terraform` on the binary — makes `print-setup` read the platform root's Terraform outputs instead of AWS. It is the source of record if a rename lands in `infra/` before the names in `apps/mcp-bridge/src/discover.ts` catch up, and it is deliberately **not** a fallback: it needs an initialised S3 backend, which needs the `-backend-config` flags `.github/workflows/deploy.yml` passes, so on a machine that has not done that it fails. If you have not applied this stack from your own terminal, you do not want this flag.
 - `HOMELEDGER_AGENTCORE_SESSION_ID` — the bridge pins one runtime session per process by default so that a session's later requests reach the instance holding it (FL-022, FL-033). `off` sends no session header, which is exactly what `pnpm smoke` does. A pinned value must be at least 33 characters.
 - `HOMELEDGER_BRIDGE_SSE=off` — stops the bridge holding open the spec's optional standalone `GET` event stream. Nothing this server sends arrives on it.
 
@@ -161,7 +181,7 @@ What the bridge does **not** do is translate between protocol revisions. Claude 
 
 ## Deployed endpoint
 
-The MCP server runs as an Amazon Bedrock AgentCore Runtime in `us-east-1` (AWS account `<account-id>`), built and deployed entirely through GitHub Actions — there are no local AWS credentials for this repo. `infra/live/demo/platform` is the Terraform root; its `agent_runtime_invocation_url` output is the runtime's DEFAULT-qualifier invocation endpoint:
+The MCP server runs as an Amazon Bedrock AgentCore Runtime in `us-east-1` (AWS account `<account-id>`), built and deployed entirely through GitHub Actions — nothing in this repository applies Terraform from a developer's terminal, and no contributor has ever run `terraform init` against this root. (Reading AWS from a terminal is a different thing and is fine: the bridge's setup helper does it, read-only, with an SSO session.) `infra/live/demo/platform` is the Terraform root; its `agent_runtime_invocation_url` output is the runtime's DEFAULT-qualifier invocation endpoint:
 
 ```
 https://bedrock-agentcore.<region>.amazonaws.com/runtimes/<urlencoded-runtime-arn>/invocations?qualifier=DEFAULT

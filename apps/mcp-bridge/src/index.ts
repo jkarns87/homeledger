@@ -2,23 +2,47 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigError, loadConfig } from './config.js';
+import { createAwsDiscoveryApi, discoverSetupValues } from './discover.js';
 import { Bridge, createLineReader } from './proxy.js';
 import { logDiagnostic } from './redact.js';
 import { SecretError, createSecretsManagerReader, resolveClientSecret } from './secret.js';
-import { PLATFORM_ROOT, createTerraformReader, readSetupValues, renderSetup } from './setup.js';
+import type { SetupValues } from './setup.js';
+import {
+  PLATFORM_ROOT,
+  createTerraformReader,
+  readSetupValues,
+  renderSetup,
+  resolveSetupIdentity,
+  resolveSetupSource,
+  terraformFailureMessage
+} from './setup.js';
 import { createTokenSource } from './token.js';
 
 /** `<repo>/apps/mcp-bridge/{src,dist}/index.{ts,js}` -> `<repo>`. */
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 async function printSetup(): Promise<void> {
-  const values = await readSetupValues(createTerraformReader(resolve(repoRoot, PLATFORM_ROOT)));
+  const identity = resolveSetupIdentity(process.env);
+  const source = resolveSetupSource(process.argv, process.env);
+
+  let values: SetupValues;
+  if (source === 'terraform') {
+    try {
+      values = await readSetupValues(createTerraformReader(resolve(repoRoot, PLATFORM_ROOT)));
+    } catch (err) {
+      throw new Error(terraformFailureMessage(err));
+    }
+  } else {
+    values = await discoverSetupValues(await createAwsDiscoveryApi(identity), identity);
+  }
+
   process.stdout.write(
     renderSetup({
       values,
       entrypoint: resolve(repoRoot, 'apps/mcp-bridge/dist/index.js'),
-      region: process.env.AWS_REGION?.trim() || undefined,
-      profile: process.env.AWS_PROFILE?.trim() || undefined
+      region: identity.region,
+      profile: identity.profile,
+      profileFromEnvironment: identity.profileFromEnvironment
     })
   );
 }
