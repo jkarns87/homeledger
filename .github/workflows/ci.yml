@@ -32,6 +32,50 @@ jobs:
       - run: pnpm --filter @homeledger/core test:dynamo
       - run: pnpm build
 
+  # The gap FL-036 records: `test` above installs the whole workspace, while the
+  # image copies only `packages/core` and `apps/mcp-server` into its build
+  # context — so the two disagree about what the workspace contains, and `test`
+  # is green for workspace edges the image cannot resolve. Three merges passed
+  # `test` and failed the deploy's own "Build and push image" step before anyone
+  # noticed. This job builds the same Dockerfile the deploy builds, so that
+  # disagreement fails the pull request instead of the merge.
+  #
+  # Build only. It never pushes, never applies, and deliberately holds no AWS
+  # credentials: it needs none, and a pull_request-triggered job is the wrong
+  # place to hand them out. The workflow-level `permissions: contents: read`
+  # covers it; there is no `id-token: write` here.
+  image:
+    # Only on pull requests. A push to main already builds this image in
+    # deploy.yml's `apply` job, which cannot apply anything without it, so
+    # repeating the build here would buy nothing.
+    if: github.event_name == 'pull_request'
+    # Native arm64, not QEMU. The Dockerfile pins `--platform=linux/arm64`
+    # (AgentCore runs arm64), so on an x86 runner every RUN layer — `pnpm
+    # install`, two `tsc` invocations, `pnpm deploy` — would be emulated, which
+    # costs minutes per pull request for no extra coverage: the errors this
+    # catches are workspace-graph and build-context errors, which are identical
+    # on either architecture, and nothing the server depends on ships a native
+    # addon. `ubuntu-24.04-arm` is free on public repositories and runs the
+    # exact platform production runs, so it is both the cheap answer and the
+    # faithful one.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the mcp-server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/mcp-server/Dockerfile
+          push: false
+          # Layer cache, so the expensive early layers (base image, `pnpm
+          # install`) are only paid for when the lockfile or a package.json
+          # actually changes. `ignore-error` because this job exists to catch a
+          # broken image, and a hiccup in the Actions cache service must never
+          # be what fails a pull request.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
   terraform:
     runs-on: ubuntu-24.04
     steps:
