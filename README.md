@@ -143,7 +143,6 @@ It prints something of this shape — run what it prints, not this:
 ```bash
 claude mcp add homeledger \
   --scope user \
-  -e HOMELEDGER_RUNTIME_ARN='arn:aws:bedrock-agentcore:us-east-1:<account-id>:runtime/<runtime>' \
   -e HOMELEDGER_COGNITO_TOKEN_URL='https://<domain>.auth.us-east-1.amazoncognito.com/oauth2/token' \
   -e HOMELEDGER_COGNITO_CLIENT_ID='<client id>' \
   -e AWS_REGION='us-east-1' \
@@ -151,7 +150,11 @@ claude mcp add homeledger \
   -- node /absolute/path/to/homeledger/apps/mcp-bridge/dist/index.js
 ```
 
-No client secret appears on that command line, and none should: `claude mcp add --scope user` writes these values into `~/.claude.json`, and at project scope it would write them into a tracked `.mcp.json`. The secret is read from Secrets Manager (`demo-homeledger/cognito/client-secret`) with the local profile instead. `HOMELEDGER_COGNITO_CLIENT_SECRET` is supported for CI and containers, where there is no SSO session.
+**No runtime ARN appears on that command line, and that is the point.** The bridge resolves the runtime by name — `demo_homeledger_mcp`, through the same `ListAgentRuntimes` call `print-setup` makes, with the same profile — every time it starts. AgentCore mints a runtime's id when the runtime is created and offers no alias layer (FL-038), so an ARN baked into a config is only correct until the runtime is next destroyed and recreated, and nothing tells you when that happens: the old address does not redirect, it stops resolving. A config with nothing pinned in it survives that; a config with an ARN in it does not. FL-039.
+
+`print-setup` still prints the ARN it found, below the command, so you can see which runtime you are about to talk to. Put it back as `-e HOMELEDGER_RUNTIME_ARN='…'` only if you mean to pin one specific runtime — the bridge still reads it, and checks at startup that it names a runtime that exists rather than discovering that it does not during a tool call.
+
+No client secret appears there either, and none should: `claude mcp add --scope user` writes these values into `~/.claude.json`, and at project scope it would write them into a tracked `.mcp.json`. The secret is read from Secrets Manager (`demo-homeledger/cognito/client-secret`) with the local profile instead. `HOMELEDGER_COGNITO_CLIENT_SECRET` is supported for CI and containers, where there is no SSO session.
 
 Every diagnostic goes to stderr, which Claude Code shows under `/mcp`; stdout carries JSON-RPC only. The failure you will actually hit is the SSO session, and it says so in one line:
 
@@ -169,13 +172,25 @@ AWS_PROFILE is set to typo-admin, and no profile of that name exists in ~/.aws/c
 No AgentCore runtime named demo_homeledger_mcp in us-east-1 (profile homeledger-admin). The demo stack may not be deployed — `.github/workflows/deploy.yml` applies it on a push to main, and it creates the runtime only once an image has been pushed. Names present: …
 ```
 
+A fourth failure has its own shape, because it is the one that is hardest to recognise as a failure at all. If the AgentCore runtime instance holding your MCP session has been recycled — which it is, on this stack, after 30 minutes idle — a tool call comes back 404 from the container. The bridge rebuilds the session and replays the call once, so in the ordinary case you see nothing but a line on stderr. When the replay fails too, the error says so in terms a model client cannot round off into an answer:
+
+```
+The HomeLedger MCP session no longer exists (404 / -32001 "Session not found"). …
+NO DATA WAS RETRIEVED. This call did not execute, so nothing was read from the household and no result — empty or otherwise — is implied. Do not answer the question from memory, from repository fixtures or seed data, or from any other source: you do not know what this household contains. …
+Reconnect the server — `/mcp` in Claude Code, then reconnect homeledger — and run the call again.
+```
+
+That paragraph is aimed at the model, not at you, and it is there because the untreated version of this failure was twice turned into a confident wrong answer rather than reported. FL-039.
+
 Other variables, none of them required:
 
-- `HOMELEDGER_MCP_URL` — the full invocation URL, instead of `HOMELEDGER_RUNTIME_ARN`.
+- `HOMELEDGER_RUNTIME_ARN` — pins one runtime ARN instead of resolving by name. Checked against `ListAgentRuntimes` at startup, so a stale pin refuses to start with a sentence rather than 404ing mid-conversation.
+- `HOMELEDGER_RUNTIME_NAME` — resolves by a different name. Defaults to `demo_homeledger_mcp`.
+- `HOMELEDGER_MCP_URL` — the full invocation URL, which overrides both of the above and makes no AWS call to resolve anything.
 - `HOMELEDGER_COGNITO_SCOPE` — defaults to `homeledger/mcp`.
 - `HOMELEDGER_COGNITO_SECRET_ID` — defaults to `demo-homeledger/cognito/client-secret`.
 - `HOMELEDGER_SETUP_SOURCE=terraform`, or `--from-terraform` on the binary — makes `print-setup` read the platform root's Terraform outputs instead of AWS. It is the source of record if a rename lands in `infra/` before the names in `apps/mcp-bridge/src/discover.ts` catch up, and it is deliberately **not** a fallback: it needs an initialised S3 backend, which needs the `-backend-config` flags `.github/workflows/deploy.yml` passes, so on a machine that has not done that it fails. If you have not applied this stack from your own terminal, you do not want this flag.
-- `HOMELEDGER_AGENTCORE_SESSION_ID` — the bridge pins one runtime session per process by default so that a session's later requests reach the instance holding it (FL-022, FL-033). `off` sends no session header, which is exactly what `pnpm smoke` does. A pinned value must be at least 33 characters.
+- `HOMELEDGER_AGENTCORE_SESSION_ID` — **off by default**, which is a reversal of what this bridge used to do. It pinned one `X-Amzn-Bedrock-AgentCore-Runtime-Session-Id` per process so that a session's later requests reached the instance holding it; FL-033 recorded that as the one decision no offline test could check, and checking it found no benefit to check. AgentCore already pins an MCP session to one instance by `Mcp-Session-Id` (FL-009), which the bridge forwards in both directions, and `pnpm smoke` — which sends no runtime session header at all — carries multi-request elicitation round trips to one instance on every observed run. What the pin added was a *second* session with its own idle clock, ageing out independently of the MCP session it was meant to protect. `on` mints one per process; an explicit value pins that value and must be at least 33 characters; `off` or unset sends no header.
 - `HOMELEDGER_BRIDGE_SSE=off` — stops the bridge holding open the spec's optional standalone `GET` event stream. Nothing this server sends arrives on it.
 
 What the bridge does **not** do is translate between protocol revisions. Claude Code 2.1.56 negotiates `2025-11-25` and answers elicitation with session-based `elicitation/create` over the call's own event stream — not the 2026-07-28 multi round-trip requests the modern client uses — so it lands on the server's legacy shim, which is the same path `pnpm smoke`'s legacy block exercises. FL-033 records what that means for a proxy; the short version is that the response stream must be relayed as it arrives and requests must be allowed to overlap, or `book_service` deadlocks on its first question.

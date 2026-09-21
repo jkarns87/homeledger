@@ -866,13 +866,14 @@ It prints a block of this shape. **Run what it prints, not this:**
 ```bash
 claude mcp add homeledger \
   --scope user \
-  -e HOMELEDGER_RUNTIME_ARN='arn:aws:bedrock-agentcore:us-east-1:<account-id>:runtime/<runtime>' \
   -e HOMELEDGER_COGNITO_TOKEN_URL='https://<domain>.auth.us-east-1.amazoncognito.com/oauth2/token' \
   -e HOMELEDGER_COGNITO_CLIENT_ID='<client id>' \
   -e AWS_REGION='us-east-1' \
   -e AWS_PROFILE='homeledger-admin' \
   -- node /absolute/path/to/homeledger/apps/mcp-bridge/dist/index.js
 ```
+
+**The runtime ARN is printed below that block and deliberately not inside it.** The bridge resolves `demo_homeledger_mcp` by name at every start, through the same `ListAgentRuntimes` call this helper makes and with the same profile, so a generated entry survives the runtime being destroyed and recreated under a new id (§11.3, FL-038). An entry that pins the ARN does not, and nothing announces the breakage — the old address stops resolving without redirecting. FL-039. `HOMELEDGER_RUNTIME_ARN` is still read when you set it on purpose, and is checked against `ListAgentRuntimes` at startup so a stale pin refuses to start with a sentence instead of failing inside a tool call.
 
 No client secret appears on that command line and none should: `--scope user` writes these values into
 `~/.claude.json`, and at project scope it would write them into a tracked `.mcp.json`. The secret is read
@@ -883,8 +884,10 @@ On a successful start the bridge writes one line to stderr, which Claude Code sh
 from `apps/mcp-bridge/src/index.ts`'s `logDiagnostic` call; not observed against the live endpoint:
 
 ```
-[homeledger-bridge] ready: endpoint bedrock-agentcore.us-east-1.amazonaws.com, client <id>, region us-east-1, secret from Secrets Manager (demo-homeledger/cognito/client-secret), runtime session pinned
+[homeledger-bridge] ready: endpoint bedrock-agentcore.us-east-1.amazonaws.com, runtime resolved by name (demo_homeledger_mcp), client <id>, region us-east-1, secret from Secrets Manager (demo-homeledger/cognito/client-secret), runtime session left to AgentCore
 ```
+
+`runtime resolved by name` is the form that survives a recreate; `runtime pinned by arn` or `pinned by url` means this entry is addressing one specific runtime and will stop working when that runtime is replaced.
 
 Every diagnostic goes to stderr; stdout carries JSON-RPC only.
 
@@ -892,8 +895,9 @@ Every diagnostic goes to stderr; stdout carries JSON-RPC only.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `HOMELEDGER_RUNTIME_ARN` | none | Invocation URL is composed from it. One of this or `HOMELEDGER_MCP_URL` is required |
-| `HOMELEDGER_MCP_URL` | none | The full invocation URL, instead of the ARN |
+| `HOMELEDGER_RUNTIME_ARN` | none | Pins one ARN instead of resolving by name. Validated against `ListAgentRuntimes` at startup; a stale pin refuses to start |
+| `HOMELEDGER_RUNTIME_NAME` | `demo_homeledger_mcp` | The `agent_runtime_name` the bridge resolves by when nothing is pinned |
+| `HOMELEDGER_MCP_URL` | none | The full invocation URL. Overrides both of the above and makes no AWS call to resolve an address |
 | `HOMELEDGER_COGNITO_TOKEN_URL` | none, required | |
 | `HOMELEDGER_COGNITO_CLIENT_ID` | none, required | |
 | `HOMELEDGER_COGNITO_SCOPE` | `homeledger/mcp` | |
@@ -902,7 +906,7 @@ Every diagnostic goes to stderr; stdout carries JSON-RPC only.
 | `AWS_PROFILE` / `HOMELEDGER_AWS_PROFILE` | `homeledger-admin` | A profile already in the environment always wins |
 | `AWS_REGION` | `us-east-1` | |
 | `HOMELEDGER_RUNTIME_QUALIFIER` | `DEFAULT` | |
-| `HOMELEDGER_AGENTCORE_SESSION_ID` | generated per process | Pins one runtime session per bridge process. `off` sends no session header, which is what `pnpm smoke` does. A pinned value must be at least 33 characters |
+| `HOMELEDGER_AGENTCORE_SESSION_ID` | **unset — no header sent** | Reversed in FL-039. `on` mints one per bridge process; an explicit value pins it and must be at least 33 characters; unset or `off` sends no header and leaves instance routing to AgentCore's own `Mcp-Session-Id` pinning, which is what `pnpm smoke` does |
 | `HOMELEDGER_BRIDGE_SSE` | on | `off` stops the bridge holding open the spec's standalone `GET` stream. Nothing this server sends arrives on it |
 | `HOMELEDGER_SETUP_SOURCE` | `aws` | `terraform` (or `--from-terraform`) reads the platform root's Terraform outputs instead. It needs an initialised S3 backend, which a laptop does not have — see §12 |
 
@@ -1132,12 +1136,15 @@ it, rather than relying on the empty form to pick it.
 
 **One thing does change across the round trip, either way, and it is the expensive one:** the runtime is a
 new resource, so its **ARN is new** — `…-093ImbCPE3` became `…-Rgb4ruHdu7` in this round trip. That
-invalidates every invocation URL and every `claude mcp add` entry already issued, and AgentCore offers no
-alias or qualifier that survives it (§11.2). Re-run `pnpm --filter @homeledger/mcp-bridge run print-setup`,
-reissue the `claude mcp add` command, and tell anyone else holding an address to do the same. **Nothing else
-moves** — verified across this round trip: `print-setup` finds the runtime by name (`demo_homeledger_mcp`)
-rather than by stored ARN, and the Cognito client id (`3hhkt2a5j155d960s4uircaoqh`), the token URL, the table
-with its seeded data and the Knowledge Base id (`EKF93YIKCK`) were byte-identical before and after.
+invalidates every invocation URL already issued, and AgentCore offers no alias or qualifier that survives it
+(§11.2). **`claude mcp add` entries generated after FL-039 are the exception and need nothing done to them:**
+they carry no `HOMELEDGER_RUNTIME_ARN`, and the bridge resolves `demo_homeledger_mcp` by name at every start,
+so the next launch picks up the new ARN by itself. An entry that pins one — generated before FL-039, or
+pinned on purpose — refuses to start with a sentence naming the ARN that replaced it; re-run
+`pnpm --filter @homeledger/mcp-bridge run print-setup` and reissue the command, and tell anyone else holding
+a raw URL to do the same. **Nothing else moves** — verified across this round trip: the Cognito client id
+(`3hhkt2a5j155d960s4uircaoqh`), the token URL, the table with its seeded data and the Knowledge Base id
+(`EKF93YIKCK`) were byte-identical before and after.
 
 ### 11.4 Full teardown, and why it is still not a round trip
 

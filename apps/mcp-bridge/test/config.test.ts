@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, MIN_AGENTCORE_SESSION_ID_LENGTH, invocationUrlFromArn, loadConfig, resolveAgentCoreSessionId } from '../src/config.js';
+import {
+  ConfigError,
+  DEFAULT_RUNTIME_NAME,
+  MIN_AGENTCORE_SESSION_ID_LENGTH,
+  invocationUrlFromArn,
+  loadConfig,
+  resolveAgentCoreSessionId,
+  resolveRuntimeTarget
+} from '../src/config.js';
 
 /** The shape `infra/modules/agentcore-runtime` produces, with the account id replaced. */
 const ARN = 'arn:aws:bedrock-agentcore:us-east-1:111122223333:runtime/homeledger_mcp-AbC123xyZ';
@@ -27,12 +35,20 @@ describe('invocationUrlFromArn', () => {
 });
 
 describe('resolveAgentCoreSessionId', () => {
-  it('generates one when unset, so a Claude Code session pins to a single runtime instance', () => {
-    expect(resolveAgentCoreSessionId(undefined, () => 'generated-value-long-enough-for-agentcore-x')).toBe('generated-value-long-enough-for-agentcore-x');
+  it('sends no header at all when unset, which is exactly what the smoke does', () => {
+    // The reversal FL-039 argued for. AgentCore pins an MCP session to one
+    // instance by Mcp-Session-Id on its own, so the default configuration adds
+    // no second session of its own for AgentCore to age out independently.
+    expect(resolveAgentCoreSessionId(undefined)).toBeUndefined();
+    expect(resolveAgentCoreSessionId('')).toBeUndefined();
   });
 
-  it('sends no header at all when set to off', () => {
+  it('still sends no header when set to off, so a config written against the old default keeps working', () => {
     expect(resolveAgentCoreSessionId('off')).toBeUndefined();
+  });
+
+  it('generates one per process only when asked for by name', () => {
+    expect(resolveAgentCoreSessionId('on', () => 'generated-value-long-enough-for-agentcore-x')).toBe('generated-value-long-enough-for-agentcore-x');
   });
 
   it('keeps a pinned value the owner supplied', () => {
@@ -49,27 +65,64 @@ describe('resolveAgentCoreSessionId', () => {
     expect(resolveAgentCoreSessionId(exact)).toBe(exact);
   });
 
-  it('generates a different value per call, so two bridges do not share one runtime instance', () => {
-    const first = resolveAgentCoreSessionId(undefined);
-    const second = resolveAgentCoreSessionId(undefined);
+  it('generates a different value per call, so two bridges that opt in do not share one runtime instance', () => {
+    const first = resolveAgentCoreSessionId('on');
+    const second = resolveAgentCoreSessionId('on');
     expect(first).not.toBe(second);
     expect(first!.length).toBeGreaterThanOrEqual(MIN_AGENTCORE_SESSION_ID_LENGTH);
   });
 });
 
+describe('resolveRuntimeTarget', () => {
+  it('resolves by name when nothing pins an address, which is the form that survives a recreate', () => {
+    expect(resolveRuntimeTarget({})).toEqual({ kind: 'name', name: 'demo_homeledger_mcp' });
+  });
+
+  it('takes a supplied ARN over the name, and carries the name along for the refusal message', () => {
+    expect(resolveRuntimeTarget({ HOMELEDGER_RUNTIME_ARN: ARN })).toEqual({ kind: 'arn', arn: ARN, name: DEFAULT_RUNTIME_NAME });
+  });
+
+  it('takes a supplied URL over everything, because it is the only form that need not be an AWS address at all', () => {
+    expect(resolveRuntimeTarget({ HOMELEDGER_MCP_URL: 'https://example.invalid/mcp', HOMELEDGER_RUNTIME_ARN: ARN })).toEqual({
+      kind: 'url',
+      url: 'https://example.invalid/mcp'
+    });
+  });
+
+  it('lets a fork point the by-name lookup at its own runtime', () => {
+    expect(resolveRuntimeTarget({ HOMELEDGER_RUNTIME_NAME: 'other_homeledger_mcp' })).toEqual({ kind: 'name', name: 'other_homeledger_mcp' });
+  });
+
+  it('treats a whitespace-only pin as unset, which is what an unexpanded shell variable leaves behind', () => {
+    expect(resolveRuntimeTarget({ HOMELEDGER_RUNTIME_ARN: '   ', HOMELEDGER_MCP_URL: '  ' })).toEqual({ kind: 'name', name: DEFAULT_RUNTIME_NAME });
+  });
+});
+
 describe('loadConfig', () => {
-  it('builds the invocation URL from the runtime ARN when no explicit URL is given', () => {
-    expect(loadConfig({ ...BASE_ENV }).mcpUrl).toBe(
-      'https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/arn%3Aaws%3Abedrock-agentcore%3Aus-east-1%3A111122223333%3Aruntime%2Fhomeledger_mcp-AbC123xyZ/invocations?qualifier=DEFAULT'
-    );
+  it('carries the supplied ARN through as a pin rather than composing a URL there and then', () => {
+    expect(loadConfig({ ...BASE_ENV }).target).toEqual({ kind: 'arn', arn: ARN, name: DEFAULT_RUNTIME_NAME });
   });
 
-  it('prefers an explicit HOMELEDGER_MCP_URL over the ARN', () => {
-    expect(loadConfig({ ...BASE_ENV, HOMELEDGER_MCP_URL: 'https://example.invalid/mcp' }).mcpUrl).toBe('https://example.invalid/mcp');
+  it('starts perfectly happily with no runtime pinned at all, and resolves by name instead', () => {
+    // The old build threw a ConfigError here. That refusal was the bug in
+    // miniature: it insisted on being handed an address it was entirely
+    // capable of looking up.
+    expect(loadConfig({ ...BASE_ENV, HOMELEDGER_RUNTIME_ARN: undefined }).target).toEqual({ kind: 'name', name: DEFAULT_RUNTIME_NAME });
   });
 
-  it('refuses to start when neither the URL nor the ARN is set', () => {
-    expect(() => loadConfig({ ...BASE_ENV, HOMELEDGER_RUNTIME_ARN: undefined })).toThrow(ConfigError);
+  it('carries the qualifier the invocation URL will be built with', () => {
+    expect(loadConfig({ ...BASE_ENV }).qualifier).toBe('DEFAULT');
+    expect(loadConfig({ ...BASE_ENV, HOMELEDGER_RUNTIME_QUALIFIER: 'canary' }).qualifier).toBe('canary');
+  });
+
+  it('records that it minted the runtime session id only when it actually did', () => {
+    expect(loadConfig({ ...BASE_ENV }).agentCoreSessionGenerated).toBe(false);
+    expect(loadConfig({ ...BASE_ENV, HOMELEDGER_AGENTCORE_SESSION_ID: 'on' }).agentCoreSessionGenerated).toBe(true);
+    expect(loadConfig({ ...BASE_ENV, HOMELEDGER_AGENTCORE_SESSION_ID: 'a'.repeat(40) }).agentCoreSessionGenerated).toBe(false);
+  });
+
+  it('sends no AgentCore runtime session header by default', () => {
+    expect(loadConfig({ ...BASE_ENV }).agentCoreSessionId).toBeUndefined();
   });
 
   it('names the missing variable and the Terraform output that supplies it', () => {

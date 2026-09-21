@@ -137,7 +137,25 @@ export interface SetupRenderOptions {
   profileFromEnvironment?: boolean;
 }
 
-/** Renders the block the owner pastes. Kept pure so the exact text is asserted in a test rather than eyeballed once. */
+/**
+ * Renders the block the owner pastes. Kept pure so the exact text is asserted in a test rather than eyeballed once.
+ *
+ * **The runtime ARN is printed and deliberately not passed.** It used to be an
+ * `-e HOMELEDGER_RUNTIME_ARN=…` in the command, which is how the generated
+ * config came to hold an address with a shelf life: AgentCore mints a runtime's
+ * id at create time and has no alias layer, so the ARN is only correct until
+ * the runtime is next recreated (FL-038), and a config that pins it is a config
+ * that breaks silently on that day (FL-039). The bridge now resolves the
+ * runtime by name at every start through the same `ListAgentRuntimes` call this
+ * helper makes, with the same profile, so pinning buys nothing it cannot do for
+ * itself.
+ *
+ * What pinning did buy — being able to aim a bridge at one specific runtime on
+ * purpose — is not lost, only moved out of the default: `HOMELEDGER_RUNTIME_ARN`
+ * and `HOMELEDGER_MCP_URL` are both still read, and the ARN is printed below the
+ * command precisely so an owner who wants to pin one has it to hand and an
+ * owner who does not can still see which runtime they are about to talk to.
+ */
 export function renderSetup({
   values,
   entrypoint,
@@ -150,12 +168,14 @@ export function renderSetup({
     '',
     '  claude mcp add homeledger \\',
     '    --scope user \\',
-    `    -e HOMELEDGER_RUNTIME_ARN='${values.runtimeArn}' \\`,
     `    -e HOMELEDGER_COGNITO_TOKEN_URL='${values.tokenUrl}' \\`,
     `    -e HOMELEDGER_COGNITO_CLIENT_ID='${values.clientId}' \\`,
     `    -e AWS_REGION='${region}' \\`,
     `    -e AWS_PROFILE='${profile}' \\`,
     `    -- node ${entrypoint}`,
+    '',
+    `The runtime is ${values.runtimeArn}.`,
+    'That ARN is not in the command above and should not be: the bridge finds the runtime by name every time it starts, so this entry keeps working after the runtime is destroyed and recreated under a new id. Add it back as -e HOMELEDGER_RUNTIME_ARN only if you mean to pin one specific runtime.',
     '',
     `No client secret appears above, and none should: the bridge reads it from Secrets Manager with the ${profile} profile at startup.`,
     `Sign in first with \`aws login --profile ${profile}\`; the bridge needs that session only while it starts.`,

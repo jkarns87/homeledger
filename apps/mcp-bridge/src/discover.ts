@@ -1,6 +1,7 @@
 import type { AwsIdentityContext } from './aws-errors.js';
 import { awsFailureMessage, isCredentialFailure } from './aws-errors.js';
 import { readKnownProfiles } from './aws-profiles.js';
+import { DEFAULT_RUNTIME_NAME } from './config.js';
 import type { SetupValues } from './setup.js';
 
 /**
@@ -51,7 +52,9 @@ export interface ResourceNames {
 }
 
 export const RESOURCE_NAMES: ResourceNames = {
-  runtime: 'demo_homeledger_mcp',
+  // Shared with the running bridge, which resolves its own address by this
+  // name. One spelling, so a rename cannot fix setup and leave startup broken.
+  runtime: DEFAULT_RUNTIME_NAME,
   userPool: 'demo-homeledger-mcp',
   appClient: 'homeledger-simulator'
 };
@@ -97,12 +100,24 @@ export interface UserPoolDomains {
 }
 
 /**
+ * The one read the running bridge needs, split out of `DiscoveryApi` so the
+ * bridge's startup path can depend on `ListAgentRuntimes` alone.
+ *
+ * `DiscoveryApi` satisfies this structurally, which is the point: `print-setup`
+ * and the bridge resolve the runtime through the same interface and the same
+ * selection rule, so "discovery found it" and "the bridge found it" cannot mean
+ * two different things.
+ */
+export interface RuntimeLister {
+  listAgentRuntimes(): Promise<AgentRuntimeRow[]>;
+}
+
+/**
  * The four reads, behind an interface, so every test in this file runs against
  * rows rather than against a mocked AWS client. `createAwsDiscoveryApi` is the
  * only implementation that touches the network.
  */
-export interface DiscoveryApi {
-  listAgentRuntimes(): Promise<AgentRuntimeRow[]>;
+export interface DiscoveryApi extends RuntimeLister {
   listUserPools(): Promise<UserPoolRow[]>;
   listUserPoolClients(userPoolId: string): Promise<UserPoolClientRow[]>;
   describeUserPoolDomains(userPoolId: string): Promise<UserPoolDomains>;
@@ -195,6 +210,31 @@ export function selectUniqueValue<T>(options: SelectOptions<T>): string {
 }
 
 /**
+ * Picks the AgentCore runtime ARN out of a `ListAgentRuntimes` page set.
+ *
+ * Lifted out of `discoverSetupValues` so the running bridge resolves its own
+ * address through this exact function rather than through a second copy of the
+ * same three rules. That matters more here than anywhere else in this file:
+ * FL-039 is a bug about setup-time discovery and runtime discovery being
+ * different mechanisms, and two `selectUniqueValue` call sites with slightly
+ * different hints would be the same bug growing back.
+ */
+export function selectRuntimeArn(rows: AgentRuntimeRow[], wanted: string, scope: string): string {
+  return selectUniqueValue({
+    rows,
+    wanted,
+    nameOf: row => row.agentRuntimeName,
+    valueOf: row => row.agentRuntimeArn,
+    resource: 'AgentCore runtime',
+    valueLabel: 'ARN',
+    scope,
+    absentHint:
+      'The demo stack may not be deployed — `.github/workflows/deploy.yml` applies it on a push to main, and it creates the runtime only once an image has been pushed.',
+    ambiguousHint: 'Put the one you want into the `claude mcp add` command as HOMELEDGER_RUNTIME_ARN, or delete the other.'
+  });
+}
+
+/**
  * Builds the Cognito token endpoint from whatever domain the pool actually has.
  *
  * Mirrors `infra/modules/cognito-m2m/outputs.tf`'s `token_url`, which composes
@@ -244,21 +284,10 @@ export async function discoverSetupValues(api: DiscoveryApi, identity: AwsIdenti
   const names = options.names ?? RESOURCE_NAMES;
   const scope = describeScope(identity);
   const readProfiles = options.readProfiles ?? (() => readKnownProfiles(process.env));
-  const call = createCaller(identity, readProfiles);
+  const call = createAwsCaller(identity, readProfiles);
 
   const runtimes = await call(() => api.listAgentRuntimes(), 'bedrock-agentcore:ListAgentRuntimes');
-  const runtimeArn = selectUniqueValue({
-    rows: runtimes,
-    wanted: names.runtime,
-    nameOf: row => row.agentRuntimeName,
-    valueOf: row => row.agentRuntimeArn,
-    resource: 'AgentCore runtime',
-    valueLabel: 'ARN',
-    scope,
-    absentHint:
-      'The demo stack may not be deployed — `.github/workflows/deploy.yml` applies it on a push to main, and it creates the runtime only once an image has been pushed.',
-    ambiguousHint: 'Put the one you want into the `claude mcp add` command as HOMELEDGER_RUNTIME_ARN, or delete the other.'
-  });
+  const runtimeArn = selectRuntimeArn(runtimes, names.runtime, scope);
 
   const pools = await call(() => api.listUserPools(), 'cognito-idp:ListUserPools');
   const userPoolId = selectUniqueValue({
@@ -300,8 +329,17 @@ export async function discoverSetupValues(api: DiscoveryApi, identity: AwsIdenti
  * The profile list is read at most once per run, lazily, and only when the
  * failure is about credentials in the first place — a permissions error or a
  * throttle never touches the filesystem, and neither does a run that works.
+ *
+ * Exported because the running bridge now makes one of these calls too, and the
+ * sentence an owner gets for an expired session must not depend on whether they
+ * were running `--print-setup` or starting the bridge.
+ *
+ * `hint` is appended only to failures that are *not* about credentials. An
+ * expired SSO session is the single most likely failure in this program and its
+ * one-line remedy is quoted verbatim in the README; a caller's extra paragraph
+ * about how it resolves runtimes would bury the one command that fixes it.
  */
-function createCaller(identity: AwsIdentityContext, readProfiles: () => Promise<ReadonlySet<string> | undefined>) {
+export function createAwsCaller(identity: AwsIdentityContext, readProfiles: () => Promise<ReadonlySet<string> | undefined>, hint?: string) {
   let profiles: ReadonlySet<string> | undefined;
   let looked = false;
   return async function call<T>(run: () => Promise<T>, action: string): Promise<T> {
@@ -309,11 +347,13 @@ function createCaller(identity: AwsIdentityContext, readProfiles: () => Promise<
       return await run();
     } catch (err) {
       if (err instanceof DiscoveryError) throw err;
-      if (isCredentialFailure(err) && !looked) {
+      const credentials = isCredentialFailure(err);
+      if (credentials && !looked) {
         looked = true;
         profiles = await readProfiles().catch(() => undefined);
       }
-      throw new DiscoveryError(awsFailureMessage(err, { ...identity, action, knownProfiles: profiles }));
+      const message = awsFailureMessage(err, { ...identity, action, knownProfiles: profiles });
+      throw new DiscoveryError(hint && !credentials ? `${message}\n${hint}` : message);
     }
   };
 }
