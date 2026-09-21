@@ -17,11 +17,20 @@ inline policy; and the AgentCore runtime itself. It does not touch the OIDC
 provider or GitHub deploy role used to run it — those are managed outside
 Terraform.
 
+Both Secrets Manager secrets in this root — the Cognito client secret and the
+`requestState` signing key — are created with `recovery_window_in_days = 0`
+(`var.secret_recovery_window_in_days`). A destroy therefore deletes them
+outright with no restore, rather than scheduling them 30 days out and holding
+their names reserved for that long. That is **demo-only**, it is explained at
+both resources, and a non-disposable copy of this root must set 7–30 instead.
+
 ## Terraform runs only in GitHub Actions
 
 There are no local AWS credentials for Terraform in this repo, by design.
-`plan` and `apply` happen only in the `deploy` GitHub Actions workflow (Task
-13), which:
+`plan` and `apply` happen only in GitHub Actions. Two workflows apply this
+root: `deploy` (Task 13), described below, and `teardown`, which is
+dispatch-only and does nothing but flip `image_uri` — see
+`docs/RUNBOOK.md` §11. The `deploy` workflow:
 
 1. Assumes the OIDC role `AWS_ROLE_ARN` (a repository variable; the role and
    its trust policy are created and managed outside Terraform).
@@ -141,6 +150,7 @@ is not read automatically by the Actions workflow, which passes
 | <a name="input_idle_session_timeout_seconds"></a> [idle\_session\_timeout\_seconds](#input\_idle\_session\_timeout\_seconds) | Idle runtime session timeout passed to the AgentCore runtime, in seconds. | `number` | `1800` | no |
 | <a name="input_image_uri"></a> [image\_uri](#input\_image\_uri) | Full ECR image URI with tag, from scripts/build-image.sh. Empty on the first apply, which then creates only ECR, the table, Cognito, and the execution role. | `string` | `""` | no |
 | <a name="input_region"></a> [region](#input\_region) | AWS region to deploy into. | `string` | `"us-east-1"` | no |
+| <a name="input_secret_recovery_window_in_days"></a> [secret\_recovery\_window\_in\_days](#input\_secret\_recovery\_window\_in\_days) | Recovery window applied to both Secrets Manager secrets in this root (the Cognito client secret and the requestState signing key). Defaults to 0, which is a DEMO-ONLY choice: it makes a destroy delete both secrets immediately and unrecoverably so their names free up and the stack can be re-applied, which is what a teardown/bring-up round trip between hackathon test windows needs. Any non-disposable environment must set 7-30 instead and accept that a destroy is then not a round trip, because a scheduled-for-deletion secret keeps its name reserved for the whole window. The cognito-m2m module itself defaults to the safe 30; this root is the thing that opts in. | `number` | `0` | no |
 
 ## Outputs
 

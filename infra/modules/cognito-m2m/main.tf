@@ -44,6 +44,32 @@ resource "aws_cognito_user_pool_client" "this" {
 # without recreating the client).
 resource "aws_secretsmanager_secret" "this" {
   name = var.secret_name
+
+  # READ THIS BEFORE COPYING THIS MODULE SOMEWHERE THAT IS NOT DISPOSABLE.
+  #
+  # This argument decides what `terraform destroy` does to the secret, and the
+  # two outcomes are not variations on a theme:
+  #
+  #   30 (this module's default, and AWS's own)
+  #     DeleteSecret schedules the secret and stamps a DeletionDate 30 days out.
+  #     The value stays restorable with `aws secretsmanager restore-secret` for
+  #     the whole window. It also keeps the NAME reserved for the whole window,
+  #     so re-applying this module with the same secret_name inside it fails
+  #     with "You can't create this secret because a secret with this name is
+  #     already scheduled for deletion".
+  #
+  #   0
+  #     The AWS provider sends DeleteSecret with ForceDeleteWithoutRecovery=true
+  #     instead of RecoveryWindowInDays. The secret is deleted outright and
+  #     there is NO restore - "you have no opportunity to recover the secret.
+  #     You lose the secret permanently" (DeleteSecret API reference). The name
+  #     frees up, so a destroy/re-apply round trip works.
+  #
+  # The default is 30 because a production caller wants the recovery window and
+  # is not doing round trips. HomeLedger's demo root opts in to 0 in
+  # infra/live/demo/platform/main.tf, where the value is regenerated on every
+  # apply and losing it costs nothing. Do not move that opt-in up here.
+  recovery_window_in_days = var.recovery_window_in_days
 }
 
 resource "aws_secretsmanager_secret_version" "this" {

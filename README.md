@@ -192,14 +192,18 @@ Every request to that URL must carry a Cognito client-credentials bearer token i
 
 `ci.yml` runs on every pull request: `test` (format, typecheck, the whole suite, `pnpm build`), `image`, and `terraform`. The `image` job builds `apps/mcp-server/Dockerfile` and stops there — it never pushes and holds no AWS credentials. It exists because `test` installs the entire workspace while the image copies only `packages/core` and `apps/mcp-server` into its build context, so the two disagree about what the workspace contains, and for three merges `test` was green on a `workspace:*` edge the image could not resolve (FL-036). It runs on `ubuntu-24.04-arm` so the arm64 build the deploy ships is native rather than emulated. **Add it to `main`'s required checks** — the job reports the failure, branch protection is what blocks the merge.
 
-Two workflows drive the deployed stack. `deploy.yml` runs a `terraform plan` on every pull request touching `infra/**`, `apps/**`, `packages/**`, or `scripts/**`, and applies on push to `main` — merging a PR into `main` applies it. The `plan` job runs without the `demo` GitHub environment gate (pull request runs use the synthetic `refs/pull/N/merge` ref, which no deployment branch policy can match; the OIDC role's trust policy admits pull_request tokens directly), while `apply` still requires it. Both workflows can also be dispatched manually:
+Three workflows drive the deployed stack. `deploy.yml` runs a `terraform plan` on every pull request touching `infra/**`, `apps/**`, `packages/**`, or `scripts/**`, and applies on push to `main` — merging a PR into `main` applies it. The `plan` job runs without the `demo` GitHub environment gate (pull request runs use the synthetic `refs/pull/N/merge` ref, which no deployment branch policy can match; the OIDC role's trust policy admits pull_request tokens directly), while `apply` still requires it. All three can be dispatched manually:
 
 ```bash
 gh workflow run deploy.yml --ref <branch>   # infra apply + image build/push, GitHub environment "demo"
 gh workflow run smoke.yml --ref <branch>    # seeds the table, then drives a modern and a legacy MCP client through the real endpoint
+gh workflow run teardown.yml --ref main -f mode=teardown-runtime -f confirm='destroy demo runtime'
+gh workflow run teardown.yml --ref main -f mode=bring-up   # redeploys an image already in ECR; builds nothing
 ```
 
-[`docs/RUNBOOK.md`](docs/RUNBOOK.md) carries the rest of this end to end: the one-time OIDC and state-bucket bootstrap, what `main`'s required checks do to a documentation-only pull request, a verbatim healthy smoke run with its timings, and what can and cannot be torn down cheaply between test windows.
+`teardown.yml` is the only workflow that removes a deployed resource, and the only resource it can remove is the AgentCore runtime — the expensive, easily recreated part. It applies with an empty `image_uri` rather than running `terraform destroy`, and since that `count` is the only conditional in the configuration it is structurally unable to reach ECR, DynamoDB, Cognito, the secrets or the Knowledge Base. It also refuses to apply a plan that creates anything or deletes anything else. Destroying the rest is deliberately not offered from a dispatch menu; `docs/RUNBOOK.md` §11 is where that is written down. **Never dispatched — see FL-037 for exactly what is and is not proven.**
+
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md) carries the rest of this end to end: the one-time OIDC and state-bucket bootstrap, what `main`'s required checks do to a documentation-only pull request, a verbatim healthy smoke run with its timings, and the teardown / bring-up round trip between test windows — including what a full destroy still costs and why it has no button.
 
 ## Manuals and the knowledge base
 

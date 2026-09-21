@@ -231,3 +231,71 @@ run "rejects_an_out_of_range_availability_delay" {
 
   expect_failures = [var.availability_delay_ms]
 }
+
+# ---------------------------------------------------------------------------
+# Teardown and bring-up (.github/workflows/teardown.yml) - the secrets half.
+#
+# The demo is expected to be live only during hackathon test windows, so the
+# stack has to survive being taken down and put back. Two things make that
+# work: the secrets must delete rather than be scheduled, which is what the
+# three runs below check, and image_uri has to be a two-way lever, which
+# tests/teardown.tftest.hcl checks in its own state.
+# ---------------------------------------------------------------------------
+
+# The trap this closes: with the provider's default 30-day window, a destroy
+# leaves both secrets *scheduled*, their names reserved, and the next apply of
+# this root fails with "You can't create this secret because a secret with this
+# name is already scheduled for deletion". Tear down in October, and the stack
+# cannot come back for judging in November without renaming or a manual
+# restore-secret. Both secrets have to be at 0 - one left at 30 blocks the
+# re-apply just as completely as two.
+run "both_demo_secrets_delete_immediately_so_their_names_free_up_for_a_re_apply" {
+  command = plan
+
+  assert {
+    condition     = aws_secretsmanager_secret.request_state.recovery_window_in_days == 0
+    error_message = "the requestState key secret must be created with recovery_window_in_days = 0; at anything else a destroy only schedules it and the name it holds blocks the next apply of this root"
+  }
+
+  # cognito-m2m's own default is the production-safe 30, so this asserts the
+  # root actually passes its opt-in down. Without it the Cognito client secret
+  # is the one that blocks the re-apply, while the secret in this file looks
+  # fixed - the trap half-closed, which reads as closed.
+  assert {
+    condition     = module.cognito.secret_recovery_window_in_days == 0
+    error_message = "the root must pass secret_recovery_window_in_days down to cognito-m2m, whose default is 30"
+  }
+}
+
+# The companion to the run above: together they pin the value to the variable
+# rather than to a literal. A hardcoded 0 passes the first and fails this one;
+# a hardcoded 30 fails the first and passes this one. Only the plumbing passes
+# both, which is what lets a non-demo copy of this root set the safe window in
+# one place.
+run "a_production_recovery_window_reaches_both_secrets" {
+  command = plan
+
+  variables {
+    secret_recovery_window_in_days = 30
+  }
+
+  assert {
+    condition     = aws_secretsmanager_secret.request_state.recovery_window_in_days == 30
+    error_message = "secret_recovery_window_in_days must reach the requestState key secret"
+  }
+
+  assert {
+    condition     = module.cognito.secret_recovery_window_in_days == 30
+    error_message = "secret_recovery_window_in_days must reach the Cognito client secret"
+  }
+}
+
+run "rejects_a_recovery_window_aws_will_not_accept" {
+  command = plan
+
+  variables {
+    secret_recovery_window_in_days = 3
+  }
+
+  expect_failures = [var.secret_recovery_window_in_days]
+}

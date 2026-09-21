@@ -554,7 +554,11 @@ read-only, with an SSO session (§10.2).
 | `ci.yml` | every pull request; push to `main` | `test`, `image` (pull requests only), `terraform` | **None.** `permissions: contents: read`, no `id-token: write` |
 | `deploy.yml` | pull requests touching `infra/**`, `apps/**`, `packages/**`, `scripts/**`, `.github/workflows/deploy.yml`; push to `main`; `workflow_dispatch` | `plan` (pull requests), `apply` (push / dispatch) | OIDC role |
 | `smoke.yml` | `workflow_dispatch` only | `smoke` | OIDC role, `demo` environment |
+| `teardown.yml` | `workflow_dispatch` only | `teardown` or `bring-up`, whichever the `mode` input selects | OIDC role, `demo` environment |
 | `aws-oidc-check.yml` | `workflow_dispatch`; push to `main` touching that file | `whoami` | OIDC role |
+
+`teardown.yml` is the only workflow that can remove a deployed resource, and the only one it can remove is
+the AgentCore runtime. It needs a typed confirmation and refuses a plan wider than that runtime. §11.2.
 
 **Merging a pull request into `main` deploys.** `deploy.yml`'s `apply` job runs on the push, builds and
 pushes a `linux/arm64` image tagged with the 7-character commit SHA, and applies Terraform with that
@@ -889,7 +893,7 @@ from a bill — no AWS call was made while writing this.** Check the pricing pag
 | --- | --- | --- |
 | AgentCore runtime | Consumption: CPU and memory while a session is running | Effectively zero when nobody invokes it. It is **not** a provisioned always-on container |
 | Cognito user pool + M2M app client | **Time-based.** Cognito's published pricing bills machine-to-machine app clients on a per-client monthly basis rather than by monthly active users, so this one accrues whether or not a token is ever minted | Probably the largest idle line item here, and the one worth checking first. **Confirm the current model and rate on the Cognito pricing page** — this was not read from a bill |
-| Secrets Manager, two secrets (`.../cognito/client-secret`, `.../mcp/request-state-key`) | **Time-based**, per secret per month, plus per-API-call | Roughly $0.80/month at the long-standing $0.40 per secret |
+| Secrets Manager, two secrets (`.../cognito/client-secret`, `.../mcp/request-state-key`) | **Time-based**, per secret per month, plus per-API-call | Roughly $0.80/month at the long-standing $0.40 per secret. Both are now created with `recovery_window_in_days = 0` (§11.4), so a destroy stops the meter at once instead of leaving them scheduled — and billable — for another 30 days |
 | DynamoDB table | `PAY_PER_REQUEST` plus storage, plus point-in-time-recovery backup storage (PITR is **enabled**) | Cents. The table holds one household |
 | ECR repository | Storage per GB-month; lifecycle policy keeps the last 20 images | Tens of cents, rising with image count. A Node 22 arm64 image is a few hundred MB |
 | S3 manuals bucket | Storage; **versioning is enabled**, so deleted objects keep costing until the versions go | Cents |
@@ -920,35 +924,59 @@ code, not taken on trust.**
 
 It is also the right lever, because it preserves every identifier the rest of this runbook depends on. The
 Cognito client id and secret, the Knowledge Base id, the table name, the ECR repository and its images all
-survive, so bringing the stack back needs no reconfiguration of Claude Code and no re-running of
-`print-setup`.
+survive, so bringing the stack back needs no reconfiguration beyond a fresh runtime ARN (see §11.3).
 
-**But there is no shipped way to pull it.** `deploy.yml`'s `apply` job always computes `IMAGE` from
-`scripts/build-image.sh` and passes it as `-var "image_uri=$IMAGE_URI"`; its `workflow_dispatch` trigger
-declares no `inputs:`; and there is no destroy workflow in `.github/workflows/`. The one place
-`-var image_uri=""` appears is the ECR bootstrap step, which is `-target`ed at two resources and guarded on
-`aws_ecr_repository.mcp` being absent from state, so it cannot touch the runtime. Three options, in order of
-preference:
+**There is now a workflow that pulls it.** `.github/workflows/teardown.yml`, `workflow_dispatch` only.
+Earlier revisions of this section said there was no such path and listed three workarounds; that was true
+and is no longer. Dispatch it from `main`:
 
-1. **Add a `workflow_dispatch` input to `deploy.yml`** that lets `apply` pass an empty `image_uri` and skip
-   the build. A one-job change, and the clean fix. Out of scope for a documentation-only change, so it is
-   named here rather than done.
-2. **Delete the runtime out of band**, then let the next deploy recreate it:
-   ```bash
-   aws bedrock-agentcore-control list-agent-runtimes --profile homeledger-admin --region us-east-1 \
-     --query 'agentRuntimes[].[agentRuntimeName,agentRuntimeId,status]' --output text
-   aws bedrock-agentcore-control delete-agent-runtime --profile homeledger-admin --region us-east-1 \
-     --agent-runtime-id <id>
-   ```
-   > **NOT EXECUTED.** Both subcommands exist in the installed AWS CLI (v2.36.48) and their required
-   > arguments are as written, checked with `aws ... help`. The effect on Terraform state was not tested.
-   Terraform state then holds a resource that no longer exists; the next `deploy.yml` apply sees the drift
-   and recreates it, which is the desired outcome but means the intervening pull-request `plan` jobs will
-   show a create rather than a no-op.
-3. **Leave it up.** Given §11.1, an idle runtime with no sessions is close to free. This is the honest
-   default between test windows.
+```bash
+gh workflow run teardown.yml --ref main \
+  -f mode=teardown-runtime \
+  -f confirm='destroy demo runtime'
+gh run watch --repo jkarns87/homeledger
+```
+
+> **NOT EXECUTED.** The workflow has never run. Command shape is from the workflow file's own `inputs:`
+> block; `gh workflow run --help` confirms the `-f` form. Everything §11.2 and §11.3 claim about what the
+> workflow does on AWS is read off the file, not observed.
+
+Four things about it are worth knowing before you press it.
+
+**It refuses without the typed phrase.** `confirm` must be exactly `destroy demo runtime`. Anything else —
+including an empty string, which is what a dispatch from the GitHub UI gives you if you skip the field —
+fails the first step of the job with a red X. That is deliberately a *failing step* rather than a job-level
+`if:` condition: a skipped job reports green, and green is the wrong answer to "you did not confirm".
+
+**It cannot destroy anything but the runtime, and that is structural rather than policed.** The job runs
+`terraform apply -var image_uri=""`. It never runs `terraform destroy`, passes no `-target`, and has no
+input that widens it. Given the `count` above is the only conditional in the whole configuration, an apply
+is *incapable* of removing ECR, the table, Cognito, the secrets or the Knowledge Base, whatever it is asked
+for. On top of that the job plans first, reads the plan back as JSON, and **refuses to apply** if the plan
+would create anything at all, or would delete anything other than
+`module.agentcore_runtime.aws_bedrockagentcore_agent_runtime.this`. In-place updates are printed and
+tolerated — they cannot rotate an identifier.
+
+**Destroying the rest is deliberately not offered here, at any confirmation strength.** Cognito rotates the
+client id and secret; the Knowledge Base rotates its id; ECR takes every image with it, which leaves
+bring-up nothing to redeploy; DynamoDB takes the household data. A full destroy is an out-of-band act with a
+human holding credentials — §11.4. Putting it behind a scarier string in the same dispatch menu would make
+the dangerous operation exactly as easy to reach as the routine one.
+
+**Both jobs share `concurrency: deploy-demo` with `deploy.yml`'s `apply`,** so a teardown can never
+interleave with a deploy against the same state file.
+
+The job prints, to the run summary: the image URI the runtime is currently running (recorded *before* the
+destroy, because afterwards the `deployed_image_uri` output is `""` and the tag is no longer in state), the
+full plan, and a closing line confirming `agent_runtime_arn` is empty. That summary is the record of what
+happened, and it is where the tag for §11.3 comes from.
 
 ### 11.3 Bringing it back
+
+**A plain `deploy.yml` re-run does work, and is the fallback.** After a runtime-only teardown the ECR
+repository is still in Terraform state, so `deploy.yml`'s bootstrap step (`if ! terraform state list | grep
+-qx 'aws_ecr_repository.mcp'`) is skipped, its build-and-push step succeeds, and the final apply recreates
+the runtime. Nothing about the teardown breaks it.
 
 ```bash
 gh workflow run deploy.yml --ref main
@@ -956,57 +984,92 @@ gh run watch --repo jkarns87/homeledger
 gh workflow run smoke.yml --ref main
 ```
 
-About three and a half minutes for the deploy, about fifty seconds for the smoke. Nothing to reconfigure on
-the Claude Code side as long as §11.2 was the lever used, because the Cognito client id and the runtime name
-are unchanged — though the runtime **ARN** changes if the runtime was actually deleted and recreated, so
-`print-setup` has to be re-run and the `claude mcp add` command reissued in that case.
+About three and a half minutes for the deploy, about fifty seconds for the smoke.
 
-### 11.4 Full teardown, and why it is not cheap to undo
+**`teardown.yml`'s `bring-up` mode is the faster, more faithful path**, and it exists for one reason:
+`deploy.yml` rebuilds the image from whatever `main` holds today, which is a different artifact from the one
+that was torn down. `bring-up` builds nothing and pushes nothing. It redeploys an image **already in ECR**:
 
-There is no destroy workflow, so a full `terraform destroy` needs one to be written, or state to be pulled
-and applied from somewhere with credentials — neither of which this project has a path for today. Before
-doing it, know what does not come back cleanly.
+```bash
+gh workflow run teardown.yml --ref main -f mode=bring-up -f image_tag=abc1234
+```
+
+Leave `image_tag` empty to take the most recently pushed image. The job refuses, with an instruction rather
+than a stack trace, in the two cases where there is nothing honest to do: no `aws_ecr_repository.mcp` in
+state (a brand-new account — `deploy.yml` owns the bootstrap, and `bring-up` deliberately does not
+reimplement it), and a repository with no tagged images. Note that the ECR lifecycle policy keeps only the
+last 20 images, so a tag from a long-ago teardown may have expired; the empty-tag form or a `deploy.yml` run
+is the answer then.
+
+It finishes by reading `agent_runtime_arn` and `agent_runtime_invocation_url` back and failing if either is
+empty, so a half-applied stack is a red run rather than a quiet one.
+
+**One thing does change across the round trip, either way:** the runtime is a new resource, so its **ARN is
+new**. Re-run `pnpm --filter @homeledger/mcp-bridge run print-setup` and reissue the `claude mcp add`
+command. Nothing else moves — `print-setup` finds the runtime by name (`demo_homeledger_mcp`) rather than by
+stored ARN, and the Cognito client id, the token URL, the table and the Knowledge Base id are all unchanged.
+
+### 11.4 Full teardown, and why it is still not a round trip
+
+There is deliberately no full-destroy workflow. Doing it needs a human with credentials running
+`terraform destroy` against the demo state, and before doing it, know what does not come back the same.
 
 > **NOT EXECUTED.** Everything in this subsection is reasoned from the Terraform and the AWS provider's
-> documented defaults, not observed. Treat it as a pre-flight checklist, not a transcript.
+> documented behaviour, not observed. Treat it as a pre-flight checklist, not a transcript.
 
 | Resource | Destroys cleanly? | The catch |
 | --- | --- | --- |
 | AgentCore runtime | Yes | Recreated with a **new ARN**, so every `claude mcp add` config goes stale |
 | DynamoDB table | Yes | All household data goes. Re-seedable in seconds with `seed:remote`, so this is the least painful loss |
-| ECR repository | Yes, `force_delete = true` | Every image tag goes with it. The next deploy rebuilds and repushes anyway |
+| ECR repository | Yes, `force_delete = true` | Every image tag goes with it. `teardown.yml`'s `bring-up` then has nothing to redeploy and refuses; the next `deploy.yml` run rebuilds and repushes |
 | Manuals S3 bucket | Yes, `force_destroy = true` (module default) | Uploaded PDFs and every object version go. S3 bucket names are global; reusing the same name immediately can hit propagation delay |
 | S3 Vectors bucket and index | Unknown | Deletion semantics for `aws_s3vectors_*` were not exercised. Assume nothing |
 | Cognito user pool, domain, resource server, app client | Yes | **The client id and the client secret both change.** `print-setup` must be re-run and the Claude Code entry reissued. A just-released domain prefix can take time to become available again |
 | Bedrock Knowledge Base and data source | Yes | The `knowledge_base_id` changes, so the runtime's `KNOWLEDGE_BASE_ID` changes with it |
 | IAM execution roles and inline policies | Yes | |
-| **The two Secrets Manager secrets** | **No — scheduled, not deleted** | See below |
+| **The two Secrets Manager secrets** | **Yes — now.** Was: scheduled, not deleted | See below |
 
-**The Secrets Manager 30-day window is the one that will bite.** Neither
+**The Secrets Manager 30-day window was the trap, and it is closed in the configuration.** Neither
 `aws_secretsmanager_secret.request_state` (platform root) nor `aws_secretsmanager_secret.this` (the
-`cognito-m2m` module) sets `recovery_window_in_days`, so the provider's default applies — 30 days at the time
-of writing. A destroy therefore *schedules* both secrets for deletion rather than deleting them, and
-re-applying the stack with the same names inside that window fails with
+`cognito-m2m` module) used to set `recovery_window_in_days`, so the provider's default of 30 applied. A
+destroy *scheduled* both secrets rather than deleting them, and a scheduled secret keeps its **name**
+reserved for the whole window — so re-applying the stack with the same names inside it failed with
 `InvalidRequestException: You can't create this secret because a secret with this name is already scheduled
-for deletion`. The recovery is to cancel the scheduled deletion first:
+for deletion`. Tear the demo down in October and it could not come back for judging in November without
+renaming or a manual `restore-secret`.
 
-```bash
-aws secretsmanager restore-secret --profile homeledger-admin --region us-east-1 \
-  --secret-id demo-homeledger/cognito/client-secret
-aws secretsmanager restore-secret --profile homeledger-admin --region us-east-1 \
-  --secret-id demo-homeledger/mcp/request-state-key
-```
+Both are now created with `recovery_window_in_days = 0`, which the AWS provider translates into
+`DeleteSecret` with `ForceDeleteWithoutRecovery=true` rather than `RecoveryWindowInDays`. The secrets are
+deleted outright, the names free up, and a re-apply works. The cost is that **there is no restore** — the
+DeleteSecret API reference is blunt about it: "you have no opportunity to recover the secret. You lose the
+secret permanently." That is correct here and only here: the `requestState` key is a `random_password`
+regenerated on every apply, and the Cognito client secret is regenerated with the app client. Both are
+warned about in a comment at the resource itself, because a future reader copying `cognito-m2m` into
+something real has to see it at the line rather than in this file.
 
-and then `terraform import` them back, or delete them for real with `--force-delete-without-recovery` before
-re-applying. Either way, a full destroy is **not** a symmetrical operation and should not be treated as one.
+The module keeps the safe behaviour by default. `infra/modules/cognito-m2m` declares
+`var.recovery_window_in_days` with a **default of 30**; `infra/live/demo/platform` is the thing that opts in,
+through its own `var.secret_recovery_window_in_days` (default `0`), which it passes to both secrets. A
+non-demo copy of the root sets 7–30 in one place and gets production semantics back.
+
+> **NOT EXECUTED, and this is the honest limit of the fix.** No destroy and no re-apply has been run against
+> AWS. What is proven offline: the plan sets `recovery_window_in_days` to 0 on both secrets and to 30 when
+> the variable says so (`terraform test`, `mock_provider`, six assertions and two validation runs across
+> `infra/live/demo/platform/tests/platform.tftest.hcl` and
+> `infra/modules/cognito-m2m/tests/cognito-m2m.tftest.hcl`, each checked to fail under a mutation); and the
+> AWS provider source maps `recovery_window_in_days == 0` to `ForceDeleteWithoutRecovery = true`. What is
+> **not** proven: that a real destroy followed by a real re-apply of the same names succeeds. AWS performs a
+> forced deletion asynchronously and its own documentation says to "use appropriate back off and retry
+> logic" if you recreate the same name immediately — so a re-apply within seconds of a destroy may still
+> need one retry. A plan diff is not a destroy. The first real round trip settles it.
 
 ### 11.5 The safe minimal state, and a judging-window plan
 
 **Safe minimal state, defined:** everything applied except the AgentCore runtime. Nothing is on the critical
 path of a request, every identifier is stable, the recurring cost is the Cognito M2M client plus two secrets
-plus cents of storage, and recovery is one `gh workflow run deploy.yml`. Until §11.2's option 1 lands, the
-practical equivalent is "everything applied, runtime idle", which costs the same as the runtime being gone
-because AgentCore bills on consumption.
+plus cents of storage, and recovery is one dispatch of `teardown.yml` in `bring-up` mode. Reaching it is now
+one dispatch as well, rather than the "leave it up and call it equivalent" compromise this section used to
+describe.
 
 **Judging runs 2026-11-09 to 2026-11-20, and the stack should be up for it.** A judge who follows §10.2 and
 finds no runtime gets
@@ -1020,8 +1083,19 @@ once an image has been pushed. Names present: ...
 which is a clear message about a system that looks broken. §4 stays available regardless and is the path a
 judge without AWS credentials takes anyway.
 
-Before the window: `gh workflow run deploy.yml --ref main`, then `gh workflow run smoke.yml --ref main`, and
-confirm `SMOKE OK`. After it: §11.2.
+The window plan, in full:
+
+| When | Do |
+| --- | --- |
+| Well before 2026-11-09 | Run the round trip once — teardown, then bring-up, then `smoke.yml` — while there is time to fix what it turns up. Nothing in §11.2–§11.4 has been executed, and the first execution should not be the one that matters |
+| Before the window | `gh workflow run deploy.yml --ref main`, then `gh workflow run smoke.yml --ref main`, confirm `SMOKE OK`, then re-run `print-setup` and reissue `claude mcp add` |
+| During the window | Leave it up. §11.1 is why: nothing here is an always-on compute bill |
+| After the window | `gh workflow run teardown.yml --ref main -f mode=teardown-runtime -f confirm='destroy demo runtime'` |
+
+**One dispatch prerequisite that is a repository setting rather than a file in this tree.** Both jobs in
+`teardown.yml` declare `environment: demo`, whose deployment branch policy admits `main`, `plan-*` and
+`worktree-*` (§7.3). Dispatching it from any other branch will sit waiting or be rejected by that policy.
+Dispatch from `main`.
 
 ---
 
@@ -1249,6 +1323,17 @@ Script names were checked against the `scripts` block of each `package.json` rat
 server was driven over HTTP with `curl` rather than only started, so the tool list, its order, and four tool
 results in this document are observed output rather than transcribed from source.
 
+Added for §11's rewrite, run at commit `1973cf0` plus the teardown branch: `terraform init -backend=false`,
+`terraform validate`, `terraform fmt -check -recursive` and `terraform test` in `infra/live/demo/platform`
+and in all three modules under `infra/modules/` (30 runs, green, up from 21) · `terraform test -verbose` to print the
+teardown plan diff against the mocked provider, which reports `Plan: 0 to add, 1 to change, 1 to destroy`
+with the destroy being `module.agentcore_runtime.aws_bedrockagentcore_agent_runtime.this[0]` (the one change
+is a mock artifact: the mocked `aws_region` data source fabricates a fresh value per evaluation, so the
+knowledge base's embedding model ARN churns) · eight deliberate mutations, each applied to shipped Terraform,
+run, and reverted · `actionlint` on `.github/workflows/teardown.yml` · `prettier --check` on it · the plan
+guard's shell and `jq` against five hand-built plan-JSON fixtures · `terraform-docs` to regenerate two
+READMEs. **No AWS call was made.**
+
 ### Not executed, and marked as such where it appears
 
 - **Everything in §7 (first-time AWS bootstrap).** No IAM, S3 or STS call was made. The trust policy shape
@@ -1260,9 +1345,22 @@ results in this document are observed output rather than transcribed from source
 - **The bridge against the deployed runtime.** Its unit and end-to-end tests (187 passing, including a
   spawned-process run against a real local server) all pass; the AgentCore session pinning in particular is
   reasoned, not measured.
-- **`aws bedrock-agentcore-control delete-agent-runtime`'s effect on Terraform state** (§11.2).
-- **Every teardown claim in §11.4**, including the Secrets Manager 30-day window, which is read off the
-  configuration (no `recovery_window_in_days` is set) plus the provider's documented default.
+- **`.github/workflows/teardown.yml`, in either mode.** It has never been dispatched. Everything §11.2 and
+  §11.3 say it does on AWS is read off the workflow file. What *was* exercised offline: the plan guard's
+  shell and `jq` against five hand-built `terraform show -json` fixtures (runtime-only delete, an extra
+  delete, a replace, an empty plan, a create-everything plan — it accepts the first and refuses the rest),
+  `actionlint` on the file, and the teardown/bring-up round trip itself as a `mock_provider` test
+  (`infra/live/demo/platform/tests/teardown.tftest.hcl`).
+- **The Secrets Manager fix in §11.4, at the only level that would settle it: a real destroy followed by a
+  real re-apply.** What is proven is the plan (`terraform test` with `mock_provider` shows
+  `recovery_window_in_days = 0` on both secrets, and 30 when the variable says so; each assertion was
+  checked to fail under a deliberate mutation) and the provider's translation of 0 into
+  `ForceDeleteWithoutRecovery = true` (read from `internal/service/secretsmanager/secret.go`). A plan diff
+  is not a destroy. AWS's own `DeleteSecret` reference also notes that a forced deletion is asynchronous, so
+  an immediate same-name re-apply may need a retry — which no offline check can rule in or out.
+- **`aws ecr describe-images` as `teardown.yml`'s `bring-up` job calls it.** The deploy role has
+  `PowerUserAccess` (§7.1), so it is permitted, but the query shape
+  (`sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]`) has not been run against a real repository.
 - **Every dollar figure in §11.1.** AWS list-price estimates, not a bill. No Cost Explorer or Pricing API
   call was made.
 - **S3 Vectors deletion semantics.** Listed as unknown rather than guessed.

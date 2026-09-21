@@ -89,6 +89,12 @@ module "cognito" {
   client_name                   = "homeledger-simulator"
   access_token_validity_minutes = 60
   secret_name                   = "${local.name_prefix}/cognito/client-secret"
+
+  # The demo opts in to immediate, unrecoverable secret deletion. The module
+  # defaults to 30 (AWS's default) for everyone else. See the warning on
+  # var.secret_recovery_window_in_days below, and the longer one at
+  # infra/modules/cognito-m2m/main.tf's aws_secretsmanager_secret.this.
+  recovery_window_in_days = var.secret_recovery_window_in_days
 }
 
 # ---------- Manuals, S3 Vectors, and the Bedrock Knowledge Base ----------
@@ -116,6 +122,22 @@ resource "random_password" "request_state" {
 
 resource "aws_secretsmanager_secret" "request_state" {
   name = "${local.name_prefix}/mcp/request-state-key"
+
+  # DEMO-ONLY. WRONG FOR PRODUCTION, and wrong in a way that loses data rather
+  # than costing money: 0 makes the AWS provider call DeleteSecret with
+  # ForceDeleteWithoutRecovery=true, so a destroy deletes this secret outright
+  # with no restore path. It is correct here because the value is a
+  # random_password regenerated on every apply and nothing outside this stack
+  # holds a copy, and it is necessary here because the alternative - the
+  # provider's 30-day default - leaves the secret merely *scheduled* for
+  # deletion with its NAME still reserved, and the next apply of this same root
+  # then fails with "You can't create this secret because a secret with this
+  # name is already scheduled for deletion". Tear the demo down in October and
+  # that is what blocks bringing it back for judging in November.
+  #
+  # A production root must not copy this line. Use 7-30 there and accept that a
+  # destroy is not a round trip.
+  recovery_window_in_days = var.secret_recovery_window_in_days
 }
 
 resource "aws_secretsmanager_secret_version" "request_state" {

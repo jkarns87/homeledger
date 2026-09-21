@@ -76,6 +76,17 @@ variable "availability_delay_ms" {
   }
 }
 
+variable "secret_recovery_window_in_days" {
+  type        = number
+  description = "Recovery window applied to both Secrets Manager secrets in this root (the Cognito client secret and the requestState signing key). Defaults to 0, which is a DEMO-ONLY choice: it makes a destroy delete both secrets immediately and unrecoverably so their names free up and the stack can be re-applied, which is what a teardown/bring-up round trip between hackathon test windows needs. Any non-disposable environment must set 7-30 instead and accept that a destroy is then not a round trip, because a scheduled-for-deletion secret keeps its name reserved for the whole window. The cognito-m2m module itself defaults to the safe 30; this root is the thing that opts in."
+  default     = 0
+
+  validation {
+    condition     = var.secret_recovery_window_in_days == 0 || (var.secret_recovery_window_in_days >= 7 && var.secret_recovery_window_in_days <= 30)
+    error_message = "secret_recovery_window_in_days must be 0 (immediate, unrecoverable deletion) or between 7 and 30. AWS rejects 1-6."
+  }
+}
+
 variable "embedding_model_arn" {
   type        = string
   description = "Override for the knowledge base embedding model ARN. Empty uses Titan Text Embeddings v2 in the deployment region."
