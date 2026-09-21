@@ -29,6 +29,17 @@ output "client_secret_arn" {
   value       = aws_secretsmanager_secret.this.arn
 }
 
+# Exposed so a calling root can assert which deletion semantics it actually
+# got. Terraform test assertions can read a module's outputs but not its
+# resources, so without this there is no way for infra/live/demo/platform's
+# tests to catch the one failure that matters here: the root silently not
+# passing its opt-in, leaving this secret on the 30-day window while the root's
+# own secret looks fixed - which is the trap half-closed, and looks closed.
+output "secret_recovery_window_in_days" {
+  description = "Recovery window in force on the client-secret secret. 0 means a destroy deletes it immediately and unrecoverably and the name frees up at once; 7-30 means a destroy only schedules it and the name stays reserved for that long, so a same-name re-apply inside the window fails."
+  value       = aws_secretsmanager_secret.this.recovery_window_in_days
+}
+
 output "scope" {
   description = "Full OAuth scope string (\"identifier/scope_name\")."
   value       = local.scope
