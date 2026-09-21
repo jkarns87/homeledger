@@ -3,6 +3,7 @@
 The household's operating record, exposed to an assistant through an MCP server.
 Built for the Build, Ship, Shape: Amazon Developer Hackathon (Alexa+ and Ring tracks, AWS Builder mini-challenge).
 
+- **Runbook: [`docs/RUNBOOK.md`](docs/RUNBOOK.md)** — fresh clone to a deployed system you can talk to, and back down to zero cost. Start there if you want a sequence to follow rather than a description of what exists; its section 4 is the fastest path to a running server and needs no AWS account.
 - Design: `docs/superpowers/specs/2026-09-13-homeledger-design.md`
 - Friction log: `FRICTION-LOG.md`
 
@@ -197,6 +198,8 @@ Two workflows drive the deployed stack. `deploy.yml` runs a `terraform plan` on 
 gh workflow run deploy.yml --ref <branch>   # infra apply + image build/push, GitHub environment "demo"
 gh workflow run smoke.yml --ref <branch>    # seeds the table, then drives a modern and a legacy MCP client through the real endpoint
 ```
+
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md) carries the rest of this end to end: the one-time OIDC and state-bucket bootstrap, what `main`'s required checks do to a documentation-only pull request, a verbatim healthy smoke run with its timings, and what can and cannot be torn down cheaply between test windows.
 
 ## Manuals and the knowledge base
 

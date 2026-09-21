@@ -1,0 +1,1285 @@
+# HomeLedger runbook
+
+From a fresh clone to a working deployed system you can talk to, and back down to zero cost.
+
+Two readers. The **owner** wants a sequence that does not have to be rediscovered, and does not want AWS
+resources running between test windows. A **judge** has never seen this repository, is reading it during
+2026-11-09 to 2026-11-20, and needs to reach something demonstrable fast and to know honestly what is
+blocked. Both get the same document; nothing below is written for one and hidden from the other.
+
+Every command in this file was run against this repository before it was written, except the ones that need
+live AWS credentials or would change deployed state. Those are marked **NOT EXECUTED** at the point of use,
+and listed again in [section 13](#13-what-in-this-document-is-verified-and-what-is-not). That distinction is
+not decoration: three setup failures in a row here (`FRICTION-LOG.md` FL-034, FL-035, FL-036) were all
+documented paths that were written, reviewed and merged without ever being executed from a clean checkout.
+
+---
+
+## 1. How to read this
+
+| If you are | Start at | Time | Needs an AWS account |
+| --- | --- | --- | --- |
+| A judge with fifteen minutes | [4. Fifteen minutes, no AWS account](#4-fifteen-minutes-no-aws-account) | ~10 min | No |
+| A judge who wants to know what is real | [2. Status at a glance](#2-status-at-a-glance), then [5. What is blocked](#5-what-is-blocked-bedrock-model-access) | ~5 min | No |
+| A contributor | [6. Local development](#6-local-development), then [8. Deploying](#8-deploying) | — | No |
+| The owner, re-deploying for a demo | [8. Deploying](#8-deploying), [9. Verifying](#9-verifying-a-deployment), [10. Claude Code](#10-talking-to-homeledger-from-claude-code) | ~10 min | Yes |
+| The owner, shutting down after one | [11. Cost and teardown](#11-cost-and-teardown) | ~5 min | Yes |
+| Anyone hitting an error | [12. Troubleshooting](#12-troubleshooting) | — | — |
+
+Reference material this runbook does not duplicate: `README.md` (what the server exposes, tool by tool),
+`docs/superpowers/specs/2026-09-13-homeledger-design.md` (the design), `FRICTION-LOG.md` (every thing that did
+not work as documented, and what it cost).
+
+---
+
+## 2. Status at a glance
+
+| Capability | Runs locally with no AWS | Runs on the deployed stack | Notes |
+| --- | --- | --- | --- |
+| Eight of the nine MCP tools | Yes | Yes | `list_appliances`, `get_appliance`, `maintenance_due`, `log_maintenance`, `recent_events`, `book_service`, `get_visit`, `echo_confirm`. Run 35478596365 invoked five of them against the live runtime; `get_appliance`, `log_maintenance` and `recent_events` are registered and listed there but are exercised in-process rather than by the smoke |
+| `ask_manual` | Yes, from an in-memory fixture set | **No** | Returns a spoken error. See [section 5](#5-what-is-blocked-bedrock-model-access) |
+| Elicitation (`book_service`, `echo_confirm`) | Yes | Yes | Both drive real `elicitation/create` round trips in smoke run 35478596365 against the live runtime |
+| MCP Apps widgets (four `ui://` resources) | Yes | Yes | The five widget-backed tools carry their `ui://` reference — asserted in-process by `apps/mcp-server/test/widgets.test.ts` and over the wire by the smoke. **Rendering** them needs an MCP Apps host and has not been exercised here |
+| DynamoDB persistence | Yes, via DynamoDB Local | Yes | |
+| Bedrock Knowledge Base | n/a | Provisioned, unusable | Exists, addressable, cannot be ingested into or queried |
+| Ring events | No | No | No Ring integration exists in this repository. `recent_events` reads rows nothing writes |
+| Alexa+ | No | No | The Alexa+ MCP Toolkit is private preview; entrants cannot call Alexa+ (FL-001) |
+| Echo Show simulator | No | No | Planned as `apps/simulator`; not in this tree |
+
+`recent_events` answers correctly and answers nothing. Verified locally against the shipped container:
+
+```
+Nothing happened in the last 24 hours.
+```
+
+That is the honest output, not a failure. Nothing writes door or sensor rows yet.
+
+---
+
+## 3. Prerequisites
+
+Pinned in the repository, not guessed. Each row names the file the version comes from.
+
+| Tool | Version | Pinned in | Needed for |
+| --- | --- | --- | --- |
+| Node | 22 | `.nvmrc`, `engines.node: ">=22.0.0"` in `package.json`, `node-version: 22` in `.github/workflows/ci.yml` | Everything |
+| pnpm | 10.15.0 | `packageManager` in `package.json`, `pnpm/action-setup` in every workflow | Everything |
+| Docker | any current release | not pinned | DynamoDB Local (§6.3), the container build (§6.4). **Not** needed for §4 |
+| AWS CLI | v2 | not pinned | §7, §10.2, §11 only |
+| `gh` | any current release | not pinned | §8, §9, §11 only |
+| Terraform | >= 1.10.0 locally, 1.16.1 in CI | `infra/live/demo/platform/versions.tf`, `terraform_version: '1.16.1'` in `ci.yml`/`deploy.yml`/`smoke.yml` | Nothing you have to run. See the note below |
+| An AWS account | — | — | §7 through §11 only |
+
+**Terraform is not a prerequisite for running, testing, or connecting to anything here.** Every apply happens
+in GitHub Actions. `infra/live/demo/platform/backend.tf` declares `backend "s3" {}` with an empty body and
+`deploy.yml` supplies the bucket and region as `-backend-config` flags, so a local `terraform init` in that
+root does not work and is not meant to. Install it only if you want to run `terraform fmt` / `validate` /
+`test` while editing `infra/` (§6.5).
+
+Node 22 is the pinned and CI-tested version and is what the container image uses
+(`FROM --platform=linux/arm64 node:22-bookworm-slim`). The suite also passed on Node v24.13.1 while this
+document was written; 22 is still what to install.
+
+---
+
+## 4. Fifteen minutes, no AWS account
+
+This is the fastest path to a running HomeLedger you can drive from Claude Code. It needs Node 22 and pnpm
+10 and nothing else. No AWS account, no credentials, no Docker, no Terraform.
+
+### 4.1 Install and build
+
+```bash
+git clone https://github.com/jkarns87/homeledger.git
+cd homeledger
+pnpm install
+pnpm --filter @homeledger/core build
+```
+
+`pnpm --filter @homeledger/core build` is not optional and is the step a fresh checkout most often skips.
+`apps/mcp-server` consumes `@homeledger/core` through its published `dist/` entry point (`main`/`types` in
+`packages/core/package.json`), not through TypeScript source, so nothing downstream resolves until `core` has
+been built once. `ci.yml` carries the same step for the same reason.
+
+### 4.2 Start the server with in-memory data
+
+```bash
+HOUSEHOLD_ID=hh_harlow MEMORY_REPO=1 HOMELEDGER_DEV_TOOLS=1 PORT=8010 pnpm --filter @homeledger/mcp-server dev
+```
+
+`MEMORY_REPO=1` builds an in-memory repository and seeds the household into it at startup, so this needs
+neither DynamoDB nor credentials. Leave it running. After pnpm's own two-line banner, a healthy start prints
+exactly these three JSON lines and nothing else:
+
+```
+{"msg":"retriever","kind":"fixture","reason":"KNOWLEDGE_BASE_ID unset"}
+{"msg":"request-state-key-generated","reason":"REQUEST_STATE_KEY unset","scope":"process"}
+{"msg":"listening","port":8010,"path":"/mcp","devTools":true}
+```
+
+The first line is the one to read: with no `KNOWLEDGE_BASE_ID`, `ask_manual` serves a small in-memory fixture
+set instead of Bedrock, which is why it works here and not on the deployed stack.
+
+### 4.3 Point Claude Code at it
+
+The server speaks Streamable HTTP, which Claude Code connects to directly. No bridge, no token, no AWS.
+
+```bash
+claude mcp add --transport http homeledger-local http://127.0.0.1:8010/mcp
+```
+
+Then, in Claude Code:
+
+- "What maintenance is overdue?" — calls `maintenance_due`.
+- "Tell me about the washer." — calls `get_appliance`.
+- "What does error code F21 mean on the washer?" — calls `ask_manual`, which answers from the fixture
+  passages and cites the document title and page.
+- "Book a service visit for the water heater." — calls `book_service`, which asks three questions through
+  MCP elicitation (provider, arrival window, confirmation) and emits progress 0 to 3 while it checks
+  availability. See §12 if it refuses instead of asking.
+
+Remove it again with `claude mcp remove homeledger-local`.
+
+### 4.4 Or drive it without Claude Code
+
+If you would rather see the protocol, the MCP Inspector connects to the same URL:
+
+```bash
+npx @modelcontextprotocol/inspector     # connect to http://127.0.0.1:8010/mcp
+```
+
+Nine tools should be listed, in this exact order — the order is frozen after the first deploy and both
+`apps/mcp-server/test/tools.test.ts` and `scripts/smoke.ts` assert it:
+
+```
+list_appliances, get_appliance, maintenance_due, log_maintenance,
+recent_events, ask_manual, book_service, get_visit, echo_confirm
+```
+
+`echo_confirm` is a development-only elicitation probe and appears only because `HOMELEDGER_DEV_TOOLS=1` is
+set. The deployed runtime sets it too, deliberately — see `README.md` for why.
+
+### 4.5 What you have just proved, and what you have not
+
+Proved: the MCP surface and its frozen tool order, the widget references, the voice-first response shape,
+the whole domain model, and — if your client can prompt, see §12 — the elicitation round trip on the
+2025-era client path. Not proved: anything about AWS, AgentCore, Cognito, DynamoDB or Bedrock. §9 is where
+the deployed stack is exercised; §5 is what is broken there.
+
+---
+
+## 5. What is blocked: Bedrock model access
+
+**Read this before you conclude you did something wrong.**
+
+Bedrock **model invocation** is blocked account-wide on the AWS account this project deploys to, and has
+been continuously since 2026-09-14 (`FRICTION-LOG.md` FL-019). Every model call, from every principal,
+returns the same string:
+
+```
+ValidationException ... Error 002: Access to Bedrock models is not allowed for this account
+```
+
+AWS Support case 178941623300459 was closed on 2026-09-18 without resolving it. The stated reason was that
+hackathon projects should fit within the beginner quota, which conflates two different things: a quota
+throttles a permitted call (`ThrottlingException`, `ServiceQuotaExceededException`), while this account
+returns zero access on a call that is otherwise valid. Three observations separate them, and all three are
+reproducible from the repository: two unrelated principals (the GitHub OIDC deploy role and the Bedrock
+Knowledge Base service role) fail with a byte-identical string; access worked on 2026-09-14 and stopped after
+a handful of requests, which quotas do not do retroactively; and only model invocation is affected, with
+AgentCore, DynamoDB, Cognito, ECR, S3, S3 Vectors and IAM all working in the same workflow runs that record
+the Bedrock failures.
+
+### 5.1 What this does and does not break
+
+| | |
+| --- | --- |
+| **Blocked** | Manual ingestion (`pnpm manuals`, `seed:manual`), `ask_manual` against the deployed runtime, anything that would need Nova vision or a Strands agent |
+| **Not blocked** | The other eight tools, on the deployed runtime and locally; the entire local development path; all Terraform authoring, validation and apply; the Bedrock adapter's unit tests, which run against a stubbed sender |
+
+The Knowledge Base itself is **provisioned and unusable in both directions.** The manuals bucket, the S3
+Vectors bucket and index, the Knowledge Base, its data source and its IAM role all exist — nothing in the
+apply path invokes a model, so Terraform applied cleanly (FL-032). What cannot happen is embedding.
+Ingestion needs it, and so does retrieval: `Retrieve` embeds the *question* as well as the documents, so the
+same block refuses the read path. There is no degraded-but-working mode.
+
+### 5.2 Exactly what you will see
+
+Against the **deployed** runtime, `ask_manual` returns an error result whose spoken text is:
+
+> I can't look anything up in the manuals right now. Searching them needs a model to read your question
+> first, and model access is blocked on this AWS account, so the search is refused before it starts. Nothing
+> is wrong with the question you asked. Manual search will work again once model access is restored on the
+> account.
+
+That wording is in `apps/mcp-server/src/tools/manual.ts` as `MANUALS_MODEL_ACCESS_BLOCKED_MESSAGE`. It
+replaced the raw AWS sentence ("Invalid input or configuration provided. Check the input and Knowledge Base
+configuration and try your request again"), which is AWS's wording for its own API and reads as a HomeLedger
+bug.
+
+In the smoke workflow you will see a loud skip rather than a failure, and every other assertion still runs —
+see the verbatim output in §9.2.
+
+Against a **local** server with `KNOWLEDGE_BASE_ID` unset, `ask_manual` works, from fixtures. That is the
+documented local behaviour, and it is why §4 puts it in the demo list.
+
+---
+
+## 6. Local development
+
+§4 is the subset of this that needs nothing. This is the whole thing.
+
+### 6.1 The workspace
+
+Five pnpm workspace packages (`pnpm-workspace.yaml`: `packages/*`, `apps/*`, `scripts`):
+
+| Package | Path | What it is |
+| --- | --- | --- |
+| `@homeledger/core` | `packages/core` | Domain, DynamoDB and in-memory repositories, retrieval adapters, seed data |
+| `@homeledger/mcp-server` | `apps/mcp-server` | The MCP server. The only containerised package |
+| `@homeledger/mcp-bridge` | `apps/mcp-bridge` | stdio-to-AgentCore relay for Claude Code. Never containerised |
+| `@homeledger/scripts` | `scripts` | `smoke`, `seed:remote`, `seed:manual`, `manuals` |
+| (root) | `.` | `build`, `typecheck`, `test`, `format`, `smoke`, `manuals` |
+
+The workspace graph is three edges and is acyclic: `mcp-server -> core` (production),
+`mcp-bridge -> mcp-server` (dev only), `scripts -> core`. No edge crosses out of the two directories the
+container build context holds. Adding a `workspace:*` edge to `apps/mcp-server` or `packages/core` that
+points anywhere else breaks the image build — that is FL-036, and `ci.yml`'s `image` job exists to catch it
+on the pull request rather than after the merge.
+
+### 6.2 The checks CI runs, in the order CI runs them
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @homeledger/core build
+pnpm format          # prettier --check .
+pnpm typecheck       # tsc --noEmit across four packages
+pnpm test            # pnpm -r test
+pnpm --filter @homeledger/core test:dynamo   # needs DynamoDB Local; see 6.3
+pnpm build           # tsc across four packages (scripts has no build script)
+```
+
+Observed results on a clean tree at `1851301`:
+
+| Command | Result |
+| --- | --- |
+| `pnpm format` | `All matched files use Prettier code style!` |
+| `pnpm typecheck` | clean, four packages |
+| `pnpm test` | 43 files, 466 passed, 1 skipped (`core` 64+1, `scripts` 135, `mcp-server` 80, `mcp-bridge` 187) |
+| `pnpm --filter @homeledger/core test:dynamo` | 11 files, 74 passed |
+| `pnpm build` | clean, 4 of 5 workspace projects |
+
+The one skip is `packages/core/test/dynamo.test.ts`'s repository contract, which is gated on
+`DYNAMO_ENDPOINT` being set. It reports "skipped" rather than failing, so a green `pnpm test` does **not**
+mean the DynamoDB path was exercised. `test:dynamo` is what exercises it.
+
+**`pnpm format` does not check Markdown.** `.prettierignore` lists both `docs/` and `*.md`, so every Markdown
+file in this repository — this one included — is excluded. Verified by putting a deliberately misformatted
+Markdown file at the repository root and inside `docs/`: `prettier --check` passed both. Do not expect
+`pnpm format` to catch a Markdown formatting problem, and do not "fix" a Markdown file to satisfy it.
+
+### 6.3 DynamoDB Local
+
+```bash
+docker compose up -d                          # amazon/dynamodb-local on 127.0.0.1:8000
+pnpm --filter @homeledger/core test:dynamo    # sets DYNAMO_ENDPOINT itself
+pnpm --filter @homeledger/core seed:local     # creates the table and seeds the household
+docker compose down
+```
+
+`test:dynamo` and `seed:local` both set `DYNAMO_ENDPOINT`, `AWS_ACCESS_KEY_ID=local`,
+`AWS_SECRET_ACCESS_KEY=local` and `AWS_REGION=us-east-1` themselves — the placeholder credentials are
+required by the SDK and mean nothing to DynamoDB Local. `seed:local` prints the six fixed appliance ids:
+
+```
+{
+  applianceIds: [
+    'appl_furnace222222222',
+    'appl_waterheater22222',
+    'appl_washer2222222222',
+    'appl_dishwasher222222',
+    'appl_refrigerator2222',
+    'appl_sumppump22222222'
+  ]
+}
+```
+
+The ids are fixed rather than generated so that re-seeding overwrites rather than accumulates — FL-023, where
+four smoke runs left roughly 24 appliances in the live table where six were intended.
+
+Run the server against it:
+
+```bash
+cd apps/mcp-server
+PORT=8010 HOUSEHOLD_ID=hh_harlow TABLE_NAME=homeledger DYNAMO_ENDPOINT=http://127.0.0.1:8000 \
+AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local AWS_REGION=us-east-1 HOMELEDGER_DEV_TOOLS=1 pnpm dev
+```
+
+`TABLE_NAME=homeledger` must match what `seed:local` created, which is `TABLE_NAME` or `homeledger` by
+default (`packages/core/scripts/seed-local.ts`). Verified: `list_appliances` against this returns the six
+seeded rows.
+
+### 6.4 The container, which is what AgentCore runs
+
+```bash
+docker build --platform linux/arm64 -f apps/mcp-server/Dockerfile -t homeledger-mcp:dev .
+docker run --rm -p 8010:8000 -e HOUSEHOLD_ID=hh_harlow -e MEMORY_REPO=1 -e HOMELEDGER_DEV_TOOLS=1 homeledger-mcp:dev
+```
+
+Both verified. The Dockerfile pins `FROM --platform=linux/arm64` (AgentCore runs arm64), so on an x86 host
+every `RUN` layer runs under emulation; on Apple silicon it is native. Docker prints two
+`FromPlatformFlagConstDisallowed` lint warnings about that pin — expected, not a problem. The container
+listens on 8000 internally (`ENV PORT=8000`), which is why the port mapping is `8010:8000`.
+
+This build is the thing that was broken for three consecutive merges while CI stayed green (FL-036): the
+`test` job installs the whole workspace, the image copies only `packages/core` and `apps/mcp-server`, and the
+two therefore disagree about what the workspace contains. If you change any `package.json` dependency, run
+this build before opening the pull request even though `ci.yml`'s `image` job will also run it.
+
+### 6.5 Terraform, offline only
+
+```bash
+cd infra
+terraform fmt -check -recursive
+cd live/demo/platform
+terraform init -backend=false     # provider download only; no backend, no credentials
+terraform validate
+terraform test
+```
+
+`terraform fmt -check -recursive` was run while writing this and is clean. The `init -backend=false` /
+`validate` / `test` trio is what `ci.yml`'s `terraform` job runs, in four directories —
+`infra/live/demo/platform` and the three modules under `infra/modules/` — followed by `tflint --recursive`
+and four separate `trivy config` scans, one per directory. The scans are deliberately per-directory: a
+tree-wide scan follows the `cognito-m2m` module reference but not the `agentcore-runtime` one, so the
+execution role's inline IAM policy would silently never be evaluated.
+
+Do **not** run `terraform init` with backend config, `plan`, or `apply` from a local machine; see §8.
+
+One known trap, from FL-027: `terraform providers schema -json` will not run in
+`infra/live/demo/platform` even after a clean `terraform init -backend=false`, because the root's empty
+`backend "s3" {}` block makes that one command demand backend initialisation while `validate` and `test`
+work fine. Run it from `infra/modules/agentcore-runtime` instead — the schema dump covers the whole provider
+regardless of which directory asks.
+
+### 6.6 Environment variables
+
+`.env.example` documents the server's. Nothing in the repository reads a `.env` file automatically; these
+are set on the command line, by `docker run -e`, or by Terraform's `environment_variables` map on the
+deployed runtime.
+
+**Server** (`apps/mcp-server/src/deps.ts`, `src/index.ts`):
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `HOUSEHOLD_ID` | none, **required** | Throws `HOUSEHOLD_ID is required` if unset |
+| `MEMORY_REPO` | unset | `1` uses a seeded in-memory repository and needs no AWS |
+| `TABLE_NAME` | none | Required unless `MEMORY_REPO=1`; else throws `TABLE_NAME is required unless MEMORY_REPO=1` |
+| `DYNAMO_ENDPOINT` | unset | Point at DynamoDB Local |
+| `AWS_REGION` | unset | Passed to the DynamoDB and Bedrock clients |
+| `PORT` | `8000` | |
+| `ALLOWED_HOSTS` | unset | Unset keeps the SDK default list (`localhost,127.0.0.1,0.0.0.0`). `*` disables Host validation entirely, which is what the deployed runtime uses — see FL-020 |
+| `HOMELEDGER_DEV_TOOLS` | unset | `1` registers `echo_confirm` |
+| `KNOWLEDGE_BASE_ID` | unset | Unset serves fixture passages. Set points `ask_manual` at Bedrock |
+| `REQUEST_STATE_KEY` | unset | Unset mints a per-process key and logs that it did. Set-but-under-32-bytes **throws**; set-but-empty also throws |
+| `AVAILABILITY_DELAY_MS` | `600` | Budget for the simulated availability check |
+
+**Bridge** (`apps/mcp-bridge/src/config.ts`): see §10.2.
+
+---
+
+## 7. First-time AWS bootstrap
+
+**One-time, per AWS account. Already done on the owner's account — you do not need to do any of this to
+deploy, verify, or run anything.** It is written down so the stack can be stood up on a new account, and
+because it is the part that is nowhere in this repository's Terraform.
+
+Three things must exist before the first deploy, and none of them is managed by
+`infra/live/demo/platform` (`infra/live/demo/platform/README.md` says so under "Blast radius": "It does not
+touch the OIDC provider or GitHub deploy role used to run it — those are managed outside Terraform").
+
+> **NOT EXECUTED.** Everything in this section needs credentials on a real AWS account. The shapes below are
+> reconstructed from `.github/workflows/*.yml`, the repository variables (read through the GitHub API), and
+> `docs/superpowers/plans/2026-09-13-homeledger-plan-1-foundation.md` Task 13. The trust policy in
+> particular was **not** read back from IAM, because that needs a live AWS call.
+
+### 7.1 The GitHub OIDC provider and the deploy role
+
+```
+Provider URL: https://token.actions.githubusercontent.com
+Audience:     sts.amazonaws.com
+Role name:    homeledger-github-deploy
+```
+
+**The subject-claim trap, and it fails silently.** GitHub's OIDC token now carries the owner ID and the
+repository ID inside the `sub` claim, so the classic pattern
+
+```
+repo:OWNER/REPO:ref:refs/heads/main
+```
+
+no longer matches the token that is actually presented, and `AssumeRoleWithWebIdentity` is refused with
+nothing in the workflow log that points at the trust policy. `docs/submission/devpost-story.md` records this
+as one of the "small things that cost a deploy each". The subject to match is of the form
+
+```
+repo:OWNER@OWNERID/REPO@REPOID:ref:refs/heads/main
+```
+
+Get the two IDs from GitHub rather than guessing them:
+
+```bash
+gh api repos/OWNER/REPO --jq '{owner_id: .owner.id, repo_id: .id}'
+```
+
+For this repository that returns `owner_id 6717478`, `repo_id 1369914589`, which gives
+`repo:jkarns87@6717478/homeledger@1369914589:ref:refs/heads/main`.
+
+Match that with `StringEquals` on the full literal, **not** with a wildcard. The IDs are immutable, so the
+ID-bearing subject survives a rename or a transfer — which is the whole point of the form — while a
+loosening pattern such as `repo:jkarns87*/homeledger*:ref:refs/heads/main` would also admit
+`repo:jkarns87anything/homeledger-anything:...`, i.e. a repository somebody else can create.
+
+Confirm the subject against the token rather than against this paragraph before writing the policy. A
+throwaway workflow step prints it, and `sub` is not a secret (the token is, and this never prints it):
+
+```yaml
+# permissions: { id-token: write }
+- uses: actions/github-script@v7
+  with:
+    script: |
+      const t = await core.getIDToken('sts.amazonaws.com');
+      core.info(JSON.parse(Buffer.from(t.split('.')[1], 'base64url').toString()).sub);
+```
+
+The trust policy must admit **two** subjects, not one, because `deploy.yml` assumes the role from pull
+request runs as well as from pushes to `main`:
+
+- `...:ref:refs/heads/main` — for the `apply` job.
+- `...:pull_request` — for the `plan` job. A pull_request run uses the synthetic `refs/pull/N/merge` ref,
+  which no deployment branch policy can match, which is why `plan` carries no `environment:` and why the
+  trust policy has to allow the `pull_request` subject directly. `deploy.yml` lines 19-23 say exactly this.
+
+Permissions the role needs: enough to plan and apply the whole platform root, plus IAM for the roles the
+stack creates. The demo account uses `PowerUserAccess` plus an inline IAM policy scoped to
+`arn:aws:iam::<account>:role/homeledger-*` and the OIDC provider ARN. That is demo-grade and should be
+tightened per resource before any non-demo use.
+
+### 7.2 The Terraform state bucket
+
+An S3 bucket, created outside Terraform, whose name goes into the `TF_STATE_BUCKET` repository variable.
+`backend.tf` fixes the key and the locking mode and leaves bucket and region to the workflow:
+
+```hcl
+terraform {
+  backend "s3" {
+    key          = "homeledger/demo/terraform.tfstate"
+    use_lockfile = true
+    encrypt      = true
+  }
+}
+```
+
+`use_lockfile = true` is S3-native locking, so there is no DynamoDB lock table to create.
+
+### 7.3 Repository variables and the demo environment
+
+Three **variables** (not secrets — none of these is sensitive), at repository scope. Current values, read
+through the GitHub API:
+
+| Variable | Value shape | Used by |
+| --- | --- | --- |
+| `AWS_REGION` | `us-east-1` | all three AWS workflows |
+| `AWS_ROLE_ARN` | `arn:aws:iam::<account-id>:role/homeledger-github-deploy` | all three AWS workflows |
+| `TF_STATE_BUCKET` | `homeledger-tfstate-<account-id>` | `deploy.yml`, `smoke.yml`, `aws-oidc-check.yml` |
+
+```bash
+gh variable set AWS_REGION      --body us-east-1
+gh variable set AWS_ROLE_ARN    --body arn:aws:iam::<account-id>:role/homeledger-github-deploy
+gh variable set TF_STATE_BUCKET --body homeledger-tfstate-<account-id>
+```
+
+And one GitHub **environment** named `demo`, referenced by `deploy.yml`'s `apply` job and by the whole
+`smoke` job. It carries a deployment branch policy admitting `main`, `plan-*` and `worktree-*`, and no
+required reviewers and no wait timer — so dispatching either workflow from one of those branches runs
+without a human approval step.
+
+### 7.4 Prove the bootstrap worked before deploying anything
+
+```bash
+gh workflow run aws-oidc-check.yml --ref main
+gh run watch --repo jkarns87/homeledger
+```
+
+`aws-oidc-check.yml` assumes the deploy role, prints `aws sts get-caller-identity`, confirms the state bucket
+is reachable with `head-bucket`, and then — informationally, never failing the job — tries
+`bedrock-runtime converse` against two models and lists the AgentCore runtimes. On this account the two
+`converse` calls fail with the `Error 002` string from §5 while `list-agent-runtimes` succeeds in the same
+run; that pairing is the cheapest single check of whether the Bedrock block has lifted.
+
+### 7.5 The first deploy on a new account is a two-pass apply
+
+Nothing extra to run: `deploy.yml`'s `apply` job handles it. `var.image_uri` defaults to `""` and the
+runtime resource is `count = var.image_uri == "" ? 0 : 1`, so the runtime cannot be created before an image
+exists in ECR, and ECR cannot exist before the first apply. The workflow resolves that with a narrowly
+`-target`ed bootstrap step that runs only when `aws_ecr_repository.mcp` is absent from state:
+
+```yaml
+- name: Bootstrap ECR repository if absent
+  run: |
+    if ! terraform state list 2>/dev/null | grep -qx 'aws_ecr_repository.mcp'; then
+      terraform apply -auto-approve -input=false -target=aws_ecr_repository.mcp -target=aws_ecr_lifecycle_policy.mcp -var image_uri=""
+    fi
+```
+
+It then builds and pushes the image and applies with the real `image_uri`.
+
+---
+
+## 8. Deploying
+
+### 8.1 Terraform runs in GitHub Actions, never from a laptop
+
+There are no local AWS credentials for Terraform in this project, by design. No contributor has ever run
+`terraform init` with backend config against `infra/live/demo/platform`, and it would not work if they tried:
+the backend block is empty and the bucket and region arrive as `-backend-config` flags from the workflow.
+
+Reading AWS from a terminal is a different thing and is fine — the bridge's setup helper does exactly that,
+read-only, with an SSO session (§10.2).
+
+### 8.2 What triggers what
+
+| Workflow | Trigger | Jobs | AWS credentials |
+| --- | --- | --- | --- |
+| `ci.yml` | every pull request; push to `main` | `test`, `image` (pull requests only), `terraform` | **None.** `permissions: contents: read`, no `id-token: write` |
+| `deploy.yml` | pull requests touching `infra/**`, `apps/**`, `packages/**`, `scripts/**`, `.github/workflows/deploy.yml`; push to `main`; `workflow_dispatch` | `plan` (pull requests), `apply` (push / dispatch) | OIDC role |
+| `smoke.yml` | `workflow_dispatch` only | `smoke` | OIDC role, `demo` environment |
+| `aws-oidc-check.yml` | `workflow_dispatch`; push to `main` touching that file | `whoami` | OIDC role |
+
+**Merging a pull request into `main` deploys.** `deploy.yml`'s `apply` job runs on the push, builds and
+pushes a `linux/arm64` image tagged with the 7-character commit SHA, and applies Terraform with that
+`image_uri`. `concurrency: deploy-demo` serialises applies. There is no separate "release" step.
+
+The `apply` job's steps, in order: checkout, configure AWS credentials, setup Terraform, QEMU, buildx,
+`Terraform init`, `Bootstrap ECR repository if absent`, `Build and push image`, `Terraform apply`,
+`Publish outputs summary`. A healthy run on an already-deployed stack takes about three and a half minutes
+(run 35478430481: 198 s wall).
+
+### 8.3 Branch protection on `main`
+
+Four required status checks, confirmed through the GitHub API: **`test`, `terraform`, `image`, `plan`**.
+Force pushes and deletions are blocked; admin enforcement is off.
+
+**The trap this creates, and it will catch you.** `plan` lives in `deploy.yml`, which has a `paths:` filter
+on its `pull_request` trigger. A pull request that touches only documentation does not trigger `deploy.yml`
+at all, so `plan` never reports, and a required check that never reports leaves the pull request blocked
+rather than passing. Evidence: pull request #5 (`FRICTION-LOG.md` plus `docs/submission/*`) reported only
+`terraform` and `test`; pull request #9, which touched `apps/` and `.github/`, reported all four plus a
+`skipping` conclusion on `apply`.
+
+The change that added this document is documentation-only, so it is in exactly that position. Three ways
+out, in order of preference: merge with admin privileges; add `docs/**` and `*.md` to `deploy.yml`'s `paths`
+(a workflow change, so a separate pull request); or drop `plan` from the required set and rely on it being
+reported whenever it can run. Note that `image` is *not* affected — `ci.yml` has no path filter, so `image`
+runs on every pull request including a docs-only one.
+
+### 8.4 Dispatching a deploy by hand
+
+```bash
+gh workflow run deploy.yml --ref main
+gh run watch --repo jkarns87/homeledger
+```
+
+> **NOT EXECUTED.** Dispatching this builds and pushes an image and applies Terraform against the live
+> account. The command shape is verified (`gh workflow list` shows `deploy` active with `workflow_dispatch`);
+> the effect is described from the workflow file and from run 35478430481's logs.
+
+`--ref` must name a branch the `demo` environment's deployment branch policy admits: `main`, `plan-*`, or
+`worktree-*`. Anything else is rejected by the environment gate before the job starts.
+
+### 8.5 What a healthy apply prints
+
+From run 35478430481 (push to `main`, merge of pull request #9), with the account id masked, the
+hidden-attribute markers trimmed, and the long `container_uri` line re-wrapped. This is the steady-state
+shape: one resource changed, because only the image tag moved.
+
+```
+  # module.agentcore_runtime.aws_bedrockagentcore_agent_runtime.this[0] will be updated in-place
+  ~ resource "aws_bedrockagentcore_agent_runtime" "this" {
+      ~ agent_runtime_version     = "12" -> (known after apply)
+      ~ agent_runtime_artifact {
+          ~ container_configuration {
+              ~ container_uri = "<account>.dkr.ecr.us-east-1.amazonaws.com/demo-homeledger-mcp:3c8cb86"
+                             -> "<account>.dkr.ecr.us-east-1.amazonaws.com/demo-homeledger-mcp:1851301"
+            }
+        }
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+...
+Apply complete! Resources: 0 added, 1 changed, 0 destroyed.
+```
+
+A `Warning: Argument is deprecated ... hash_key is deprecated. Use key_schema instead. (and 7 more similar
+warnings elsewhere)` appears on every apply. Expected noise from the pinned AWS provider; not a failure.
+
+The `Publish outputs summary` step writes the full `terraform output` into the run summary. The values that
+matter downstream are `agent_runtime_invocation_url`, `cognito_token_url`, `cognito_client_id`,
+`table_name`, `knowledge_base_id`, `data_source_id`, `manuals_bucket` and `deployed_image_uri`.
+`cognito_client_secret` is marked `sensitive` and renders as `<sensitive>`.
+
+---
+
+## 9. Verifying a deployment
+
+### 9.1 Dispatch the smoke
+
+```bash
+gh workflow run smoke.yml --ref main
+gh run watch --repo jkarns87/homeledger
+```
+
+> **NOT EXECUTED.** This resets and re-seeds the live DynamoDB table and drives the deployed runtime. The
+> command shape is verified; the output below is the real output of run 35478596365.
+
+The `smoke` job reads every value it needs from Terraform outputs, re-seeds the table
+(`seed:remote` calls `resetHousehold` first, which is FL-023's fix), uploads the smoke manual, then runs
+`pnpm smoke` — which drives the deployed endpoint with **two** MCP client generations: a modern
+`@modelcontextprotocol/client` 2.0.0 and a 2025-era `@modelcontextprotocol/sdk` 1.30.0 client standing in for
+the Alexa+ client generation. It finishes with a shell-level `grep -q '^SMOKE OK$'` on the captured log,
+which is a second, independent gate: a symlinked workspace can make the script's entrypoint guard skip every
+assertion and still exit 0.
+
+### 9.2 What a healthy run looks like
+
+Run **35478596365**, dispatched against `main`, job `smoke`, **48 s** wall, conclusion success. Verbatim,
+except that the `ask_manual` skip banner is a single long line in the log and is wrapped here:
+
+```
+token: ok
+modern connect (cold): 787 ms
+modern tools/list: 876 ms
+modern list_appliances: 807 ms
+seeded appliance count: 6
+modern maintenance_due: 712 ms
+modern ask_manual (knowledge base): 920 ms
+
+!! ask_manual: SKIPPED - a Knowledge Base IS provisioned, but RETRIEVAL ITSELF is impossible: Bedrock has to
+embed the QUERY, not just the documents, so Retrieve is refused server-side under the account-wide model
+block even against a Knowledge Base that exists (FRICTION-LOG.md FL-019, FL-032). ask_manual returned an
+error result instead of passages, which is expected in this state and is why it is tolerated HERE and
+nowhere else. The tool was still reached, invoked and answered in budget. Server said: isError result: I
+can't look anything up in the manuals right now. Searching them needs a model to read your question first,
+and model access is blocked on this AWS account, so the search is refused before it starts. Nothing is wrong
+with the question you asked. Manual search will work again once model access is restored on the account.
+
+legacy initialize (cold): 1158 ms
+legacy session: ccda35ba-9024-4d4b-97ba-5aa2a1fba28e
+legacy echo_confirm (elicitation): 796 ms
+legacy list_appliances: 386 ms
+legacy book_service (three elicitations plus progress): 1892 ms
+legacy book_service: Kettle Creek Water Heaters visit_n7lqegu3dg4u2kbg, progress 0,1,2,3
+legacy get_visit: 308 ms
+legacy terminateSession: non-fatal - Streamable HTTP error: Failed to terminate session: Not Found
+SMOKE OK
+```
+
+And, earlier in the same run, from the `Seed the smoke manual` step:
+
+```
+uploaded s3://demo-homeledger-manuals-<account>/manuals/hh_harlow/doc_swumttwejl5sdxeg.pdf
+
+!! seed:manual: SKIPPED ingestion - the Knowledge Base role cannot call the embedding model because Bedrock
+model invocation is blocked account-wide (FRICTION-LOG.md FL-019, FL-032). The PDF and its metadata sidecar
+ARE uploaded and the DOC# row is recorded with kbSync.status "pending"; re-running seed:manual once the
+block clears ingests them with no re-upload. Nothing about real retrieval is proved by this run.
+
+MANUAL_INGESTION_SKIPPED
+uploaded (not ingested) doc_swumttwejl5sdxeg for Washer (appl_washer2222222222)
+```
+
+### 9.3 Reading it
+
+| Line | What it proves |
+| --- | --- |
+| `token: ok` | Cognito client-credentials flow works; the client id, secret and `homeledger/mcp` scope all line up |
+| `modern connect (cold)` / `legacy initialize (cold)` | The AgentCore JWT authorizer accepted the token and a cold microVM started. **Not budget-enforced** — these are the two cold starts |
+| `modern tools/list` | All nine tools present, in the frozen order, with the five `ui://` widget references intact |
+| `seeded appliance count: 6` | FL-023's regression guard. An exact match, not a floor: the failure mode was too *many* rows |
+| `modern ask_manual` | The tool is registered, reachable, accepts its schema and answers in budget. It is still called in every state, deliberately — it is also the signal that will say when the Bedrock block lifts |
+| `legacy session: <uuid>` | The request went to the 2025-era shim (`src/legacy.ts`), not the modern handler |
+| `legacy echo_confirm (elicitation)` | A real server-initiated `elicitation/create` round trip through AgentCore |
+| `legacy book_service ... progress 0,1,2,3` | Three elicitation rounds in one `tools/call`, plus four progress notifications, over a real socket to a 2025-era client |
+| `legacy get_visit` | The booking was written and reads back with a matching id and provider |
+| `SMOKE OK` | The script reached its last line. The workflow's `grep` requires it |
+
+Every warm call sits under 1000 ms against a 3000 ms per-tool budget the script enforces
+(`BUDGET_MS = 3000`). The two cold connects and `book_service` are deliberately exempt from the budget —
+`book_service` because it contains three round trips and a simulated availability check.
+
+**`legacy terminateSession: non-fatal ... Not Found` is expected and is not a failure.** AgentCore does not
+reliably route a bare-body `DELETE` back to the microVM holding the session, even though every `POST` and the
+SSE `GET` in the same session routed correctly. It is FL-022, it is open, and it is not blocking: AgentCore
+expires sessions on its own idle timeout, so explicit termination is best-effort cleanup that is not part of
+the smoke contract. `scripts/smoke.ts` catches it, logs it and continues.
+
+### 9.4 When the smoke should fail, and does
+
+The `ask_manual` tolerance is narrow on purpose. It is reachable only when the seed step positively signalled
+`MANUAL_INGESTION_SKIPPED` (exact values `1`, `true` or `yes` — anything else, including `false` or a typo,
+leaves the assertion enforced). With a Knowledge Base configured and content actually ingested, a mismatched
+document title, an empty passage list, an absent `structuredContent` or an error result all fail the run with
+no way to opt out. That assertion exists because the smoke once printed `SMOKE OK` against a system with no
+Knowledge Base at all.
+
+### 9.5 If the smoke fails before `Run smoke`
+
+The `Export Terraform outputs` step reads `agent_runtime_invocation_url`, `cognito_token_url`,
+`cognito_client_id`, `cognito_client_secret`, `table_name` and `agent_runtime_arn` **strictly** — a missing
+one is a broken deploy and fails the job there. Only `manuals_bucket`, `knowledge_base_id` and
+`data_source_id` are read tolerantly, because destroying just the knowledge-base module would otherwise fail
+the workflow for a reason unrelated to what the smoke exists to check.
+
+The final `Tail runtime logs` step runs `if: always()` and dumps the last 30 minutes of
+`/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT`. Read it before anything else when a call failed
+server-side.
+
+---
+
+## 10. Talking to HomeLedger from Claude Code
+
+Claude Code runs on the Anthropic API rather than Bedrock, so it drives this server regardless of the
+account-wide Bedrock block. It is the only way a person, rather than a smoke script, has used the system.
+
+Two ways in. The local one needs no AWS at all; the deployed one exercises the real runtime.
+
+### 10.1 Local, no auth — verified
+
+Covered in §4.3. Repeated here so this section is self-contained:
+
+```bash
+HOUSEHOLD_ID=hh_harlow MEMORY_REPO=1 HOMELEDGER_DEV_TOOLS=1 PORT=8010 pnpm --filter @homeledger/mcp-server dev
+claude mcp add --transport http homeledger-local http://127.0.0.1:8010/mcp
+```
+
+### 10.2 Deployed, through the bridge
+
+The deployed runtime sits behind AgentCore with a Cognito JWT authorizer, and the token it wants expires in
+about an hour, so a static header in a config file breaks an hour in. `apps/mcp-bridge` is a stdio MCP server
+that Claude Code spawns: it mints the token, refreshes it before expiry, and relays MCP traffic both ways.
+
+**Everything you need, and this is the whole list: Node 22, pnpm 10, the AWS CLI, and an AWS SSO session on
+the `homeledger-admin` profile.** No Terraform, no local state, no `terraform init`. That is FL-035 — the
+entry about the version of this instruction that said otherwise.
+
+The profile needs five read-only permissions: `bedrock-agentcore:ListAgentRuntimes`,
+`cognito-idp:ListUserPools`, `cognito-idp:ListUserPoolClients`, `cognito-idp:DescribeUserPool`, and
+`secretsmanager:GetSecretValue` on `demo-homeledger/cognito/client-secret`. The first four are how the setup
+helper finds the runtime ARN, token URL and client id; the fifth is the one call the running bridge makes.
+
+From a clean checkout, in order:
+
+```bash
+pnpm install
+pnpm build                                     # the bridge runs from dist/, so this is not optional
+
+aws login --profile homeledger-admin           # AWS CLI older than v2.31: aws sso login --profile homeledger-admin
+export AWS_PROFILE=homeledger-admin            # both the helper and the bridge read this
+
+pnpm --filter @homeledger/mcp-bridge run print-setup
+```
+
+> `pnpm install`, `pnpm build` and the `run print-setup` invocation form are verified. **NOT EXECUTED:** the
+> four AWS discovery calls `print-setup` makes, and therefore the command it prints. FL-035 records that this
+> path is unproven against the live account in three specific respects: that `ListAgentRuntimes` reports
+> `agentRuntimeName` as exactly `demo_homeledger_mcp`, that a human SSO principal on `homeledger-admin` is
+> permitted all four reads, and that `DescribeUserPool` returns the prefix in `Domain` for this pool.
+
+Two things about that last command that are not stylistic:
+
+- **`run` is not optional and the script is not called `setup`.** `setup` is one of pnpm's own subcommands,
+  so `pnpm --filter <pkg> setup` never reaches a package script of that name and dies at argument parsing
+  with `ERROR Unknown option: 'recursive'` — an option nobody typed, pointing at the filter flag rather than
+  at the collision. Reproduced while writing this. FL-034.
+- **`export AWS_PROFILE` is optional only if your session already lives on `homeledger-admin`.** The helper
+  defaults to that profile, writes it into the command it prints, and says in its own output that it
+  defaulted. If your session is on any other profile, exporting it is required.
+
+`print-setup` makes four read-only AWS calls and matches resources **by the names Terraform assigned**, never
+by position in a list: `demo_homeledger_mcp` for the AgentCore runtime, `demo-homeledger-mcp` for the Cognito
+user pool, `homeledger-simulator` for its app client (`apps/mcp-bridge/src/discover.ts`). If a name matches
+nothing, or matches two resources with different ids, it names the candidates and stops. It reads no secret:
+the app client is found with `ListUserPoolClients`, whose response shape (`UserPoolClientDescription`) has no
+room for a client secret, and never with `DescribeUserPoolClient`, whose response (`UserPoolClientType`) has
+one.
+
+It prints a block of this shape. **Run what it prints, not this:**
+
+```bash
+claude mcp add homeledger \
+  --scope user \
+  -e HOMELEDGER_RUNTIME_ARN='arn:aws:bedrock-agentcore:us-east-1:<account-id>:runtime/<runtime>' \
+  -e HOMELEDGER_COGNITO_TOKEN_URL='https://<domain>.auth.us-east-1.amazoncognito.com/oauth2/token' \
+  -e HOMELEDGER_COGNITO_CLIENT_ID='<client id>' \
+  -e AWS_REGION='us-east-1' \
+  -e AWS_PROFILE='homeledger-admin' \
+  -- node /absolute/path/to/homeledger/apps/mcp-bridge/dist/index.js
+```
+
+No client secret appears on that command line and none should: `--scope user` writes these values into
+`~/.claude.json`, and at project scope it would write them into a tracked `.mcp.json`. The secret is read
+from Secrets Manager (`demo-homeledger/cognito/client-secret`) with the local profile.
+`HOMELEDGER_COGNITO_CLIENT_SECRET` exists for CI and containers, where there is no SSO session.
+
+On a successful start the bridge writes one line to stderr, which Claude Code shows under `/mcp`. Composed
+from `apps/mcp-bridge/src/index.ts`'s `logDiagnostic` call; not observed against the live endpoint:
+
+```
+[homeledger-bridge] ready: endpoint bedrock-agentcore.us-east-1.amazonaws.com, client <id>, region us-east-1, secret from Secrets Manager (demo-homeledger/cognito/client-secret), runtime session pinned
+```
+
+Every diagnostic goes to stderr; stdout carries JSON-RPC only.
+
+**Bridge environment variables**, all optional except the three the setup command fills in:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `HOMELEDGER_RUNTIME_ARN` | none | Invocation URL is composed from it. One of this or `HOMELEDGER_MCP_URL` is required |
+| `HOMELEDGER_MCP_URL` | none | The full invocation URL, instead of the ARN |
+| `HOMELEDGER_COGNITO_TOKEN_URL` | none, required | |
+| `HOMELEDGER_COGNITO_CLIENT_ID` | none, required | |
+| `HOMELEDGER_COGNITO_SCOPE` | `homeledger/mcp` | |
+| `HOMELEDGER_COGNITO_SECRET_ID` | `demo-homeledger/cognito/client-secret` | |
+| `HOMELEDGER_COGNITO_CLIENT_SECRET` | unset | Escape hatch for CI/containers. Set-but-empty throws rather than falling back |
+| `AWS_PROFILE` / `HOMELEDGER_AWS_PROFILE` | `homeledger-admin` | A profile already in the environment always wins |
+| `AWS_REGION` | `us-east-1` | |
+| `HOMELEDGER_RUNTIME_QUALIFIER` | `DEFAULT` | |
+| `HOMELEDGER_AGENTCORE_SESSION_ID` | generated per process | Pins one runtime session per bridge process. `off` sends no session header, which is what `pnpm smoke` does. A pinned value must be at least 33 characters |
+| `HOMELEDGER_BRIDGE_SSE` | on | `off` stops the bridge holding open the spec's standalone `GET` stream. Nothing this server sends arrives on it |
+| `HOMELEDGER_SETUP_SOURCE` | `aws` | `terraform` (or `--from-terraform`) reads the platform root's Terraform outputs instead. It needs an initialised S3 backend, which a laptop does not have — see §12 |
+
+### 10.3 What the bridge does not do
+
+It does not translate between protocol revisions. Claude Code — 2.1.56, read out of its own bundle for
+FL-033, and not re-checked against a later build — negotiates `2025-11-25` and answers elicitation with
+session-based `elicitation/create` over the call's own event stream, not the 2026-07-28 multi round-trip
+requests, so it lands on the server's legacy shim, the same path the smoke's legacy block
+exercises. FL-033 records what that means for a proxy: the response stream must be relayed as it arrives and
+requests must be allowed to overlap, or `book_service` deadlocks on its first question rather than failing.
+The tidy-looking implementations (`await res.text()`, a read loop that awaits each message) both hang.
+
+### 10.4 What you will hit, and it is not the bridge
+
+`ask_manual` through the bridge returns the spoken message in §5. That is the Bedrock block, on the deployed
+runtime, and it is the one tool of nine that does not work there.
+
+---
+
+## 11. Cost and teardown
+
+The hackathon expects resources to be live only during test windows and judging (2026-11-09 to 2026-11-20).
+This section is what to do between them.
+
+### 11.1 What costs money while idle
+
+Derived from the Terraform, by billing shape. **Dollar figures are AWS list-price estimates and were not read
+from a bill — no AWS call was made while writing this.** Check the pricing pages before relying on them.
+
+| Resource | Billing shape | Idle cost |
+| --- | --- | --- |
+| AgentCore runtime | Consumption: CPU and memory while a session is running | Effectively zero when nobody invokes it. It is **not** a provisioned always-on container |
+| Cognito user pool + M2M app client | **Time-based.** Cognito's published pricing bills machine-to-machine app clients on a per-client monthly basis rather than by monthly active users, so this one accrues whether or not a token is ever minted | Probably the largest idle line item here, and the one worth checking first. **Confirm the current model and rate on the Cognito pricing page** — this was not read from a bill |
+| Secrets Manager, two secrets (`.../cognito/client-secret`, `.../mcp/request-state-key`) | **Time-based**, per secret per month, plus per-API-call | Roughly $0.80/month at the long-standing $0.40 per secret |
+| DynamoDB table | `PAY_PER_REQUEST` plus storage, plus point-in-time-recovery backup storage (PITR is **enabled**) | Cents. The table holds one household |
+| ECR repository | Storage per GB-month; lifecycle policy keeps the last 20 images | Tens of cents, rising with image count. A Node 22 arm64 image is a few hundred MB |
+| S3 manuals bucket | Storage; **versioning is enabled**, so deleted objects keep costing until the versions go | Cents |
+| S3 Vectors bucket and index | Storage and requests; the index is empty and can never be filled while §5 holds | Effectively zero |
+| CloudWatch Logs from the runtime | Ingestion and storage per GB | Cents |
+| IAM roles and policies, the OIDC provider | Free | Zero |
+| The Terraform state bucket | S3 storage | Negligible |
+
+The shape to take away: **nothing here is an always-on compute bill.** The recurring floor is the Cognito M2M
+app client plus two Secrets Manager secrets plus a few cents of storage. Leaving the whole stack up between
+test windows is a small, bounded cost; the reason to tear anything down is tidiness and blast radius, not a
+runaway meter.
+
+### 11.2 The cheap lever: remove the runtime, keep everything else
+
+`infra/modules/agentcore-runtime/main.tf` line 110:
+
+```hcl
+resource "aws_bedrockagentcore_agent_runtime" "this" {
+  count = var.image_uri == "" ? 0 : 1
+```
+
+That `count` is on the runtime resource **and on nothing else**. Every other resource in the module (the
+execution role and its inline policy) and in the platform root (ECR, DynamoDB, Cognito, the two Secrets
+Manager secrets, the whole knowledge-base module) is unconditional. So an apply with `image_uri=""` destroys
+exactly one resource: the AgentCore runtime. The project's own note is correct — **verified against the
+code, not taken on trust.**
+
+It is also the right lever, because it preserves every identifier the rest of this runbook depends on. The
+Cognito client id and secret, the Knowledge Base id, the table name, the ECR repository and its images all
+survive, so bringing the stack back needs no reconfiguration of Claude Code and no re-running of
+`print-setup`.
+
+**But there is no shipped way to pull it.** `deploy.yml`'s `apply` job always computes `IMAGE` from
+`scripts/build-image.sh` and passes it as `-var "image_uri=$IMAGE_URI"`; its `workflow_dispatch` trigger
+declares no `inputs:`; and there is no destroy workflow in `.github/workflows/`. The one place
+`-var image_uri=""` appears is the ECR bootstrap step, which is `-target`ed at two resources and guarded on
+`aws_ecr_repository.mcp` being absent from state, so it cannot touch the runtime. Three options, in order of
+preference:
+
+1. **Add a `workflow_dispatch` input to `deploy.yml`** that lets `apply` pass an empty `image_uri` and skip
+   the build. A one-job change, and the clean fix. Out of scope for a documentation-only change, so it is
+   named here rather than done.
+2. **Delete the runtime out of band**, then let the next deploy recreate it:
+   ```bash
+   aws bedrock-agentcore-control list-agent-runtimes --profile homeledger-admin --region us-east-1 \
+     --query 'agentRuntimes[].[agentRuntimeName,agentRuntimeId,status]' --output text
+   aws bedrock-agentcore-control delete-agent-runtime --profile homeledger-admin --region us-east-1 \
+     --agent-runtime-id <id>
+   ```
+   > **NOT EXECUTED.** Both subcommands exist in the installed AWS CLI (v2.36.48) and their required
+   > arguments are as written, checked with `aws ... help`. The effect on Terraform state was not tested.
+   Terraform state then holds a resource that no longer exists; the next `deploy.yml` apply sees the drift
+   and recreates it, which is the desired outcome but means the intervening pull-request `plan` jobs will
+   show a create rather than a no-op.
+3. **Leave it up.** Given §11.1, an idle runtime with no sessions is close to free. This is the honest
+   default between test windows.
+
+### 11.3 Bringing it back
+
+```bash
+gh workflow run deploy.yml --ref main
+gh run watch --repo jkarns87/homeledger
+gh workflow run smoke.yml --ref main
+```
+
+About three and a half minutes for the deploy, about fifty seconds for the smoke. Nothing to reconfigure on
+the Claude Code side as long as §11.2 was the lever used, because the Cognito client id and the runtime name
+are unchanged — though the runtime **ARN** changes if the runtime was actually deleted and recreated, so
+`print-setup` has to be re-run and the `claude mcp add` command reissued in that case.
+
+### 11.4 Full teardown, and why it is not cheap to undo
+
+There is no destroy workflow, so a full `terraform destroy` needs one to be written, or state to be pulled
+and applied from somewhere with credentials — neither of which this project has a path for today. Before
+doing it, know what does not come back cleanly.
+
+> **NOT EXECUTED.** Everything in this subsection is reasoned from the Terraform and the AWS provider's
+> documented defaults, not observed. Treat it as a pre-flight checklist, not a transcript.
+
+| Resource | Destroys cleanly? | The catch |
+| --- | --- | --- |
+| AgentCore runtime | Yes | Recreated with a **new ARN**, so every `claude mcp add` config goes stale |
+| DynamoDB table | Yes | All household data goes. Re-seedable in seconds with `seed:remote`, so this is the least painful loss |
+| ECR repository | Yes, `force_delete = true` | Every image tag goes with it. The next deploy rebuilds and repushes anyway |
+| Manuals S3 bucket | Yes, `force_destroy = true` (module default) | Uploaded PDFs and every object version go. S3 bucket names are global; reusing the same name immediately can hit propagation delay |
+| S3 Vectors bucket and index | Unknown | Deletion semantics for `aws_s3vectors_*` were not exercised. Assume nothing |
+| Cognito user pool, domain, resource server, app client | Yes | **The client id and the client secret both change.** `print-setup` must be re-run and the Claude Code entry reissued. A just-released domain prefix can take time to become available again |
+| Bedrock Knowledge Base and data source | Yes | The `knowledge_base_id` changes, so the runtime's `KNOWLEDGE_BASE_ID` changes with it |
+| IAM execution roles and inline policies | Yes | |
+| **The two Secrets Manager secrets** | **No — scheduled, not deleted** | See below |
+
+**The Secrets Manager 30-day window is the one that will bite.** Neither
+`aws_secretsmanager_secret.request_state` (platform root) nor `aws_secretsmanager_secret.this` (the
+`cognito-m2m` module) sets `recovery_window_in_days`, so the provider's default applies — 30 days at the time
+of writing. A destroy therefore *schedules* both secrets for deletion rather than deleting them, and
+re-applying the stack with the same names inside that window fails with
+`InvalidRequestException: You can't create this secret because a secret with this name is already scheduled
+for deletion`. The recovery is to cancel the scheduled deletion first:
+
+```bash
+aws secretsmanager restore-secret --profile homeledger-admin --region us-east-1 \
+  --secret-id demo-homeledger/cognito/client-secret
+aws secretsmanager restore-secret --profile homeledger-admin --region us-east-1 \
+  --secret-id demo-homeledger/mcp/request-state-key
+```
+
+and then `terraform import` them back, or delete them for real with `--force-delete-without-recovery` before
+re-applying. Either way, a full destroy is **not** a symmetrical operation and should not be treated as one.
+
+### 11.5 The safe minimal state, and a judging-window plan
+
+**Safe minimal state, defined:** everything applied except the AgentCore runtime. Nothing is on the critical
+path of a request, every identifier is stable, the recurring cost is the Cognito M2M client plus two secrets
+plus cents of storage, and recovery is one `gh workflow run deploy.yml`. Until §11.2's option 1 lands, the
+practical equivalent is "everything applied, runtime idle", which costs the same as the runtime being gone
+because AgentCore bills on consumption.
+
+**Judging runs 2026-11-09 to 2026-11-20, and the stack should be up for it.** A judge who follows §10.2 and
+finds no runtime gets
+
+```
+No AgentCore runtime named demo_homeledger_mcp in us-east-1 (profile homeledger-admin). The demo stack may
+not be deployed — .github/workflows/deploy.yml applies it on a push to main, and it creates the runtime only
+once an image has been pushed. Names present: ...
+```
+
+which is a clear message about a system that looks broken. §4 stays available regardless and is the path a
+judge without AWS credentials takes anyway.
+
+Before the window: `gh workflow run deploy.yml --ref main`, then `gh workflow run smoke.yml --ref main`, and
+confirm `SMOKE OK`. After it: §11.2.
+
+---
+
+## 12. Troubleshooting
+
+Failures actually hit on this project, with their exact text and a one-line fix. Ordered roughly by where in
+this runbook you meet them.
+
+### `pnpm test` is green but the DynamoDB tests did not run
+
+They are gated on `DYNAMO_ENDPOINT` being set and report as skipped, not failed, so a green `pnpm test`
+proves nothing about the DynamoDB path. Run `docker compose up -d`, then
+`pnpm --filter @homeledger/core test:dynamo`. §6.3.
+
+### A pnpm script named after a pnpm subcommand is never reached
+
+```
+ ERROR  Unknown option: 'recursive'
+For help, run: pnpm help setup
+```
+
+You ran `pnpm --filter @homeledger/mcp-bridge setup`. `setup` is one of pnpm's own subcommands, so the
+builtin wins, the builtin takes no `--recursive`, and the whole command dies at argument parsing. The script
+is called `print-setup`:
+
+```bash
+pnpm --filter @homeledger/mcp-bridge run print-setup
+```
+
+The error misdirects twice — it names an option nobody typed, and it points at help for a command you did
+not mean to invoke. Nothing in it contains the word "script". FL-034; reproduced while writing this.
+
+### The image build cannot resolve a workspace package
+
+```
+ ERR_PNPM_WORKSPACE_PKG_NOT_FOUND  In apps/mcp-server: "<pkg>@workspace:*"
+is in the dependencies but no package named "<pkg>" is present in the workspace
+```
+
+A `workspace:*` edge on `apps/mcp-server` or `packages/core` points at a package the image's build context
+does not copy. `--prod` prunes dev dependencies from the *output*; it does not stop the resolver reading
+them, so a dev-only edge breaks the build exactly as a production one would. **Remove the edge, do not widen
+the build context** — widening couples the server image to a package it does not need and breaks again on
+the next workspace change. The message misdirects twice: it says "is in the dependencies" for a
+`devDependencies` entry, and prints `Packages found in the workspace:` followed by nothing at all, which
+reads like a broken workspace rather than a deliberate subset. FL-036.
+
+### The server rejects a request on the Host header
+
+Locally:
+
+```
+403 {"code":-32000,"message":"Invalid Host: <host>"}
+```
+
+Through AgentCore, the same rejection arrives as a JSON-RPC error with nothing useful in it:
+
+```
+-32010 Received error (403) from runtime. Please check your CloudWatch logs
+```
+
+and CloudWatch shows only a clean `listening` line, because the SDK rejects before any middleware logs.
+Locally, `ALLOWED_HOSTS` is unset and defaults to `localhost,127.0.0.1,0.0.0.0` — connect on one of those,
+not a LAN IP or a hostname. The deployed runtime sets `ALLOWED_HOSTS="*"` and disables the check entirely,
+because AgentCore forwards an internal, undocumented, cell-specific Host (observed:
+`cell01.us-east-1.prod.arp.kepler-analytics.aws.dev`) that cannot be pinned in advance, and the JWT
+authorizer is the real access control there. FL-020.
+
+### `book_service` refuses instead of asking three questions
+
+You will hear:
+
+> I can't book a service visit from this app. Booking has to ask you three things first, which provider to
+> send, which arrival window to take, and whether to go ahead, and this app can't show me those questions.
+> Everything else still works. To book, come back from an app that can prompt you for answers.
+
+That is a client that declared no elicitation capability, answered with a deliberate spoken refusal — not a
+protocol error, and not a booking made without asking. Claude Code 2.1.56 gates elicitation behind the
+GrowthBook feature `tengu_mcp_elicitation`, which **defaults to false** with no settings or environment
+override, so this is the common case rather than the rare one, and it is remote config that can flip off
+without warning. Read out of the client bundle for FL-033 and not re-checked against a later build.
+
+### The bridge says your AWS SSO session expired
+
+```
+[homeledger-bridge] Your AWS SSO session expired, run `aws login --profile homeledger-admin`
+```
+
+Exactly what it says, and the most likely failure in the whole bridge path. On an AWS CLI older than v2.31
+the command is `aws sso login --profile homeledger-admin`.
+
+### The bridge or the setup helper defaulted to a profile you did not choose
+
+```
+AWS_PROFILE is not set, so this used the default profile homeledger-admin. If your session lives on a
+different profile, set AWS_PROFILE to it and run this again.
+```
+
+`export AWS_PROFILE=homeledger-admin`, or whichever profile actually holds your session. It defaults rather
+than failing, and says so, because the values it discovers come from whichever account that profile points
+at — and reading "expired session" for a profile you never named is a dead end.
+
+### The profile named does not exist
+
+```
+AWS_PROFILE is set to <name>, and no profile of that name exists in ~/.aws/config. Set AWS_PROFILE to one
+that does — `aws configure list-profiles` lists them — or create it with `aws configure sso`.
+```
+
+This check runs *before* the expired-session check on purpose: the AWS SDK raises both as
+`CredentialsProviderError`, and the unordered version tells someone with a typo'd profile to sign in to a
+profile that does not exist.
+
+### The identity is signed in but not permitted
+
+```
+The AWS identity from profile <p> is not allowed to call <action> in <region>. Grant it that permission, or
+fill the values into the `claude mcp add` command by hand.
+```
+
+A permissions problem, not a session problem — signing in again cannot fix it. The five read-only
+permissions the bridge path needs are listed in §10.2.
+
+### `--from-terraform` fails on backend initialisation
+
+```
+[homeledger-bridge] `terraform output` failed in infra/live/demo/platform: Command failed: terraform output
+-raw cognito_token_url
+Error: Backend initialization required, please run "terraform init"
+Reason: Initial configuration of the requested backend "s3"
+```
+
+You used `--from-terraform` or `HOMELEDGER_SETUP_SOURCE=terraform`. Drop it — the default AWS path needs no
+Terraform at all. **Running `terraform init` as the error suggests does not help:** `backend.tf` declares
+`backend "s3" {}` with an empty body and `deploy.yml` supplies the bucket and region as `-backend-config`
+flags, so this root is not initialisable from a laptop by design and you would get a second error rather
+than a working directory. FL-035; reproduced while writing this.
+
+### No AgentCore runtime is found
+
+```
+No AgentCore runtime named demo_homeledger_mcp in us-east-1 (profile homeledger-admin). The demo stack may
+not be deployed — .github/workflows/deploy.yml applies it on a push to main, and it creates the runtime only
+once an image has been pushed. Names present: ...
+```
+
+Either the stack is torn down between test windows (§11.5) or your profile is pointed at a different
+account. `gh workflow run deploy.yml --ref main` brings it back in about three and a half minutes.
+
+### `ask_manual` answers that it cannot look anything up
+
+> I can't look anything up in the manuals right now. Searching them needs a model to read your question
+> first, and model access is blocked on this AWS account ...
+
+The Bedrock block, on the deployed runtime. Nothing you did, and not fixable from this repository. §5.
+Locally, with `KNOWLEDGE_BASE_ID` unset, the same tool works from fixtures.
+
+### `!! ask_manual: SKIPPED` in a smoke run
+
+The same block, recognised. The run is still green and still meaningful — the tool was reached, invoked and
+answered in budget, and every other assertion ran. §9.2.
+
+### `Error 002` from a Bedrock call
+
+```
+ValidationException ... Error 002: Access to Bedrock models is not allowed for this account
+```
+
+The raw form of the same block, from `aws-oidc-check.yml`'s probe or from `seed:manual`'s
+`StartIngestionJob`. §5.
+
+### `legacy terminateSession: non-fatal ... Not Found`
+
+```
+legacy terminateSession: non-fatal - Streamable HTTP error: Failed to terminate session: Not Found
+```
+
+Expected, non-fatal, and present in every green smoke run including 35478596365. AgentCore does not reliably
+route the bare-body `DELETE` back to the microVM holding the session, even though every `POST` and the SSE
+`GET` in the same session routed correctly. Sessions expire on the idle timeout regardless, so on-demand
+termination is best-effort cleanup rather than part of the smoke contract. FL-022, open, not blocking.
+
+### A pull request is blocked on a `plan` check that never appears
+
+The pull request did not touch `infra/**`, `apps/**`, `packages/**`, `scripts/**` or
+`.github/workflows/deploy.yml`, so `deploy.yml` never triggered, so its required `plan` check never
+reported — and a required check that never reports blocks rather than passes. §8.3 has the three ways out.
+
+### `hash_key is deprecated` warnings in a Terraform apply
+
+```
+Warning: Argument is deprecated
+  with aws_dynamodb_table.homeledger,
+  hash_key is deprecated. Use key_schema instead.
+  (and 7 more similar warnings elsewhere)
+```
+
+Eight in total, on every apply. Expected noise from the pinned AWS provider against
+`aws_dynamodb_table.homeledger`. Not a failure.
+
+---
+
+## 13. What in this document is verified, and what is not
+
+### Executed against this repository at commit `1851301`
+
+`pnpm install --frozen-lockfile` · `pnpm install` · `pnpm --filter @homeledger/core build` · `pnpm format` ·
+`pnpm typecheck` · `pnpm build` · `pnpm test` (`pnpm -r test`) · `pnpm --filter @homeledger/core test:dynamo` ·
+`pnpm --filter @homeledger/core seed:local` · `docker compose up -d` / `down` ·
+`pnpm --filter @homeledger/mcp-server dev` in both `MEMORY_REPO=1` and `DYNAMO_ENDPOINT` modes, and driven
+through a real MCP session (initialize, `tools/list`, `list_appliances`, `get_appliance`, `maintenance_due`,
+`recent_events`, `ask_manual`) · `docker build` and `docker run` of `apps/mcp-server/Dockerfile` ·
+`pnpm --filter @homeledger/mcp-bridge setup` (to reproduce FL-034's error) ·
+`pnpm --filter @homeledger/mcp-bridge run print-setup -- --from-terraform` (to reproduce FL-035's error) ·
+`terraform fmt -check -recursive` in `infra/` · `aws login help`, `aws configure list-profiles`,
+`aws bedrock-agentcore-control list-agent-runtimes help`,
+`aws bedrock-agentcore-control delete-agent-runtime help`, `aws secretsmanager restore-secret help` (local
+help output only, no API calls) · `claude mcp add --help`, `claude mcp remove --help` ·
+`npm view @modelcontextprotocol/inspector version` · `gh workflow list`, `gh variable set --help`,
+`gh run watch --help`, `gh run view 35478596365`, `gh run view 35478430481`, and `gh api` for repository
+variables, branch protection, environments, and owner/repo IDs.
+
+Script names were checked against the `scripts` block of each `package.json` rather than copied from
+`README.md`. Flags were checked against each tool's own `--help`. Paths were checked to exist. The local
+server was driven over HTTP with `curl` rather than only started, so the tool list, its order, and four tool
+results in this document are observed output rather than transcribed from source.
+
+### Not executed, and marked as such where it appears
+
+- **Everything in §7 (first-time AWS bootstrap).** No IAM, S3 or STS call was made. The trust policy shape
+  is reconstructed from the workflows and the Plan 1 task brief, not read back from IAM.
+- **`gh workflow run deploy.yml` and `gh workflow run smoke.yml`.** Command shapes verified; effects
+  described from the workflow files and from the logs of runs 35478430481 and 35478596365.
+- **The four AWS discovery calls behind `print-setup`,** and therefore the exact `claude mcp add` command it
+  emits. FL-035 lists the three specific assumptions the first live run will settle.
+- **The bridge against the deployed runtime.** Its unit and end-to-end tests (187 passing, including a
+  spawned-process run against a real local server) all pass; the AgentCore session pinning in particular is
+  reasoned, not measured.
+- **`aws bedrock-agentcore-control delete-agent-runtime`'s effect on Terraform state** (§11.2).
+- **Every teardown claim in §11.4**, including the Secrets Manager 30-day window, which is read off the
+  configuration (no `recovery_window_in_days` is set) plus the provider's documented default.
+- **Every dollar figure in §11.1.** AWS list-price estimates, not a bill. No Cost Explorer or Pricing API
+  call was made.
+- **S3 Vectors deletion semantics.** Listed as unknown rather than guessed.
+- **`npx @modelcontextprotocol/inspector` (§4.4).** The package was confirmed to exist and resolve
+  (`npm view` returns 2.7.0); the Inspector UI itself was not launched. It downloads on first run.
+- **§6.5's `terraform init -backend=false`, `validate` and `test`.** Only `terraform fmt -check -recursive`
+  was run here; the other three are what `ci.yml`'s `terraform` job runs on every pull request, and they are
+  green on run 35477139811.
+- **`claude mcp add --transport http ...` (§4.3, §10.1).** The flags are verified against
+  `claude mcp add --help` and the server was driven over the same URL with a real MCP client handshake, but
+  the entry was not added to this machine's Claude Code configuration.
+
+### Corrections to things stated elsewhere
+
+- **Prettier does not cover Markdown in this repository.** `.prettierignore` lists both `docs/` and `*.md`.
+  Verified by putting a deliberately misformatted Markdown file at the repository root and under `docs/` and
+  watching `prettier --check` pass both. `pnpm format` will never flag a Markdown file here.
+- **`README.md` says `apps/` contains `mcp-server` only** (in the "Echo Show simulator" bullet under "Not yet
+  built"). It contains `mcp-server` and `mcp-bridge`. The point being made — that `apps/simulator` does not
+  exist — is still correct.
