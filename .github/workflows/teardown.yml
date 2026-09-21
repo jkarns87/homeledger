@@ -1,0 +1,369 @@
+# Take the AgentCore runtime down between hackathon test windows, and put it
+# back for the next one. Dispatch only - nothing here ever runs on a push.
+#
+# WHAT THIS WORKFLOW CAN DESTROY, AND WHY THAT IS ALL IT CAN DESTROY
+#
+# It runs `terraform apply -var image_uri=""`. It does not run
+# `terraform destroy`, it passes no `-target`, and there is no input that turns
+# it into a wider operation. That is not a policy layered on top of a general
+# destroy tool - it is the only operation the tool can express, because
+# `count = var.image_uri == "" ? 0 : 1` on
+# module.agentcore_runtime.aws_bedrockagentcore_agent_runtime.this is the only
+# conditional resource in the whole configuration. Everything else - ECR, the
+# DynamoDB table, Cognito, the two Secrets Manager secrets, the Knowledge Base,
+# the IAM roles - is unconditional, so an apply cannot remove any of it no
+# matter what this file asks for.
+#
+# Destroying those other resources is deliberately NOT available here, not even
+# behind a louder confirmation, because each one rotates an identifier or
+# schedules a deletion that the rest of the project is pinned to:
+#
+#   Cognito        the app client id and secret both change; every
+#                  `claude mcp add` a judge was given goes stale
+#   Knowledge Base knowledge_base_id changes, so the runtime's
+#                  KNOWLEDGE_BASE_ID changes with it
+#   DynamoDB       the household data goes (re-seedable, but it goes)
+#   ECR            every image tag goes, so bring-up has nothing to redeploy
+#                  and must fall back to a full deploy.yml run
+#   Secrets        now deleted immediately rather than scheduled
+#                  (recovery_window_in_days = 0), so the names free up - but
+#                  the DeleteSecret API reference says that deletion is
+#                  asynchronous, so a same-name re-apply may still need a retry
+#
+# A full destroy is a deliberate, out-of-band act with a human holding
+# credentials. docs/RUNBOOK.md section 11.5 is where it is written down. Giving
+# it a button here would make the dangerous operation exactly as easy as the
+# routine one, which is the thing worth not doing.
+#
+# WHY BRING-UP LIVES HERE TOO, AND WHAT IT DOES NOT DO
+#
+# `gh workflow run deploy.yml --ref main` genuinely does bring the stack back
+# after a runtime-only teardown - its ECR bootstrap step is guarded on
+# aws_ecr_repository.mcp being absent from state and so is skipped, and its
+# build-and-push step then supplies a fresh image_uri. bring-up here is not a
+# substitute for that and is not a second copy of it: it pushes no image and
+# builds nothing. It redeploys an image ALREADY in ECR - by default the one
+# teardown printed - so what comes back is the artifact that was torn down
+# rather than a fresh build of whatever main holds today, and it takes seconds
+# rather than minutes. When ECR holds no image it refuses and says to run
+# deploy.yml, because deploy.yml owns the bootstrap and this workflow
+# deliberately does not reimplement it.
+
+name: teardown
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'What to do'
+        type: choice
+        required: true
+        default: teardown-runtime
+        options:
+          - teardown-runtime
+          - bring-up
+      confirm:
+        description: 'teardown-runtime only. Type exactly: destroy demo runtime'
+        type: string
+        required: false
+        default: ''
+      image_tag:
+        description: 'bring-up only. ECR tag to redeploy. Empty = the most recently pushed image.'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # Shares the `deploy-demo` concurrency group with deploy.yml's apply job, so a
+  # teardown can never interleave with an apply against the same state.
+  teardown:
+    if: inputs.mode == 'teardown-runtime'
+    runs-on: ubuntu-24.04
+    environment: demo
+    concurrency: deploy-demo
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      # The address the plan is allowed to destroy, and nothing else. Compared
+      # after the count index is stripped, so `[0]` does not have to be guessed.
+      RUNTIME_ADDRESS: module.agentcore_runtime.aws_bedrockagentcore_agent_runtime.this
+    steps:
+      # A failing STEP, not a job-level `if:`. A skipped job reports green, and
+      # "green" is the wrong answer to "you did not confirm".
+      #
+      # The typed value arrives through env rather than being interpolated into
+      # the script body: `${{ inputs.confirm }}` inline would put operator-typed
+      # text into a shell, which is a script-injection hole in a job that holds
+      # AWS credentials.
+      - name: Require the typed confirmation
+        env:
+          TYPED: ${{ inputs.confirm }}
+          EXPECTED: destroy demo runtime
+        run: |
+          set -euo pipefail
+          if [ "$TYPED" != "$EXPECTED" ]; then
+            echo "::error::Refusing to proceed. The confirm input must be exactly: ${EXPECTED}"
+            echo "Received: '${TYPED}'"
+            echo "Nothing has been planned and nothing has been applied."
+            exit 1
+          fi
+          echo "Confirmation accepted."
+
+      - name: Announce
+        run: |
+          {
+            echo "## Teardown: the AgentCore runtime only"
+            echo ""
+            echo "About to run \`terraform apply -var image_uri=\"\"\` against the demo platform root."
+            echo ""
+            echo "- **Will destroy:** \`${RUNTIME_ADDRESS}\` and nothing else."
+            echo "- **Will survive:** ECR and its images, the DynamoDB table and its data, Cognito (client id and secret unchanged), both Secrets Manager secrets, the Knowledge Base, the IAM execution role."
+            echo "- **Refuses to continue** if the plan wants to create anything, or to destroy anything other than the runtime."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Teardown requested by ${GITHUB_ACTOR} on ${GITHUB_REF_NAME} (${GITHUB_SHA})"
+
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: '1.16.1', terraform_wrapper: false }
+
+      - name: Terraform init
+        working-directory: infra/live/demo/platform
+        run: terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="region=$AWS_REGION"
+
+      # Recorded before the runtime goes, because after it goes the
+      # deployed_image_uri output is "" and the tag is no longer in state. This
+      # is what the bring-up job's image_tag input wants.
+      - name: Record the image the runtime is running
+        id: current
+        working-directory: infra/live/demo/platform
+        run: |
+          set -euo pipefail
+          IMAGE=$(terraform output -raw deployed_image_uri 2>/dev/null || true)
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+          if [ -n "$IMAGE" ]; then
+            echo "Currently deployed image: $IMAGE"
+            {
+              echo "**Image being taken out of service:** \`${IMAGE}\`"
+              echo ""
+              echo "It stays in ECR. Bring it back with mode \`bring-up\` and \`image_tag\` = \`${IMAGE##*:}\`."
+              echo ""
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No image_uri recorded in state - the runtime may already be torn down."
+          fi
+
+      # The blast-radius check with teeth. The plan is generated, printed for
+      # the log, and then read back as JSON and refused unless it is exactly the
+      # operation this workflow claims to perform.
+      #
+      # Creates are refused outright: a plan that wants to create is a plan
+      # against a state that is not "deployed demo stack" (empty state, a
+      # rolled-back configuration, a resource deleted out of band), and applying
+      # it here would build things under the banner of taking one thing away. A
+      # replace shows up as both a create and a delete, so it is caught twice.
+      #
+      # In-place updates are reported but tolerated. They are what an unrelated
+      # drift or a newly added argument looks like - the recovery_window_in_days
+      # change on the two secrets is exactly this shape on its first run - and
+      # none of them can rotate an identifier or schedule a deletion.
+      - name: Plan, and refuse anything wider than the runtime
+        id: plan
+        working-directory: infra/live/demo/platform
+        run: |
+          set -euo pipefail
+          terraform plan -no-color -input=false -var 'image_uri=' -out=tfplan
+          terraform show -no-color tfplan | tee plan.txt
+          terraform show -json tfplan > tfplan.json
+
+          DELETES=$(jq -r '[.resource_changes[]? | select(.change.actions | index("delete")) | .address] | .[]' tfplan.json | sed 's/\[[^]]*\]$//' | sort -u)
+          CREATES=$(jq -r '[.resource_changes[]? | select(.change.actions | index("create")) | .address] | .[]' tfplan.json | sort -u)
+          UPDATES=$(jq -r '[.resource_changes[]? | select(.change.actions == ["update"]) | .address] | .[]' tfplan.json | sort -u)
+
+          {
+            echo "<details><summary>terraform plan (teardown)</summary>"
+            echo ""
+            echo '```'
+            cat plan.txt
+            echo '```'
+            echo "</details>"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -n "$UPDATES" ]; then
+            echo "In-place updates in this plan (tolerated, none can rotate an identifier):"
+            echo "$UPDATES"
+          fi
+
+          if [ -n "$CREATES" ]; then
+            echo "::error::This plan wants to CREATE resources, which means the stack is not in the state this workflow assumes. Refusing."
+            echo "$CREATES"
+            echo "Run deploy.yml if the stack needs applying; this workflow only ever removes the runtime."
+            exit 1
+          fi
+
+          if [ -z "$DELETES" ]; then
+            echo "Nothing to destroy - the runtime is already gone. Exiting without applying."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "**Result:** already torn down, no changes applied." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$DELETES" != "$RUNTIME_ADDRESS" ]; then
+            echo "::error::This plan would destroy something other than the AgentCore runtime. Refusing."
+            echo "Expected exactly: $RUNTIME_ADDRESS"
+            echo "Plan destroys:"
+            echo "$DELETES"
+            exit 1
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "Plan checked: destroys exactly $RUNTIME_ADDRESS."
+
+      - name: Apply the teardown
+        if: steps.plan.outputs.changed == 'true'
+        working-directory: infra/live/demo/platform
+        run: terraform apply -auto-approve -input=false tfplan
+
+      - name: Report what was done
+        if: steps.plan.outputs.changed == 'true'
+        working-directory: infra/live/demo/platform
+        env:
+          TORN_DOWN_IMAGE: ${{ steps.current.outputs.uri }}
+        run: |
+          set -euo pipefail
+          ARN=$(terraform output -raw agent_runtime_arn 2>/dev/null || true)
+          if [ -n "$ARN" ]; then
+            echo "::error::The runtime ARN is still set after the apply. Teardown did not take effect."
+            exit 1
+          fi
+          {
+            echo "**Result:** the AgentCore runtime is destroyed. Everything else is untouched."
+            echo ""
+            echo "To bring it back: dispatch this workflow with mode \`bring-up\`"
+            if [ -n "$TORN_DOWN_IMAGE" ]; then
+              echo "and \`image_tag\` = \`${TORN_DOWN_IMAGE##*:}\` (or leave it empty for the newest image in ECR)."
+            else
+              echo "and leave \`image_tag\` empty."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Teardown complete."
+
+  bring-up:
+    if: inputs.mode == 'bring-up'
+    runs-on: ubuntu-24.04
+    environment: demo
+    concurrency: deploy-demo
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+    steps:
+      - name: Announce
+        env:
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+        run: |
+          {
+            echo "## Bring-up: redeploy the AgentCore runtime from an existing ECR image"
+            echo ""
+            echo "No image is built and none is pushed. This redeploys what is already in ECR."
+            echo "- **Requested tag:** \`${REQUESTED_TAG:-(newest image in the repository)}\`"
+            echo "- Refuses if that image is not there, and says to run deploy.yml instead."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Bring-up requested by ${GITHUB_ACTOR} on ${GITHUB_REF_NAME} (${GITHUB_SHA})"
+
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: '1.16.1', terraform_wrapper: false }
+
+      - name: Terraform init
+        working-directory: infra/live/demo/platform
+        run: terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="region=$AWS_REGION"
+
+      # Two things have to be true before an image_uri is worth passing: the ECR
+      # repository must be in state (if it is not, this is a first deploy and
+      # deploy.yml's bootstrap step owns it), and the tag must exist in the
+      # repository (an empty ECR repository means there is nothing to redeploy).
+      # Both refuse rather than guess, because the failure mode being avoided is
+      # an apply that "succeeds" against an image URI that resolves to nothing.
+      - name: Resolve the image to redeploy
+        id: image
+        working-directory: infra/live/demo/platform
+        env:
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          if ! terraform state list 2>/dev/null | grep -qx 'aws_ecr_repository.mcp'; then
+            echo "::error::No ECR repository in Terraform state, so this account has never been deployed. Run deploy.yml - it owns the bootstrap and this workflow deliberately does not reimplement it."
+            exit 1
+          fi
+
+          REPO_URL=$(terraform output -raw ecr_repository_url)
+          REPO_NAME="${REPO_URL##*/}"
+
+          if [ -n "$REQUESTED_TAG" ]; then
+            TAG="$REQUESTED_TAG"
+            if ! aws ecr describe-images --repository-name "$REPO_NAME" --image-ids "imageTag=$TAG" >/dev/null 2>&1; then
+              echo "::error::No image tagged '${TAG}' in ${REPO_NAME}. The lifecycle policy keeps only the last 20 images, so an old tag may have expired. Dispatch again with an empty image_tag to take the newest, or run deploy.yml to build a fresh one."
+              exit 1
+            fi
+          else
+            TAG=$(aws ecr describe-images --repository-name "$REPO_NAME" \
+              --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' --output text 2>/dev/null || true)
+            if [ -z "$TAG" ] || [ "$TAG" = "None" ]; then
+              echo "::error::${REPO_NAME} holds no tagged images, so there is nothing to redeploy. Run deploy.yml to build and push one."
+              exit 1
+            fi
+          fi
+
+          echo "uri=${REPO_URL}:${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Redeploying ${REPO_URL}:${TAG}"
+
+      - name: Terraform apply
+        working-directory: infra/live/demo/platform
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+        run: terraform apply -auto-approve -input=false -var "image_uri=$IMAGE_URI"
+
+      # Bring-up has to leave a working system, not a half-applied one, so the
+      # two outputs the bridge and the smoke both read are checked rather than
+      # assumed. This is not a smoke test - dispatch smoke.yml for that, and the
+      # summary below says so.
+      - name: Report what was done
+        working-directory: infra/live/demo/platform
+        run: |
+          set -euo pipefail
+          ARN=$(terraform output -raw agent_runtime_arn 2>/dev/null || true)
+          URL=$(terraform output -raw agent_runtime_invocation_url 2>/dev/null || true)
+          if [ -z "$ARN" ] || [ -z "$URL" ]; then
+            echo "::error::The apply finished but the runtime outputs are empty, so the stack is half applied."
+            exit 1
+          fi
+          {
+            echo "**Result:** the AgentCore runtime is back."
+            echo ""
+            echo '```'
+            echo "agent_runtime_arn            = ${ARN}"
+            echo "agent_runtime_invocation_url = ${URL}"
+            echo '```'
+            echo ""
+            echo "The runtime ARN is NEW - AgentCore does not reuse it across a destroy and recreate - so re-run \`pnpm --filter @homeledger/mcp-bridge run print-setup\` and reissue the \`claude mcp add\` command. The Cognito client id, the table and the Knowledge Base id are unchanged."
+            echo ""
+            echo "Verify with \`gh workflow run smoke.yml --ref main\` and confirm \`SMOKE OK\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Bring-up complete."
