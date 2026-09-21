@@ -13,6 +13,7 @@ interface Seen {
   method: string;
   headers: Headers;
   body: unknown;
+  url?: string;
 }
 
 const encoder = new TextEncoder();
@@ -114,6 +115,9 @@ interface HarnessOptions {
   tokens?: string[];
   /** Answers elicitation requests as Claude Code would: on receipt, over a separate request. */
   autoAnswer?: boolean;
+  url?: string;
+  reresolve?: () => Promise<string>;
+  newAgentCoreSessionId?: () => string;
 }
 
 function harness(options: HarnessOptions) {
@@ -125,12 +129,14 @@ function harness(options: HarnessOptions) {
   let bridge!: Bridge;
 
   bridge = new Bridge({
-    url: URL_UNDER_TEST,
+    url: options.url ?? URL_UNDER_TEST,
     token: async () => tokens[Math.min(tokenIndex++, tokens.length - 1)]!,
     invalidateToken: () => undefined,
     agentCoreSessionId: options.agentCoreSessionId,
     standaloneStream: options.standaloneStream ?? false,
     fetchImpl: options.fetchImpl,
+    reresolve: options.reresolve,
+    newAgentCoreSessionId: options.newAgentCoreSessionId,
     write: line => {
       written.push(line);
       if (!options.autoAnswer) return;
@@ -324,13 +330,6 @@ describe('Bridge, when the endpoint refuses', () => {
     expect(h.written[0]).toContain(REDACTION);
   });
 
-  it('explains a lost session in terms of what to do about it', async () => {
-    const { fetchImpl } = refusing([404, 404], '{"jsonrpc":"2.0","error":{"code":-32001,"message":"Session not found"}}');
-    const h = harness({ fetchImpl });
-    await h.bridge.handleClientMessage(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list' }));
-    expect(h.logs[0]).toContain('Restart the MCP connection');
-  });
-
   it('drops a line from the client that is not JSON, rather than crashing the relay', async () => {
     const { fetchImpl, seen } = refusing([200]);
     const h = harness({ fetchImpl });
@@ -338,6 +337,271 @@ describe('Bridge, when the endpoint refuses', () => {
     expect(seen).toHaveLength(0);
     expect(h.written).toEqual([]);
     expect(h.logs[0]).toContain('not JSON');
+  });
+});
+
+/** The body `apps/mcp-server/src/legacy.ts` line 50 writes for a session its microVM does not hold. */
+const LOST_SESSION_BODY = JSON.stringify({ jsonrpc: '2.0', error: { code: -32001, message: 'Session not found' }, id: null });
+/** The envelope AgentCore wrapped it in for the owner's client, quoted from the FL-039 transcript. */
+const WRAPPED_404 = JSON.stringify({
+  jsonrpc: '2.0',
+  id: null,
+  error: { code: -32010, message: 'Received error (404) from runtime. Please check your CloudWatch logs for more information.' }
+});
+
+/**
+ * AgentCore in front of a HomeLedger container whose instance can be recycled
+ * out from under a live session, which is the failure FL-039 records.
+ *
+ * Faithful to `apps/mcp-server/src/legacy.ts` on the three branches that
+ * matter: a POST carrying an initialize body and no session header mints a
+ * session, a POST carrying a session header the map does not hold answers 404
+ * `-32001`, and anything else with a known session is served. `recycle()`
+ * empties the map exactly as a restarted microVM would.
+ */
+function recyclableUpstream(options: { wrap?: boolean; recycleEvery?: boolean; only?: string } = {}) {
+  const sessions = new Set<string>();
+  const seen: Seen[] = [];
+  let minted = 0;
+
+  const lost = (): Response =>
+    options.wrap
+      ? new Response(WRAPPED_404, { status: 200, headers: { 'content-type': 'application/json' } })
+      : new Response(LOST_SESSION_BODY, { status: 404 });
+
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers as HeadersInit);
+    const raw = typeof init?.body === 'string' ? init.body : '';
+    const body: unknown = raw ? JSON.parse(raw) : undefined;
+    const address = String(url);
+    seen.push({ method: init?.method ?? 'GET', headers, body, url: address });
+    // A bridge that retried without a bound would otherwise exhaust the test
+    // runner rather than fail an assertion, and "the suite died" is a much
+    // worse signal than "the suite said which invariant broke".
+    if (seen.length > 24) throw new Error(`the bridge sent ${seen.length} requests for one message; the repair is not bounded`);
+    if ((init?.method ?? 'GET') !== 'POST') return new Response(null, { status: 405 });
+    // `only` models a recreated runtime: the old address names nothing.
+    if (options.only && address !== options.only) return new Response('', { status: 404 });
+
+    const message = body as { id?: number; method?: string } | undefined;
+    const sessionId = headers.get('mcp-session-id') ?? undefined;
+
+    if (message?.method === 'initialize' && !sessionId) {
+      minted += 1;
+      const id = `session-${minted}`;
+      sessions.add(id);
+      if (options.recycleEvery) sessions.clear();
+      return new Response(
+        sse({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: { protocolVersion: '2025-11-25', capabilities: {}, serverInfo: { name: 'homeledger', version: '0.1.0' } }
+        }),
+        { status: 200, headers: { 'content-type': 'text/event-stream', 'mcp-session-id': id } }
+      );
+    }
+    if (!sessionId)
+      return new Response(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: Session ID required' } }), { status: 400 });
+    if (!sessions.has(sessionId)) return lost();
+    if (message?.id === undefined) return new Response(null, { status: 202 });
+    return new Response(sse({ jsonrpc: '2.0', id: message.id, result: { servedBy: sessionId } }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' }
+    });
+  }) as unknown as typeof fetch;
+
+  return { fetchImpl, seen, recycle: () => sessions.clear(), posts: () => seen.filter(s => s.method === 'POST') };
+}
+
+const toolCall = (id: number) => JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'list_appliances' } });
+const parsed = (lines: string[]) =>
+  lines.map(line => JSON.parse(line) as { id?: number | null; result?: { servedBy?: string }; error?: { code: number; message: string } });
+
+describe('Bridge, when the runtime instance holding the session is recycled', () => {
+  it('rebuilds the session and replays the call, so an idle conversation comes back to a working tool', async () => {
+    const up = recyclableUpstream();
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    const original = h.bridge.sessionId;
+
+    up.recycle();
+    await h.bridge.handleClientMessage(toolCall(2));
+
+    const messages = parsed(h.written);
+    expect(messages.at(-1)).toMatchObject({ id: 2, result: { servedBy: 'session-2' } });
+    expect(messages.at(-1)?.error).toBeUndefined();
+    expect(h.bridge.sessionId).toBe('session-2');
+    expect(h.bridge.sessionId).not.toBe(original);
+  });
+
+  it('heals the same way when AgentCore wraps the 404 into a -32010 on a 200, which is the shape that actually reached the owner', async () => {
+    const up = recyclableUpstream({ wrap: true });
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    up.recycle();
+    await h.bridge.handleClientMessage(toolCall(2));
+    expect(parsed(h.written).at(-1)).toMatchObject({ id: 2, result: { servedBy: 'session-2' } });
+  });
+
+  it('never lets a raw -32010 through to the client, healed or not', async () => {
+    const up = recyclableUpstream({ wrap: true, recycleEvery: true });
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    await h.bridge.handleClientMessage(toolCall(2));
+    const failure = parsed(h.written).at(-1)!;
+    const message = failure.error!.message;
+    expect(failure.error?.code).toBe(-32603);
+    // The raw envelope is still quoted — hiding what the endpoint said would
+    // be its own kind of lying — but it is quoted at the end, behind the
+    // explanation and behind the notice. The owner's client read `-32010` as
+    // the whole message because it was the whole message.
+    expect(message.startsWith('The HomeLedger MCP session no longer exists')).toBe(true);
+    expect(message.indexOf('NO DATA WAS RETRIEVED')).toBeLessThan(message.indexOf('Received error (404) from runtime'));
+  });
+
+  it('tells the client in as many words that nothing was read, so the failure cannot be answered around', async () => {
+    const up = recyclableUpstream({ recycleEvery: true });
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    await h.bridge.handleClientMessage(toolCall(2));
+    const message = parsed(h.written).at(-1)!.error!.message;
+    expect(message).toContain('NO DATA WAS RETRIEVED');
+    expect(message).toContain('repository fixtures');
+    expect(message).toContain('replayed this call once');
+  });
+
+  it('does not relay the replayed handshake to the client, which already had its answer', async () => {
+    const up = recyclableUpstream();
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    up.recycle();
+    await h.bridge.handleClientMessage(toolCall(2));
+    // Exactly one response on the initialize's id. A second would be a reply
+    // to a request the client considers settled.
+    expect(parsed(h.written).filter(m => m.id === 1)).toHaveLength(1);
+  });
+
+  it('repairs at most once per message, so an endpoint that always 404s cannot spin', async () => {
+    const up = recyclableUpstream({ recycleEvery: true });
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    await h.bridge.handleClientMessage(toolCall(2));
+    // initialize, the call, the rebuilt initialize, the one replay. No fifth.
+    expect(up.posts()).toHaveLength(4);
+  });
+
+  it('replays the client’s own initialize rather than one of its own invention', async () => {
+    const up = recyclableUpstream();
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.bridge.handleClientMessage(
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', clientInfo: { name: 'claude-code' } } })
+    );
+    up.recycle();
+    await h.bridge.handleClientMessage(toolCall(2));
+    const handshakes = up.posts().filter(p => (p.body as { method?: string }).method === 'initialize');
+    expect(handshakes).toHaveLength(2);
+    expect(handshakes[1]?.body).toEqual(handshakes[0]?.body);
+    expect(handshakes[1]?.headers.get('mcp-session-id')).toBeNull();
+  });
+
+  it('replays notifications/initialized too, so the rebuilt session reaches the state the first one did', async () => {
+    const up = recyclableUpstream();
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    await h.bridge.handleClientMessage(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }));
+    up.recycle();
+    await h.bridge.handleClientMessage(toolCall(2));
+    const acks = up.posts().filter(p => (p.body as { method?: string }).method === 'notifications/initialized');
+    expect(acks).toHaveLength(2);
+    expect(acks[1]?.headers.get('mcp-session-id')).toBe('session-2');
+  });
+
+  it('rebuilds once for several requests that fail together, not once each', async () => {
+    const up = recyclableUpstream();
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    up.recycle();
+    await Promise.all([h.bridge.handleClientMessage(toolCall(2)), h.bridge.handleClientMessage(toolCall(3)), h.bridge.handleClientMessage(toolCall(4))]);
+    const handshakes = up.posts().filter(p => (p.body as { method?: string }).method === 'initialize');
+    expect(handshakes).toHaveLength(2);
+    expect(
+      parsed(h.written)
+        .filter(m => m.error)
+        .map(m => m.id)
+    ).toEqual([]);
+  });
+
+  it('rotates the AgentCore runtime session id it minted, so the replay is not sent back to the dead instance', async () => {
+    const up = recyclableUpstream();
+    let next = 0;
+    const h = harness({
+      fetchImpl: up.fetchImpl,
+      agentCoreSessionId: 'homeledger-bridge-generated-session-value-one',
+      newAgentCoreSessionId: () => `homeledger-bridge-generated-session-value-${++next}`
+    });
+    await h.initialize();
+    up.recycle();
+    await h.bridge.handleClientMessage(toolCall(2));
+    expect(h.bridge.runtimeSessionId).toBe('homeledger-bridge-generated-session-value-1');
+    expect(up.posts().at(-1)?.headers.get('x-amzn-bedrock-agentcore-runtime-session-id')).toBe('homeledger-bridge-generated-session-value-1');
+  });
+
+  it('leaves a runtime session id the owner pinned exactly as pinned', async () => {
+    const up = recyclableUpstream();
+    const pinned = 'homeledger-bridge-pinned-session-identifier';
+    const h = harness({ fetchImpl: up.fetchImpl, agentCoreSessionId: pinned });
+    await h.initialize();
+    up.recycle();
+    await h.bridge.handleClientMessage(toolCall(2));
+    expect(h.bridge.runtimeSessionId).toBe(pinned);
+    expect(up.posts().every(p => (p.headers.get('x-amzn-bedrock-agentcore-runtime-session-id') ?? pinned) === pinned)).toBe(true);
+  });
+});
+
+describe('Bridge, when the address names no runtime', () => {
+  const NEW_URL = 'https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/new/invocations?qualifier=DEFAULT';
+
+  it('re-resolves by name and retries, turning a rotated runtime into a working session', async () => {
+    const up = recyclableUpstream({ only: NEW_URL });
+    const h = harness({ fetchImpl: up.fetchImpl, reresolve: async () => NEW_URL });
+    await h.initialize();
+    expect(h.bridge.endpoint).toBe(NEW_URL);
+    expect(parsed(h.written).at(-1)).toMatchObject({ id: 1 });
+    expect(parsed(h.written).at(-1)?.error).toBeUndefined();
+  });
+
+  it('reports rather than retrying when the name resolves to the address already in use', async () => {
+    // The runtime exists under the name, so the 404 is about something else
+    // and a replay at the same URL would only reproduce it.
+    const up = recyclableUpstream({ only: NEW_URL });
+    const h = harness({ fetchImpl: up.fetchImpl, url: URL_UNDER_TEST, reresolve: async () => URL_UNDER_TEST });
+    await h.initialize();
+    expect(up.posts()).toHaveLength(1);
+    expect(parsed(h.written).at(-1)?.error?.message).toContain('runtime this bridge is addressing does not exist');
+    expect(h.logs.join('\n')).toContain('address already in use');
+  });
+
+  it('reports the original failure when re-resolution itself fails, rather than the re-resolution’s', async () => {
+    const up = recyclableUpstream({ only: NEW_URL });
+    const h = harness({ fetchImpl: up.fetchImpl, reresolve: async () => Promise.reject(new Error('Your AWS SSO session expired')) });
+    await h.initialize();
+    expect(parsed(h.written).at(-1)?.error?.message).toContain('runtime this bridge is addressing does not exist');
+    expect(h.logs.join('\n')).toContain('Your AWS SSO session expired');
+  });
+
+  it('does not go looking for a replacement when the address was supplied rather than resolved', async () => {
+    const up = recyclableUpstream({ only: NEW_URL });
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    expect(up.posts()).toHaveLength(1);
+    expect(parsed(h.written).at(-1)?.error?.message).toContain('did not look for a replacement');
+  });
+
+  it('says nothing was read here too, because a missing runtime is not an empty household either', async () => {
+    const up = recyclableUpstream({ only: NEW_URL });
+    const h = harness({ fetchImpl: up.fetchImpl });
+    await h.initialize();
+    expect(parsed(h.written).at(-1)?.error?.message).toContain('NO DATA WAS RETRIEVED');
   });
 });
 

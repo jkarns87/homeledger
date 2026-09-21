@@ -111,13 +111,26 @@ describe('renderSetup', () => {
     clientId: '1example23clientid45'
   };
 
-  it('prints a claude mcp add command carrying the three identifiers and the entrypoint', () => {
+  it('prints a claude mcp add command carrying the Cognito identifiers and the entrypoint', () => {
     const text = renderSetup({ values, entrypoint: '/repo/apps/mcp-bridge/dist/index.js' });
     expect(text).toContain('claude mcp add homeledger');
-    expect(text).toContain("-e HOMELEDGER_RUNTIME_ARN='arn:aws:bedrock-agentcore:us-east-1:111122223333:runtime/homeledger_mcp-AbC123xyZ'");
     expect(text).toContain("-e HOMELEDGER_COGNITO_TOKEN_URL='https://demo-homeledger.auth.us-east-1.amazoncognito.com/oauth2/token'");
     expect(text).toContain("-e HOMELEDGER_COGNITO_CLIENT_ID='1example23clientid45'");
     expect(text).toContain('-- node /repo/apps/mcp-bridge/dist/index.js');
+  });
+
+  it('pins no runtime ARN into the generated command, which is what makes the entry survive a recreate', () => {
+    // FL-039. The generated config is the only config most owners will ever
+    // have, so an `-e HOMELEDGER_RUNTIME_ARN=` here is an expiry date on every
+    // one of them. Asserted on the `-e ` form specifically, not on the ARN
+    // string, because the ARN itself is still printed — just not passed.
+    expect(renderSetup({ values, entrypoint: '/repo/x.js' })).not.toContain('-e HOMELEDGER_RUNTIME_ARN=');
+  });
+
+  it('still shows which runtime it found, and says why that is not in the command', () => {
+    const text = renderSetup({ values, entrypoint: '/repo/x.js' });
+    expect(text).toContain('The runtime is arn:aws:bedrock-agentcore:us-east-1:111122223333:runtime/homeledger_mcp-AbC123xyZ.');
+    expect(text).toContain('the bridge finds the runtime by name every time it starts');
   });
 
   it('adds the server at user scope, so the command never lands in the repository’s .mcp.json', () => {

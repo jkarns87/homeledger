@@ -1,0 +1,3 @@
+# Deliberately empty. Named by claude-code-bridge.test.ts as AWS_CONFIG_FILE and
+# AWS_SHARED_CREDENTIALS_FILE so the SDK credential chain fails locally, without
+# a network call, on a machine that does have real AWS profiles.

@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ConfigError, loadConfig } from './config.js';
-import { createAwsDiscoveryApi, discoverSetupValues } from './discover.js';
+import type { AwsIdentityContext } from './aws-errors.js';
+import { ConfigError, DEFAULT_AWS_PROFILE, loadConfig, newAgentCoreSessionId } from './config.js';
+import { DiscoveryError, createAwsDiscoveryApi, discoverSetupValues } from './discover.js';
 import { Bridge, createLineReader } from './proxy.js';
 import { logDiagnostic } from './redact.js';
+import { createAwsRuntimeLister, resolveRuntime } from './runtime.js';
 import { SecretError, createSecretsManagerReader, resolveClientSecret } from './secret.js';
 import type { SetupValues } from './setup.js';
 import {
@@ -49,22 +51,42 @@ async function printSetup(): Promise<void> {
 
 async function runBridge(): Promise<void> {
   const config = loadConfig(process.env);
+  const identity: AwsIdentityContext = {
+    region: config.region,
+    profile: config.awsProfile ?? DEFAULT_AWS_PROFILE,
+    profileFromEnvironment: Boolean(process.env.AWS_PROFILE?.trim() || process.env.HOMELEDGER_AWS_PROFILE?.trim())
+  };
+  // Before the token and before the secret, because "which runtime" is the
+  // question the other two are in service of: a bridge that cannot find its
+  // runtime has no use for a credential to talk to it with.
+  const runtime = await resolveRuntime({
+    target: config.target,
+    qualifier: config.qualifier,
+    identity,
+    lister: () => createAwsRuntimeLister(identity),
+    log: logDiagnostic
+  });
   const secret = await resolveClientSecret(config, () => createSecretsManagerReader(config));
   const tokens = createTokenSource({ tokenUrl: config.tokenUrl, clientId: config.clientId, clientSecret: secret, scope: config.scope });
   // Minted before a single byte of MCP traffic moves, so that a bad client id,
   // a wrong scope, or an unreachable token endpoint is reported as one line at
   // startup rather than as a failure inside the owner's first tool call.
   await tokens.get();
+  const addressing = config.target.kind === 'name' ? `resolved by name (${config.target.name})` : `pinned by ${runtime.origin}`;
   logDiagnostic(
-    `ready: endpoint ${new URL(config.mcpUrl).host}, client ${config.clientId}, region ${config.region}, secret from ${config.clientSecretFromEnv ? 'HOMELEDGER_COGNITO_CLIENT_SECRET' : `Secrets Manager (${config.secretId})`}, runtime session ${config.agentCoreSessionId ? 'pinned' : 'unpinned'}`
+    `ready: endpoint ${new URL(runtime.url).host}, runtime ${addressing}, client ${config.clientId}, region ${config.region}, secret from ${config.clientSecretFromEnv ? 'HOMELEDGER_COGNITO_CLIENT_SECRET' : `Secrets Manager (${config.secretId})`}, runtime session ${config.agentCoreSessionId ? 'pinned' : 'left to AgentCore'}`
   );
 
   const bridge = new Bridge({
-    url: config.mcpUrl,
+    url: runtime.url,
     token: () => tokens.get(),
     invalidateToken: () => tokens.invalidate(),
     agentCoreSessionId: config.agentCoreSessionId,
     standaloneStream: config.standaloneStream,
+    reresolve: runtime.reresolve,
+    // Only when the bridge minted the id itself. A value the owner pinned is
+    // left alone, exactly as a pinned ARN is.
+    newAgentCoreSessionId: config.agentCoreSessionGenerated ? newAgentCoreSessionId : undefined,
     // stdout is the protocol channel. Nothing else in this program writes to it.
     write: line => process.stdout.write(`${line}\n`),
     log: logDiagnostic
@@ -94,7 +116,7 @@ try {
   // Startup failures get the operator's sentence and nothing else. A stack
   // trace here would be the bridge answering "your SSO session expired" with
   // forty lines of AWS SDK internals.
-  if (err instanceof ConfigError || err instanceof SecretError) logDiagnostic(err.message);
+  if (err instanceof ConfigError || err instanceof SecretError || err instanceof DiscoveryError) logDiagnostic(err.message);
   else logDiagnostic(err instanceof Error ? err.message : String(err));
   process.exit(1);
 }
