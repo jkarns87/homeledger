@@ -1,6 +1,52 @@
 # Take the AgentCore runtime down between hackathon test windows, and put it
 # back for the next one. Dispatch only - nothing here ever runs on a push.
 #
+# ============================================================================
+# READ THIS BEFORE DISPATCHING `teardown-runtime`
+#
+# A TEARDOWN INVALIDATES EVERY INVOCATION URL ALREADY ISSUED, AND NOTHING CAN
+# GIVE THEM BACK.
+#
+# AgentCore generates the runtime's id at create time - the ARN ends in a
+# random ten-character suffix - and there is no alias, qualifier or custom
+# domain anywhere in the service that can hide that from a caller. Named
+# endpoints do exist (`create-agent-runtime-endpoint`), but an endpoint ARN is
+#
+#   .../runtime/<name>-[a-zA-Z0-9]{10}/runtime-endpoint/<name>
+#
+# so the endpoint is a CHILD of the runtime: it inherits the rotating suffix
+# and is a different resource once the parent is recreated. A review of the
+# whole `bedrock-agentcore-control` command surface found nothing alias- or
+# domain-shaped. The teardown/bring-up round trip on 2026-09-21 turned
+# `demo_homeledger_mcp-093ImbCPE3` into `demo_homeledger_mcp-Rgb4ruHdu7` (runs
+# 35615354202 and 35616472515) - so every URL and every `claude mcp add`
+# command handed out before it stopped working, while every other identifier
+# survived untouched.
+#
+# ROUTINE DEPLOYS DO NOT DO THIS. The provider replaces this resource on
+# exactly two changes - `agent_runtime_name`, and an artifact-type flip
+# between container and code - so image, environment-variable and execution
+# role changes all update in place and keep the ARN (run 35623151468:
+# `Plan: 0 to add, 1 to change, 0 to destroy`, ARN unchanged). Teardown is the
+# only operation that rotates the id.
+#
+# AND LEAVING THE RUNTIME UP COSTS ALMOST NOTHING.
+#
+# This stack is on the serverless microVM path, billed per second on actual
+# CPU and memory consumption. The Terraform resource has no CPU, memory or
+# capacity attribute at all, so there is no size to reserve and nothing
+# accrues while nobody is calling. The one non-zero idle line is memory for
+# the life of an OPEN session: at the 128 MB billing floor and this stack's
+# 1800 s `idle_session_timeout_seconds`, a session somebody opened and walked
+# away from is roughly $0.0006. (AgentCore Runtime does also have a
+# provisioned capacity-provider mode billed per instance-hour. HomeLedger is
+# not on it, and this Terraform resource cannot express it.)
+#
+# So the trade at this lever is: save a fraction of a cent, and break every
+# address a judge was given. Between now and 2026-11-20 the answer is to leave
+# the runtime running. docs/RUNBOOK.md section 11 carries the full evidence.
+# ============================================================================
+#
 # WHAT THIS WORKFLOW CAN DESTROY, AND WHY THAT IS ALL IT CAN DESTROY
 #
 # It runs `terraform apply -var image_uri=""`. It does not run
@@ -31,7 +77,7 @@
 #                  asynchronous, so a same-name re-apply may still need a retry
 #
 # A full destroy is a deliberate, out-of-band act with a human holding
-# credentials. docs/RUNBOOK.md section 11.5 is where it is written down. Giving
+# credentials. docs/RUNBOOK.md section 11.4 is where it is written down. Giving
 # it a button here would make the dangerous operation exactly as easy as the
 # routine one, which is the thing worth not doing.
 #
@@ -62,7 +108,10 @@ on:
           - teardown-runtime
           - bring-up
       confirm:
-        description: 'teardown-runtime only. Type exactly: destroy demo runtime'
+        # The warning lives here as well as in the header comment because this
+        # description is what the dispatch dialog shows, and the dialog is the
+        # last thing an operator reads before pulling the lever.
+        description: 'teardown-runtime only. WARNING: this rotates the runtime ARN, so every invocation URL and every claude mcp add command already handed out stops working - AgentCore has no alias, qualifier or custom domain that survives a recreate. Leaving the runtime up instead costs nothing while idle and about $0.0006 per abandoned session. Type exactly: destroy demo runtime'
         type: string
         required: false
         default: ''
