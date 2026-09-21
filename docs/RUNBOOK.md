@@ -23,7 +23,7 @@ documented paths that were written, reviewed and merged without ever being execu
 | A judge who wants to know what is real | [2. Status at a glance](#2-status-at-a-glance), then [5. What is blocked](#5-what-is-blocked-bedrock-model-access) | ~5 min | No |
 | A contributor | [6. Local development](#6-local-development), then [8. Deploying](#8-deploying) | — | No |
 | The owner, re-deploying for a demo | [8. Deploying](#8-deploying), [9. Verifying](#9-verifying-a-deployment), [10. Claude Code](#10-talking-to-homeledger-from-claude-code) | ~10 min | Yes |
-| The owner, shutting down after one | [11. Cost and teardown](#11-cost-and-teardown) | ~5 min | Yes |
+| The owner, deciding whether to shut down after one | [11. Cost and teardown](#11-cost-and-teardown) — the short answer, through 2026-11-20, is don't | ~5 min | Yes |
 | Anyone hitting an error | [12. Troubleshooting](#12-troubleshooting) | — | — |
 
 Reference material this runbook does not duplicate: `README.md` (what the server exposes, tool by tool),
@@ -398,10 +398,12 @@ Three things must exist before the first deploy, and none of them is managed by
 `infra/live/demo/platform` (`infra/live/demo/platform/README.md` says so under "Blast radius": "It does not
 touch the OIDC provider or GitHub deploy role used to run it — those are managed outside Terraform").
 
-> **NOT EXECUTED.** Everything in this section needs credentials on a real AWS account. The shapes below are
-> reconstructed from `.github/workflows/*.yml`, the repository variables (read through the GitHub API), and
-> `docs/superpowers/plans/2026-09-13-homeledger-plan-1-foundation.md` Task 13. The trust policy in
-> particular was **not** read back from IAM, because that needs a live AWS call.
+> **NOT EXECUTED, with the trust policy's scope now excepted.** Everything in this section needs credentials
+> on a real AWS account. The shapes below are reconstructed from `.github/workflows/*.yml`, the repository
+> variables (read through the GitHub API), and
+> `docs/superpowers/plans/2026-09-13-homeledger-plan-1-foundation.md` Task 13. The policy **document** has
+> still not been read back from IAM. What has been settled empirically is **which subjects it admits** — see
+> the confirmation at the end of §7.1.
 
 ### 7.1 The GitHub OIDC provider and the deploy role
 
@@ -459,6 +461,24 @@ request runs as well as from pushes to `main`:
 - `...:pull_request` — for the `plan` job. A pull_request run uses the synthetic `refs/pull/N/merge` ref,
   which no deployment branch policy can match, which is why `plan` carries no `environment:` and why the
   trust policy has to allow the `pull_request` subject directly. `deploy.yml` lines 19-23 say exactly this.
+
+**That the policy admits those two subjects and nothing else is now confirmed empirically, and this
+paragraph replaces the caveat that used to sit here.** On 2026-09-21 a read-only probe was pushed to a
+scratch branch and `aws-oidc-check.yml` was dispatched against it (run **35628816957**). The role assumption
+failed before the workflow could do anything:
+
+```
+##[error]Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity
+```
+
+A branch that is neither `main` nor a pull request cannot assume the role — which is the property the
+policy was written to have. The other half is confirmed by every green run on this repository: dispatches on
+`main` assume it (runs 35623151468, 35629345017, 35615354202, 35616472515) and pull-request `plan` jobs
+assume it (pull request #11). The scratch branch was deleted and its absence verified.
+
+What is still **not** verified: the literal policy document — the exact `Condition` block, the audience, and
+the ID-bearing subject strings quoted above — because reading it needs a live IAM call. The *scope* is
+settled; the *text* is still reconstructed.
 
 Permissions the role needs: enough to plan and apply the whole platform root, plus IAM for the roles the
 stack creates. The demo account uses `PowerUserAccess` plus an inline IAM policy scoped to
@@ -891,7 +911,7 @@ from a bill — no AWS call was made while writing this.** Check the pricing pag
 
 | Resource | Billing shape | Idle cost |
 | --- | --- | --- |
-| AgentCore runtime | Consumption: CPU and memory while a session is running | Effectively zero when nobody invokes it. It is **not** a provisioned always-on container |
+| AgentCore runtime | **Consumption, per second, on actual CPU and memory** — not per session, not per invocation, and not on provisioned capacity | Effectively zero when nobody invokes it. It is **not** a provisioned always-on container. See the two paragraphs under this table |
 | Cognito user pool + M2M app client | **Time-based.** Cognito's published pricing bills machine-to-machine app clients on a per-client monthly basis rather than by monthly active users, so this one accrues whether or not a token is ever minted | Probably the largest idle line item here, and the one worth checking first. **Confirm the current model and rate on the Cognito pricing page** — this was not read from a bill |
 | Secrets Manager, two secrets (`.../cognito/client-secret`, `.../mcp/request-state-key`) | **Time-based**, per secret per month, plus per-API-call | Roughly $0.80/month at the long-standing $0.40 per secret. Both are now created with `recovery_window_in_days = 0` (§11.4), so a destroy stops the meter at once instead of leaving them scheduled — and billable — for another 30 days |
 | DynamoDB table | `PAY_PER_REQUEST` plus storage, plus point-in-time-recovery backup storage (PITR is **enabled**) | Cents. The table holds one household |
@@ -904,12 +924,80 @@ from a bill — no AWS call was made while writing this.** Check the pricing pag
 
 The shape to take away: **nothing here is an always-on compute bill.** The recurring floor is the Cognito M2M
 app client plus two Secrets Manager secrets plus a few cents of storage. Leaving the whole stack up between
-test windows is a small, bounded cost; the reason to tear anything down is tidiness and blast radius, not a
-runaway meter.
+test windows is a small, bounded cost.
 
-### 11.2 The cheap lever: remove the runtime, keep everything else
+**The runtime row is verified against the provider source, and it is stronger than "probably cheap."**
+`infra/modules/agentcore-runtime/main.tf` declares no CPU and no memory — not as an omission, but because
+**the Terraform resource has no such attribute to set.** Grepping `hashicorp/aws`
+`internal/service/bedrockagentcore/agent_runtime.go` for `cpu`, `memory`, `vcpu`, `capacity_provider` or
+`platform_version` returns nothing. A resource that cannot express a size cannot hold a reservation, so
+allocation is the service's decision per session and the bill follows consumption. The published pricing
+page agrees: billing is per second on actual CPU and memory with a one-second minimum, CPU scales to zero
+during I/O wait, and Runtime v2 reclaims idle memory after 120 seconds.
 
-`infra/modules/agentcore-runtime/main.tf` line 110:
+**The one non-zero idle line, and it is tiny.** CPU scales to zero during I/O wait; memory does not. Memory
+is billable for the life of an *open session*, not merely during an invocation, so a session somebody opens
+and abandons keeps billing until `idle_session_timeout_seconds` expires. This project sets that to **1800**
+(`infra/live/demo/platform/variables.tf` line 48). At the 128 MB billing floor that is
+`0.128 GB × 0.5 h × $0.00945/GB-h` ≈ **$0.0006** per abandoned session. A judge who opens a session and walks
+away costs six hundredths of a cent. With no sessions open, the runtime bills nothing.
+
+> **Scope correction, because "no always-on compute" is true of this stack and not of the service.** AgentCore
+> Runtime also has a second compute model — **instances**, reached through capacity providers
+> (`create-capacity-provider`), billed at EC2 On-Demand rates plus a management fee **per instance-hour from
+> provisioning until termination**. That is a genuine always-on bill. HomeLedger uses none of it:
+> `update-agent-runtime` exposes `--capacity-provider-configuration`, but the Terraform resource does not
+> surface it and the module sets nothing, so this runtime is on the default serverless microVM path. Read
+> every "costs nothing while idle" sentence in this section as scoped to that path.
+
+**Real dollar spend: not determined.** No Cost Explorer or Pricing API call has been made from here, and the
+figures above are list prices rather than a bill. The GitHub OIDC trust policy admits only `main` and
+`pull_request` (§7.1), so a scratch-branch probe cannot read the account; getting the numbers needs a
+credentialed human, or a `ce get-cost-and-usage` step merged into `aws-oidc-check.yml` on `main`. The
+unverified line still worth checking against a real bill is the recurring floor — the Cognito M2M app client
+plus the two secrets — not the runtime.
+
+### 11.2 Leave the runtime up. Teardown rotates the ARN, and nothing gives the old one back
+
+**Earlier revisions of this section framed teardown as routine cost control and called it "the cheap lever."
+That framing was wrong, and this is the correction.** The lever is cheap in dollars and expensive in
+addresses. The default recommendation between now and the end of judging on **2026-11-20** is to **leave the
+runtime running**.
+
+**Why: teardown is the only thing that rotates the runtime ARN, and there is nothing to rotate it behind.**
+
+1. **The id is generated at create time.** The ARN is
+   `arn:aws:bedrock-agentcore:us-east-1:<account>:runtime/demo_homeledger_mcp-<10 random chars>`, and a
+   destroy/create cycle draws a new suffix. The 2026-09-21 round trip turned `…-093ImbCPE3` into
+   `…-Rgb4ruHdu7` (runs 35615354202 and 35616472515) — observed, not predicted.
+2. **No alias, qualifier or custom domain survives it.** Named endpoints are real
+   (`create/update/list-agent-runtime-endpoints`, and `?qualifier=DEFAULT` in the invocation URL is an
+   endpoint name rather than a version number), and a named endpoint can even be pinned to a version and
+   repointed later. But the endpoint ARN pattern is
+   `…/runtime/<name>-[a-zA-Z0-9]{10}/runtime-endpoint/<name>` and `create-agent-runtime-endpoint` requires
+   `--agent-runtime-id`: the endpoint is a **child** of the runtime, so it inherits the rotating suffix and
+   is a different resource once the parent is recreated. A review of the whole `bedrock-agentcore-control`
+   command surface (170+ commands) found no alias command, no custom-domain command, and no DNS or ACM
+   binding. AgentCore Gateway is the one native indirection, and it is not a transparent reverse proxy — it
+   re-exposes targets as MCP tools, which is very likely to break `book_service`'s multi-round elicitation
+   and its client-echoed `requestState`. That has not been tested and should not be adopted untested.
+3. **Routine deploys do not rotate anything.** The provider has exactly two replacement triggers on this
+   resource: `agent_runtime_name` (unconditional `RequiresReplace()`) and `agent_runtime_artifact` **only**
+   when the artifact type flips between `container_configuration` and `code_configuration`. Image URI,
+   environment variables, execution role, description, lifecycle, network, protocol, authorizer and request
+   header configuration all update in place. Observed on run 35623151468: `Plan: 0 to add, 1 to change, 0 to
+   destroy`, container URI moved, ARN unchanged at `…-Rgb4ruHdu7`. The historical record agrees — run
+   35613845065 shows `agent_runtime_version = "14" -> (known after apply)` on one ARN, i.e. fourteen in-place
+   updates without a rotation.
+
+Put together: **a URL issued today survives every merge to `main` between here and judging, and survives
+nothing else.** So there is no CloudFront proxy and no DNS layer in this repository, and none is needed.
+§10.2's `print-setup` discovery — which finds the runtime by *name* through `ListAgentRuntimes` — stays the
+supported path precisely because it is the only thing that does survive a rotation; the pasted URL is a
+fallback for someone who wants an address.
+
+**The teardown lever still exists, and it is still correctly scoped.** `infra/modules/agentcore-runtime/main.tf`
+line 110:
 
 ```hcl
 resource "aws_bedrockagentcore_agent_runtime" "this" {
@@ -919,16 +1007,16 @@ resource "aws_bedrockagentcore_agent_runtime" "this" {
 That `count` is on the runtime resource **and on nothing else**. Every other resource in the module (the
 execution role and its inline policy) and in the platform root (ECR, DynamoDB, Cognito, the two Secrets
 Manager secrets, the whole knowledge-base module) is unconditional. So an apply with `image_uri=""` destroys
-exactly one resource: the AgentCore runtime. The project's own note is correct — **verified against the
-code, not taken on trust.**
+exactly one resource: the AgentCore runtime. **Verified against the code, and then observed** — run
+35615354202 planned and applied `0 added, 0 changed, 1 destroyed`, and the Cognito client id
+(`3hhkt2a5j155d960s4uircaoqh`), the Knowledge Base id (`EKF93YIKCK`), the table and the seeded data were all
+still there afterwards.
 
-It is also the right lever, because it preserves every identifier the rest of this runbook depends on. The
-Cognito client id and secret, the Knowledge Base id, the table name, the ECR repository and its images all
-survive, so bringing the stack back needs no reconfiguration beyond a fresh runtime ARN (see §11.3).
+**Which is exactly the point worth carrying away from this section: a one-resource blast radius is not a
+one-resource consequence.** The destroy touched a single resource and broke every consumer downstream of an
+identifier that resource owned. Blast radius counts resources; consequence radius counts addresses.
 
-**There is now a workflow that pulls it.** `.github/workflows/teardown.yml`, `workflow_dispatch` only.
-Earlier revisions of this section said there was no such path and listed three workarounds; that was true
-and is no longer. Dispatch it from `main`:
+`.github/workflows/teardown.yml`, `workflow_dispatch` only. Dispatch it from `main`:
 
 ```bash
 gh workflow run teardown.yml --ref main \
@@ -937,11 +1025,18 @@ gh workflow run teardown.yml --ref main \
 gh run watch --repo jkarns87/homeledger
 ```
 
-> **NOT EXECUTED.** The workflow has never run. Command shape is from the workflow file's own `inputs:`
-> block; `gh workflow run --help` confirms the `-f` form. Everything §11.2 and §11.3 claim about what the
-> workflow does on AWS is read off the file, not observed.
+> **EXECUTED, in both modes, on 2026-09-21.** Teardown run **35615354202** (4 m 48 s to destroy the runtime,
+> `Apply complete! Resources: 0 added, 0 changed, 1 destroyed`) and bring-up run **35616472515**
+> (`Creation complete after 5s`, `1 added, 0 changed, 0 destroyed`), followed by smoke run **35616643237**
+> printing `SMOKE OK`. Earlier revisions of this section carried a **NOT EXECUTED** caveat here; it no longer
+> applies to §11.2 or §11.3. What is still unexecuted is §11.4's full destroy and the Secrets Manager
+> re-apply, which are marked at the point of use.
 
-Four things about it are worth knowing before you press it.
+**If you dispatch it anyway, say so first.** Anyone holding a URL or a `claude mcp add` entry has to be told
+to re-run `print-setup`, because nothing will tell them: the old URL does not redirect, it simply stops
+resolving to a runtime.
+
+Four things about the workflow are worth knowing before you press it.
 
 **It refuses without the typed phrase.** `confirm` must be exactly `destroy demo runtime`. Anything else —
 including an empty string, which is what a dispatch from the GitHub UI gives you if you skip the field —
@@ -1004,22 +1099,35 @@ is the answer then.
 It finishes by reading `agent_runtime_arn` and `agent_runtime_invocation_url` back and failing if either is
 empty, so a half-applied stack is a red run rather than a quiet one.
 
-**One thing does change across the round trip, either way:** the runtime is a new resource, so its **ARN is
-new**. Re-run `pnpm --filter @homeledger/mcp-bridge run print-setup` and reissue the `claude mcp add`
-command. Nothing else moves — `print-setup` finds the runtime by name (`demo_homeledger_mcp`) rather than by
-stored ARN, and the Cognito client id, the token URL, the table and the Knowledge Base id are all unchanged.
+**Observed, run 35616472515:** dispatched with an empty `image_tag`, the whole job took **49 s** wall and
+Terraform reported `Creation complete after 5s` / `1 added, 0 changed, 0 destroyed`. One detail the empty-tag
+path exposes and this file should not gloss: `describe-images` sorted by push time and took
+`imageTags[0]`, which was **`:latest`**, not the `:ee3517d` the teardown had recorded. Same digest here, so
+the artifact that came back was the one that went away — but if you want the recorded tag specifically, pass
+it, rather than relying on the empty form to pick it.
+
+**One thing does change across the round trip, either way, and it is the expensive one:** the runtime is a
+new resource, so its **ARN is new** — `…-093ImbCPE3` became `…-Rgb4ruHdu7` in this round trip. That
+invalidates every invocation URL and every `claude mcp add` entry already issued, and AgentCore offers no
+alias or qualifier that survives it (§11.2). Re-run `pnpm --filter @homeledger/mcp-bridge run print-setup`,
+reissue the `claude mcp add` command, and tell anyone else holding an address to do the same. **Nothing else
+moves** — verified across this round trip: `print-setup` finds the runtime by name (`demo_homeledger_mcp`)
+rather than by stored ARN, and the Cognito client id (`3hhkt2a5j155d960s4uircaoqh`), the token URL, the table
+with its seeded data and the Knowledge Base id (`EKF93YIKCK`) were byte-identical before and after.
 
 ### 11.4 Full teardown, and why it is still not a round trip
 
 There is deliberately no full-destroy workflow. Doing it needs a human with credentials running
 `terraform destroy` against the demo state, and before doing it, know what does not come back the same.
 
-> **NOT EXECUTED.** Everything in this subsection is reasoned from the Terraform and the AWS provider's
-> documented behaviour, not observed. Treat it as a pre-flight checklist, not a transcript.
+> **NOT EXECUTED, with one row excepted.** Everything in this subsection is reasoned from the Terraform and
+> the AWS provider's documented behaviour, not observed — treat it as a pre-flight checklist, not a
+> transcript. The exception is the **AgentCore runtime** row, which the 2026-09-21 round trip executed for
+> real (§11.2); it is a transcript.
 
 | Resource | Destroys cleanly? | The catch |
 | --- | --- | --- |
-| AgentCore runtime | Yes | Recreated with a **new ARN**, so every `claude mcp add` config goes stale |
+| AgentCore runtime | Yes — **observed**, run 35615354202 | Recreated with a **new ARN** (`…-093ImbCPE3` → `…-Rgb4ruHdu7`), so every `claude mcp add` config and every issued invocation URL goes stale, and no AgentCore alias, qualifier or domain can prevent it |
 | DynamoDB table | Yes | All household data goes. Re-seedable in seconds with `seed:remote`, so this is the least painful loss |
 | ECR repository | Yes, `force_delete = true` | Every image tag goes with it. `teardown.yml`'s `bring-up` then has nothing to redeploy and refuses; the next `deploy.yml` run rebuilds and repushes |
 | Manuals S3 bucket | Yes, `force_destroy = true` (module default) | Uploaded PDFs and every object version go. S3 bucket names are global; reusing the same name immediately can hit propagation delay |
@@ -1066,10 +1174,14 @@ non-demo copy of the root sets 7–30 in one place and gets production semantics
 ### 11.5 The safe minimal state, and a judging-window plan
 
 **Safe minimal state, defined:** everything applied except the AgentCore runtime. Nothing is on the critical
-path of a request, every identifier is stable, the recurring cost is the Cognito M2M client plus two secrets
-plus cents of storage, and recovery is one dispatch of `teardown.yml` in `bring-up` mode. Reaching it is now
-one dispatch as well, rather than the "leave it up and call it equivalent" compromise this section used to
-describe.
+path of a request, the recurring cost is the Cognito M2M client plus two secrets plus cents of storage, and
+recovery is one dispatch of `teardown.yml` in `bring-up` mode. Reaching it is one dispatch as well.
+
+**It is available, and between now and 2026-11-20 it is the wrong state to be in.** Two of its claimed
+properties do not both hold. "Every identifier is stable" is true of Cognito, the Knowledge Base, the table
+and ECR — and false of the runtime ARN, which is the one identifier a caller actually addresses. The saving
+is a fraction of a cent (§11.1); the cost is every URL already handed out (§11.2). Reserve the safe minimal
+state for a gap long enough that nobody is holding an address — after judging, not during it.
 
 **Judging runs 2026-11-09 to 2026-11-20, and the stack should be up for it.** A judge who follows §10.2 and
 finds no runtime gets
@@ -1087,10 +1199,11 @@ The window plan, in full:
 
 | When | Do |
 | --- | --- |
-| Well before 2026-11-09 | Run the round trip once — teardown, then bring-up, then `smoke.yml` — while there is time to fix what it turns up. Nothing in §11.2–§11.4 has been executed, and the first execution should not be the one that matters |
-| Before the window | `gh workflow run deploy.yml --ref main`, then `gh workflow run smoke.yml --ref main`, confirm `SMOKE OK`, then re-run `print-setup` and reissue `claude mcp add` |
-| During the window | Leave it up. §11.1 is why: nothing here is an always-on compute bill |
-| After the window | `gh workflow run teardown.yml --ref main -f mode=teardown-runtime -f confirm='destroy demo runtime'` |
+| ~~Well before 2026-11-09~~ | **Done, 2026-09-21.** The round trip was run once with time to spare — teardown 35615354202, bring-up 35616472515, smoke 35616643237 green. It worked, and it taught the thing this section now turns on: the ARN rotated |
+| Between now and the window | **Leave the runtime up.** Every merge to `main` updates it in place and keeps the ARN (§11.2), so the URL issued today stays valid. Do not dispatch `teardown-runtime` again before 2026-11-20 |
+| Before the window | `gh workflow run deploy.yml --ref main`, then `gh workflow run smoke.yml --ref main`, confirm `SMOKE OK`. `print-setup` and `claude mcp add` only need reissuing if the runtime was recreated in between — an ordinary deploy does not recreate it |
+| During the window | Leave it up. §11.1 is why on cost; §11.2 is the larger why — a teardown mid-judging breaks every address a judge already has |
+| After 2026-11-20 | `gh workflow run teardown.yml --ref main -f mode=teardown-runtime -f confirm='destroy demo runtime'`, once nobody is holding an address that has to keep working |
 
 **One dispatch prerequisite that is a repository setting rather than a file in this tree.** Both jobs in
 `teardown.yml` declare `environment: demo`, whose deployment branch policy admits `main`, `plan-*` and
@@ -1334,10 +1447,25 @@ run, and reverted · `actionlint` on `.github/workflows/teardown.yml` · `pretti
 guard's shell and `jq` against five hand-built plan-JSON fixtures · `terraform-docs` to regenerate two
 READMEs. **No AWS call was made.**
 
+Added for §11's second rewrite, all read back from GitHub Actions run logs rather than from a local AWS
+session (**no AWS call was made from here either**): `gh run view` on runs **35615354202** (`teardown.yml`,
+mode teardown — `Plan: 0 to add, 0 to change, 1 to destroy`, `Destruction complete after 4m48s`),
+**35616472515** (`teardown.yml`, mode bring-up — `Creation complete after 5s`, new ARN `…-Rgb4ruHdu7`,
+resolved image `:latest`), **35616643237** (`smoke.yml` — `SMOKE OK`, `legacy book_service (three
+elicitations plus progress): 1807 ms`, `progress 0,1,2,3`), **35623151468** (`deploy.yml` dispatch —
+`Plan: 0 to add, 1 to change, 0 to destroy`, ARN unchanged), **35629345017** (`aws-oidc-check.yml` —
+`demo_homeledger_mcp READY`), **35628816957** (`aws-oidc-check.yml` on a scratch branch — role assumption
+refused), and **35478596365** (the pre-teardown smoke, for the identifier comparison). Provider replacement
+behaviour was read from `hashicorp/aws` `internal/service/bedrockagentcore/agent_runtime.go`; the endpoint
+ARN pattern and the absence of any alias or custom-domain command from the installed AWS CLI's own
+`bedrock-agentcore-control` model (`aws-cli/2.36.48`).
+
 ### Not executed, and marked as such where it appears
 
-- **Everything in §7 (first-time AWS bootstrap).** No IAM, S3 or STS call was made. The trust policy shape
-  is reconstructed from the workflows and the Plan 1 task brief, not read back from IAM.
+- **Most of §7 (first-time AWS bootstrap).** No IAM or S3 call was made, and the trust policy **document** is
+  reconstructed from the workflows and the Plan 1 task brief rather than read back from IAM. Its **scope** is
+  no longer unverified: run 35628816957 proves a non-`main`, non-pull-request branch cannot assume the role,
+  and the green runs on `main` and on pull requests prove the two admitted subjects. §7.1 records both.
 - **`gh workflow run deploy.yml` and `gh workflow run smoke.yml`.** Command shapes verified; effects
   described from the workflow files and from the logs of runs 35478430481 and 35478596365.
 - **The four AWS discovery calls behind `print-setup`,** and therefore the exact `claude mcp add` command it
@@ -1345,12 +1473,15 @@ READMEs. **No AWS call was made.**
 - **The bridge against the deployed runtime.** Its unit and end-to-end tests (187 passing, including a
   spawned-process run against a real local server) all pass; the AgentCore session pinning in particular is
   reasoned, not measured.
-- **`.github/workflows/teardown.yml`, in either mode.** It has never been dispatched. Everything §11.2 and
-  §11.3 say it does on AWS is read off the workflow file. What *was* exercised offline: the plan guard's
-  shell and `jq` against five hand-built `terraform show -json` fixtures (runtime-only delete, an extra
-  delete, a replace, an empty plan, a create-everything plan — it accepts the first and refuses the rest),
-  `actionlint` on the file, and the teardown/bring-up round trip itself as a `mock_provider` test
-  (`infra/live/demo/platform/tests/teardown.tftest.hcl`).
+- ~~**`.github/workflows/teardown.yml`, in either mode.**~~ **No longer unverified.** Both modes were
+  dispatched on 2026-09-21 and both succeeded — teardown 35615354202, bring-up 35616472515 — followed by a
+  green smoke, 35616643237. §11.2 and §11.3 are now written from those logs rather than from the file. The
+  offline work still stands behind them: the plan guard's shell and `jq` against five hand-built
+  `terraform show -json` fixtures (runtime-only delete, an extra delete, a replace, an empty plan, a
+  create-everything plan — it accepts the first and refuses the rest), `actionlint` on the file, and the
+  round trip as a `mock_provider` test (`infra/live/demo/platform/tests/teardown.tftest.hcl`). The plan
+  guard's *real-provider* behaviour is now observed too: the live teardown plan was exactly the
+  runtime-only delete the guard accepts.
 - **The Secrets Manager fix in §11.4, at the only level that would settle it: a real destroy followed by a
   real re-apply.** What is proven is the plan (`terraform test` with `mock_provider` shows
   `recovery_window_in_days = 0` on both secrets, and 30 when the variable says so; each assertion was
@@ -1358,11 +1489,14 @@ READMEs. **No AWS call was made.**
   `ForceDeleteWithoutRecovery = true` (read from `internal/service/secretsmanager/secret.go`). A plan diff
   is not a destroy. AWS's own `DeleteSecret` reference also notes that a forced deletion is asynchronous, so
   an immediate same-name re-apply may need a retry — which no offline check can rule in or out.
-- **`aws ecr describe-images` as `teardown.yml`'s `bring-up` job calls it.** The deploy role has
-  `PowerUserAccess` (§7.1), so it is permitted, but the query shape
-  (`sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]`) has not been run against a real repository.
+- **`aws ecr describe-images` as `teardown.yml`'s `bring-up` job calls it — the empty-tag branch only.** The
+  `sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]` query has now run against the real repository
+  (run 35616472515) and returned `latest`, so the branch works and its tag-selection quirk is recorded in
+  §11.3. The **explicit** `--image-ids imageTag=…` branch, and the two refusal paths, have still not run.
 - **Every dollar figure in §11.1.** AWS list-price estimates, not a bill. No Cost Explorer or Pricing API
-  call was made.
+  call was made — and the OIDC trust policy's scope (§7.1) means a scratch-branch workflow cannot make one
+  either. The billing *shape* for the runtime is verified from the provider source and the pricing page; the
+  *amounts* are not.
 - **S3 Vectors deletion semantics.** Listed as unknown rather than guessed.
 - **`npx @modelcontextprotocol/inspector` (§4.4).** The package was confirmed to exist and resolve
   (`npm view` returns 2.7.0); the Inspector UI itself was not launched. It downloads on first run.
