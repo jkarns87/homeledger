@@ -591,21 +591,45 @@ The `apply` job's steps, in order: checkout, configure AWS credentials, setup Te
 
 ### 8.3 Branch protection on `main`
 
-Four required status checks, confirmed through the GitHub API: **`test`, `terraform`, `image`, `plan`**.
-Force pushes and deletions are blocked; admin enforcement is off.
+**This subsection is the single source of truth for the required-check list. Nothing else in the repository
+restates it — other documents point here — because the list has already gone stale once by being written
+down in more than one place and updated in one.**
 
-**The trap this creates, and it will catch you.** `plan` lives in `deploy.yml`, which has a `paths:` filter
-on its `pull_request` trigger. A pull request that touches only documentation does not trigger `deploy.yml`
-at all, so `plan` never reports, and a required check that never reports leaves the pull request blocked
-rather than passing. Evidence: pull request #5 (`FRICTION-LOG.md` plus `docs/submission/*`) reported only
-`terraform` and `test`; pull request #9, which touched `apps/` and `.github/`, reported all four plus a
-`skipping` conclusion on `apply`.
+**Three required status checks: `test`, `terraform`, `image`.** All three live in `ci.yml`, which has no
+`paths:` filter, so all three report on every pull request. Force pushes and deletions are blocked; admin
+enforcement is off.
 
-The change that added this document is documentation-only, so it is in exactly that position. Three ways
-out, in order of preference: merge with admin privileges; add `docs/**` and `*.md` to `deploy.yml`'s `paths`
-(a workflow change, so a separate pull request); or drop `plan` from the required set and rely on it being
-reported whenever it can run. Note that `image` is *not* affected — `ci.yml` has no path filter, so `image`
-runs on every pull request including a docs-only one.
+Read it back rather than trusting this paragraph — it is a repository setting, not a file in this tree, so
+nothing in CI can keep it honest:
+
+```bash
+gh api repos/jkarns87/homeledger/branches/main/protection --jq '.required_status_checks.contexts'
+```
+
+> Last read back on **2026-09-21**, returning `["test","terraform","image"]`. Needs a token with admin on the
+> repository; a non-admin token gets a `404`, which is a permissions answer and **not** evidence that no
+> protection exists.
+
+**`plan` is deliberately *not* required, and this is the part to read before "helpfully" adding it back.**
+`plan` lives in `deploy.yml`, whose `pull_request` trigger carries a `paths:` filter covering `infra/**`,
+`apps/**`, `packages/**`, `scripts/**` and `.github/workflows/deploy.yml`. A pull request outside those paths
+— any documentation-only change, and any change to `.github/workflows/teardown.yml`, which is not in the
+list — does not trigger `deploy.yml` at all. The check therefore never reports, and **a required check that
+never reports blocks the pull request rather than passing it.** Not "fails": never arrives, permanently.
+Requiring `plan` means requiring a check that a whole class of legitimate pull requests can never satisfy.
+
+That was not theoretical. Pull request #5 (`FRICTION-LOG.md` plus `docs/submission/*`) reported only
+`terraform` and `test` and sat stuck; pull request #9, which touched `apps/` and `.github/`, reported
+everything because its paths happened to match. Three ways out were on the table — merge with admin
+privileges every time, widen `deploy.yml`'s `paths` to include `docs/**` and `*.md`, or stop requiring
+`plan` — and the third was taken on 2026-09-21. `plan` still runs, and still has to pass, whenever
+`deploy.yml` is triggered at all; it simply is not a gate that a docs-only change has to satisfy.
+
+**A second reason the check list cannot be inferred from a passing run.** A check appearing green on some
+pull request proves the job *ran*, not that it is *required*. Those are different states, and the failure
+mode here — a required check that never reports — is invisible in exactly the runs where the job does
+report. `gh pr view --json statusCheckRollup` answers "what ran"; only the protection API answers "what is
+required". The command above is the only one that settles it.
 
 ### 8.4 Dispatching a deploy by hand
 
@@ -1393,9 +1417,14 @@ termination is best-effort cleanup rather than part of the smoke contract. FL-02
 
 ### A pull request is blocked on a `plan` check that never appears
 
-The pull request did not touch `infra/**`, `apps/**`, `packages/**`, `scripts/**` or
-`.github/workflows/deploy.yml`, so `deploy.yml` never triggered, so its required `plan` check never
-reported — and a required check that never reports blocks rather than passes. §8.3 has the three ways out.
+**Fixed at the source on 2026-09-21; kept here because the symptom is worth recognising.** The pull request
+did not touch `infra/**`, `apps/**`, `packages/**`, `scripts/**` or `.github/workflows/deploy.yml`, so
+`deploy.yml` never triggered, so its `plan` check never reported — and a required check that never reports
+blocks rather than passes. `plan` was dropped from `main`'s required set, so this no longer happens: the
+three required checks all live in `ci.yml`, which has no path filter (§8.3).
+
+If you see it again, the cause is `plan` having been added back to the required set. §8.3 says why it should
+not be.
 
 ### `hash_key is deprecated` warnings in a Terraform apply
 
@@ -1460,6 +1489,11 @@ behaviour was read from `hashicorp/aws` `internal/service/bedrockagentcore/agent
 ARN pattern and the absence of any alias or custom-domain command from the installed AWS CLI's own
 `bedrock-agentcore-control` model (`aws-cli/2.36.48`).
 
+Also re-read on 2026-09-21: `gh api repos/jkarns87/homeledger/branches/main/protection`, returning
+`["test","terraform","image"]` — which corrected §8.3's four-check figure, stale since `plan` was dropped
+from the required set. Run by a token holding admin on the repository; the token used for the run-log reads
+above does not, and gets a `404` on that endpoint.
+
 ### Not executed, and marked as such where it appears
 
 - **Most of §7 (first-time AWS bootstrap).** No IAM or S3 call was made, and the trust policy **document** is
@@ -1515,3 +1549,16 @@ ARN pattern and the absence of any alias or custom-domain command from the insta
 - **`README.md` says `apps/` contains `mcp-server` only** (in the "Echo Show simulator" bullet under "Not yet
   built"). It contains `mcp-server` and `mcp-bridge`. The point being made — that `apps/simulator` does not
   exist — is still correct.
+- **§8.3 recorded four required checks until 2026-09-21, and that was stale rather than wrong-when-written.**
+  `plan` was required when the paragraph was authored and was removed later the same week, for the reason
+  §8.3 had itself predicted: it is path-filtered, so a docs-only pull request could never satisfy it. The
+  list is now `test`, `terraform`, `image`, read back from the protection API. **The staleness is the lesson,
+  not the number.** Branch protection is a repository setting that no check in this tree can validate, and
+  the list had been transcribed into more than one document, so updating the setting silently falsified the
+  docs. §8.3 is now the only place that states it; everywhere else points there. If you are tempted to
+  restate the list somewhere convenient, this bullet is what that costs.
+- **A check appearing green on a pull request does not mean it is required.** It means the job ran. The two
+  states are indistinguishable from a passing rollup, and the failure mode that matters — a required check
+  that never reports — only shows up on the pull requests where the job does *not* run. `gh pr view --json
+  statusCheckRollup` cannot answer "what is required"; only the protection API can (§8.3). This was the
+  reasoning error that let the stale four-check figure survive a review.
