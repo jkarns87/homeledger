@@ -1,8 +1,19 @@
 import * as z from 'zod/v4';
 
-/** U+202F (narrow no-break space, ICU 72+) and U+00A0 collapsed to a plain space, so formatted output is stable across ICU versions. */
+/**
+ * U+202F (narrow no-break space, which ICU 72+ puts before AM/PM) and U+00A0
+ * collapsed to a plain space, so formatted output is stable across ICU
+ * versions rather than varying with the base image.
+ *
+ * Built with RegExp and escaped backslashes rather than written as a literal
+ * character class: Prettier rewrites a \u escape inside a regex or string
+ * literal into the invisible character itself, which leaves two unprintable
+ * code points sitting in source next to an ordinary space.
+ */
+const ICU_SPACES = new RegExp('[\\u202f\\u00a0]', 'g');
+
 export function normaliseSpaces(text: string): string {
-  return text.replace(/[  ]/g, ' ');
+  return text.replace(ICU_SPACES, ' ');
 }
 
 /**
