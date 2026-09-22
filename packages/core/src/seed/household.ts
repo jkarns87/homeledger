@@ -98,8 +98,17 @@ export const SEED_APPLIANCES: SeedAppliance[] = [
 
 export const SEED_APPLIANCE_COUNT = SEED_APPLIANCES.length;
 
+/**
+ * The demo household's clock. US Central, which is what this seed has always
+ * said and what the repository contract test already asserted - kept rather
+ * than re-chosen, so the seeded zone and every fixture stay in agreement.
+ * Named, not offset, so the November visits in this demo render correctly
+ * after the DST change (see HouseholdSchema.timezone).
+ */
+export const SEED_TIMEZONE = 'America/Chicago';
+
 export async function seedRepository(repo: Repository, householdId: string, today: string): Promise<{ applianceIds: string[] }> {
-  await repo.putHousehold({ id: householdId, name: 'The Harlow household', timezone: 'America/Chicago' });
+  await repo.putHousehold({ id: householdId, name: 'The Harlow household', timezone: SEED_TIMEZONE });
   const applianceIds: string[] = [];
   for (const seed of SEED_APPLIANCES) {
     const { lastDone, ...rest } = seed;

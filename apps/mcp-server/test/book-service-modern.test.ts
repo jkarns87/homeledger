@@ -41,24 +41,37 @@ describe('book_service over multi round-trip requests (2026-07-28)', () => {
     expect(h.asked.map(a => a.field)).toEqual(['provider', 'window', 'confirm']);
     expect(h.asked[0]?.message).toBe('Who should I book for the water heater?');
     expect(h.asked[1]?.message).toBe('Kettle Creek Water Heaters has three windows. Which one works?');
-    expect(h.asked[2]?.message).toBe('Book Kettle Creek Water Heaters for Tuesday, September 15, 1 to 3 PM?');
+    // 13:00Z is 8:00 AM in America/Chicago, the seeded household's zone. The
+    // UTC rendering of this same instant would say "1:00 PM", so this string
+    // cannot be produced by a server that ignores the household zone - which
+    // is the point of asserting the clock time here rather than only the day.
+    expect(h.asked[2]?.message).toBe('Book Kettle Creek Water Heaters for Tuesday, September 15, 8:00 AM to 10:00 AM CDT?');
 
-    const sc = r.structuredContent as { visitId: string; provider: string; windowStart: string; windowEnd: string; status: string };
+    const sc = r.structuredContent as { visitId: string; provider: string; windowStart: string; windowEnd: string; windowLabel: string; status: string };
     expect(sc.provider).toBe('Kettle Creek Water Heaters');
     expect(sc.status).toBe('scheduled');
+    // Stored instants are UTC and unchanged by the localisation: only the
+    // label renders in the household's zone.
     expect(sc.windowStart).toBe('2026-09-15T13:00:00.000Z');
     expect(sc.windowEnd).toBe('2026-09-15T15:00:00.000Z');
+    expect(sc.windowLabel).toBe('Tuesday, September 15, 8:00 AM to 10:00 AM CDT');
     expect(/^visit_[a-z2-7]{16}$/.test(sc.visitId)).toBe(true);
 
     const text = (r.content as Array<{ text?: string }>)[0]?.text ?? '';
     expect(hasJson(text)).toBe(false);
-    expect(text).toBe('Booked Kettle Creek Water Heaters for Tuesday, September 15, 1 to 3 PM.');
+    expect(text).toBe('Booked Kettle Creek Water Heaters for Tuesday, September 15, 8:00 AM to 10:00 AM CDT.');
 
     const stored = await h.deps.repo.getVisit(sc.visitId);
     expect(stored?.providerId).toBe('prov_kettle_water');
     expect(stored?.applianceId).toBe(applianceId);
     expect(stored?.issue).toBe('water heater leaking at the base');
     expect(stored?.status).toBe('scheduled');
+    // The localisation is presentation only. What was WRITTEN is still a UTC
+    // instant with a Z, not the Central wall time and not an offset string -
+    // a handler that "helpfully" stored 08:00 or 13:00-05:00 fails here.
+    expect(stored?.windowStart).toBe('2026-09-15T13:00:00.000Z');
+    expect(stored?.windowEnd).toBe('2026-09-15T15:00:00.000Z');
+    expect(stored?.createdAt).toBe('2026-09-13T12:00:00.000Z');
   });
 
   it('never offers more than five providers or more than three windows', async () => {

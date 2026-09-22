@@ -12,6 +12,15 @@ import { registerDevTools } from './tools/dev.js';
 export interface ServerDeps {
   repo: Repository;
   now: () => string; // ISO datetime
+  /**
+   * The household's IANA zone. EVERY human-facing time renders in it - not in
+   * the viewer's local zone, because a shared household assistant must not have
+   * the kitchen display and a phone abroad disagreeing about when the plumber
+   * arrives. The household is the authority on its own clock. Async because it
+   * comes from the household record; see `resolveHouseholdTimeZone` in deps.ts
+   * for what happens when that record is missing or carries a bad zone.
+   */
+  householdTimeZone: () => Promise<string>;
   devTools: boolean;
   retriever: ManualRetriever;
   /** HMAC key for the multi round-trip requestState codec. At least 32 bytes. */

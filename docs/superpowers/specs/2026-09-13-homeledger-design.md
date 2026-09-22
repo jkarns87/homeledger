@@ -82,11 +82,21 @@ One pnpm monorepo. TypeScript everywhere. Node 22.
 | `ask_manual` | `question`, `applianceId?` | `passages[] {text, docTitle, page, score}` (max 3) | none | Retrieval only; the client model composes the answer, as Alexa+ would. Metadata filter on `applianceId` when present |
 | `maintenance_due` | `horizonDays?` (default 30) | `items[] {applianceId, applianceName, taskType, dueAt, overdue}` | `ui://homeledger/calendar` | GSI query on `nextDueAt` |
 | `log_maintenance` | `applianceId`, `taskType`, `date?`, `notes?` | `{logged, nextDueAt}` | none | Recomputes `MAINT#` item |
-| `book_service` | `applianceId`, `issue`, `preferredWindow?` | `{visitId, provider, windowStart, windowEnd, status}` | `ui://homeledger/visit` | Elicits provider (≤5 enum), window (enum), confirm (boolean). Progress 0→3 during a simulated availability check (bounded delay). Writes `VISIT#` |
-| `recent_events` | `sinceHours?` (default 24) | `events[] {kind, deviceName, at, summary, visitId}` | none | Merges three sources: visits, door events, and alerts. Not optional keys: every field is always emitted, with `deviceName` and `visitId` nullable — `visitId` is `null` on door and alert rows, `deviceName` is `null` on visit rows |
-| `get_visit` | `visitId` | visit + `snapshotUrl` (presigned, short TTL) + `description`, both nullable but always present | `ui://homeledger/visit` | Not optional keys: both are always emitted, and both are `null` until the Ring pipeline fills them |
+| `book_service` | `applianceId`, `issue`, `preferredWindow?` | `{visitId, provider, windowStart, windowEnd, windowLabel, status}` | `ui://homeledger/visit` | Elicits provider (≤5 enum), window (enum), confirm (boolean). Progress 0→3 during a simulated availability check (bounded delay). Writes `VISIT#`. `windowLabel` is the window rendered in the household time zone |
+| `recent_events` | `sinceHours?` (default 24) | `events[] {kind, deviceName, at, summary, visitId}` | none | Merges three sources: visits, door events, and alerts. Not optional keys: every field is always emitted, with `deviceName` and `visitId` nullable — `visitId` is `null` on door and alert rows, `deviceName` is `null` on visit rows. `at` is the stored UTC instant; the spoken line appends the same instant in the household time zone |
+| `get_visit` | `visitId` | visit + `windowLabel`, `arrivedAtLabel` + `snapshotUrl` (presigned, short TTL) + `description` | `ui://homeledger/visit` | Not optional keys: all are always emitted; `snapshotUrl` and `description` are `null` until the Ring pipeline fills them, and `arrivedAtLabel` is `null` exactly when `arrivedAt` is |
 
 Provider options for `book_service` come from a static, clearly labeled sample marketplace in `packages/core` (per category, three to five providers). This is the one simulated data source and the README says so.
+
+#### Time rendering
+
+Every human-facing time renders in the **household's** IANA time zone (`Household.timezone`, section 5) with the zone abbreviation appended, never in UTC and never in the viewer's local zone. A shared household assistant must not have the kitchen display and a phone abroad disagreeing about when the plumber arrives; the household is the authority on its own clock, and the abbreviation is what makes a spoken time unambiguous rather than merely plausible.
+
+- **Stored data stays UTC.** `windowStart`, `windowEnd`, `arrivedAt`, `createdAt` and an event's `at` are written to DynamoDB as ISO-8601 UTC instants. Only rendering localises. `book_service`'s three availability windows are the same fixed 13:00–15:00Z instants they always were; only their labels moved.
+- **Instants vs. calendar dates.** `warrantyUntil`, `nextDueAt`, `lastDoneAt` and `doneAt` are floating calendar days, true in every zone at once, and are NOT converted — rendering `2026-08-28` through `America/Chicago` would move it to August 27. Only instants carry a zone.
+- **"Today" is the household's day.** Overdue and warranty comparisons, and `log_maintenance`'s default `date`, use the calendar date in the household zone, not `now().slice(0, 10)`, which rolls over five hours early in US Central.
+- **Widgets never format a time.** `ui://homeledger/visit` renders `windowLabel`/`arrivedAtLabel` exactly as the server computed them; a widget that called `toLocaleString` would silently use the viewer's clock.
+- **Rendering requires ICU.** A Node without IANA time-zone data ignores the `timeZone` option instead of throwing, which would make every localised time quietly UTC. The server probes for real time-zone data at startup and refuses to boot without it.
 
 ### 4.3 Resources and prompts
 
@@ -113,6 +123,7 @@ DynamoDB table `homeledger`, on-demand capacity, `PK = HH#<householdId>`.
 
 | SK | Attributes |
 |---|---|
+| `HOUSEHOLD` | `id, name, timezone` |
 | `APPL#<applId>` | `name, brand, model, serial, room, category, purchasedAt, warrantyUntil, manualDocId, templates[] {taskType, intervalDays}` |
 | `MAINT#<applId>#<taskType>` | `lastDoneAt, nextDueAt, notes`; `GSI1PK = HH#<hh>#DUE`, `GSI1SK = nextDueAt` |
 | `LOG#<ts>#<id>` | `applianceId, taskType, doneAt, notes` |
@@ -123,6 +134,10 @@ DynamoDB table `homeledger`, on-demand capacity, `PK = HH#<householdId>`.
 | `DEVICE#<ringDeviceId>` | `name, kind, online, lastSeenAt` |
 
 IDs are prefixed and stable: `appl_`, `visit_`, `doc_`, `alert_`, `evt_`.
+
+`timezone` is an **IANA zone name** (`America/Chicago`), never a UTC offset. An offset is frozen, so a window booked in September for a visit in November would render an hour wrong once the zone leaves daylight saving; only a name carries the transition rules. It is validated on write — `Repository.putHousehold` parses `HouseholdSchema`, whose `TimeZone` refuses offsets (`+05:00`, `-0600`, `GMT`, which `Intl` itself would accept), slash-less aliases, and names ICU does not know — so an unknown zone is rejected at the boundary rather than surfacing later as a wrong clock time. A row read back without a usable zone (one written before this field existed, or hand-edited) renders in `UTC` and says `UTC` aloud, with a structured log line naming the reason: the read degrades visibly rather than taking eight unrelated tools down, while the write stays strict. The demo household is seeded `America/Chicago`.
+
+Every human-facing time renders in this zone — see section 4.2, *Time rendering*. Stored instants stay UTC.
 
 Manuals: S3 `manuals/<householdId>/<docId>.pdf` plus `<docId>.pdf.metadata.json` carrying `applianceId` and `title`. Bedrock Knowledge Base with an S3 data source on that prefix, vector store S3 Vectors, embeddings Titan Text Embeddings v2. Retrieval uses `Retrieve` with a metadata filter when `applianceId` is supplied.
 

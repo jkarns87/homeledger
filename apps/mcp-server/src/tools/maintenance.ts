@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { TaskType, computeNextDue, isOverdue, newId } from '@homeledger/core';
+import { TaskType, computeNextDue, isOverdue, newId, todayInZone } from '@homeledger/core';
 import type { ServerDeps } from '../server.js';
 import { speakDate, speakList, taskWords } from '../voice.js';
 import { WIDGET_URIS, uiMeta } from '../widgets/index.js';
@@ -19,7 +19,11 @@ export function registerMaintenanceTools(server: McpServer, deps: ServerDeps): v
       _meta: uiMeta(WIDGET_URIS.calendar)
     },
     async ({ horizonDays }) => {
-      const today = deps.now().slice(0, 10);
+      // The household's today, not UTC's. `deps.now().slice(0, 10)` - what
+      // this was - rolls over to tomorrow at 7 PM Central, so between 7 PM and
+      // midnight a task due today was already being called "overdue" to
+      // someone whose own calendar still said today.
+      const today = todayInZone(deps.now(), await deps.householdTimeZone());
       const rows = await deps.repo.listMaintenanceDue(horizonDays ?? 30, today);
       const names = new Map((await deps.repo.listAppliances()).map(a => [a.id, a.name] as const));
       const items = rows.map(m => ({
@@ -59,7 +63,11 @@ export function registerMaintenanceTools(server: McpServer, deps: ServerDeps): v
       if (!a) return { content: [{ type: 'text', text: "I couldn't find that appliance." }], isError: true };
       const template = a.templates.find(t => t.taskType === taskType);
       if (!template) return { content: [{ type: 'text', text: `The ${a.name.toLowerCase()} doesn't have a ${taskWords(taskType)} task.` }], isError: true };
-      const doneAt = date ?? deps.now().slice(0, 10);
+      // "Today" means the day it is where the filter was actually changed.
+      // `doneAt` is a floating calendar date, so writing the household's day
+      // is the correct stored value, not a localised instant - `createdAt`
+      // below stays a UTC instant, which is what DynamoDB keeps for times.
+      const doneAt = date ?? todayInZone(deps.now(), await deps.householdTimeZone());
       const nextDueAt = computeNextDue(doneAt, template.intervalDays);
       await deps.repo.appendLog({ id: newId('log'), applianceId, taskType, doneAt, notes: notes ?? null, createdAt: deps.now() });
       await deps.repo.putMaintenance({ applianceId, taskType, intervalDays: template.intervalDays, lastDoneAt: doneAt, nextDueAt, notes: notes ?? null });
