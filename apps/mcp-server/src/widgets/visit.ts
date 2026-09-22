@@ -39,10 +39,17 @@ const SCRIPT = String.raw`
     row.appendChild(name);
     row.appendChild(status);
     card.appendChild(row);
-    textRow(card, 'muted', visit.windowStart + ' to ' + visit.windowEnd);
+    // windowLabel, not windowStart + windowEnd. This card used to print two
+    // raw ISO instants ("2026-09-15T13:00:00.000Z to ...") on a kitchen
+    // display. It is rendered SERVER-side in the household's zone and arrives
+    // ready to show, because this frame has no way to know that zone and
+    // formatting here would put whichever clock the VIEWER's device is set to
+    // onto a display the whole household reads. Both tools that drive this
+    // widget always send it.
+    textRow(card, 'muted', visit.windowLabel);
     if (visit.applianceName) textRow(card, 'muted', visit.applianceName);
     if (visit.issue) textRow(card, 'muted', visit.issue);
-    if (visit.arrivedAt) textRow(card, 'muted', 'arrived ' + visit.arrivedAt);
+    if (visit.arrivedAtLabel) textRow(card, 'muted', 'arrived ' + visit.arrivedAtLabel);
     detail.appendChild(card);
 
     if (data.description) {

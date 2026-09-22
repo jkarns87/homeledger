@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server';
-import { isOverdue } from '@homeledger/core';
+import { isOverdue, todayInZone } from '@homeledger/core';
 import type { ServerDeps } from './server.js';
 import { WIDGETS } from './widgets/index.js';
 
@@ -24,7 +24,10 @@ export function registerResources(server: McpServer, deps: ServerDeps): void {
     'homeledger://maintenance/schedule',
     { title: 'Maintenance schedule', description: 'All maintenance items ordered by next due date', mimeType: 'application/json' },
     async uri => {
-      const today = deps.now().slice(0, 10);
+      // Same household-today rule as maintenance_due: this resource's
+      // `overdue` flag must agree with the tool's, or the JSON a client reads
+      // and the sentence it hears disagree for five hours every evening.
+      const today = todayInZone(deps.now(), await deps.householdTimeZone());
       const names = new Map((await deps.repo.listAppliances()).map(a => [a.id, a.name] as const));
       const items = (await deps.repo.listMaintenanceDue(3650, today)).map(m => ({
         ...m,

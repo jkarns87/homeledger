@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import type { ServerDeps } from '../server.js';
-import { speakList } from '../voice.js';
+import { speakList, speakZonedClock } from '../voice.js';
 
 const EventRow = z.object({
   kind: z.enum(['visit', 'door', 'alert']),
@@ -56,11 +56,18 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
           visitId: null
         }))
       ].sort((x, y) => y.at.localeCompare(x.at));
+      // `at` is a stored UTC instant and the spoken line is the only place it
+      // reaches a person, so the clock time is rendered in the household's
+      // zone with its abbreviation. `summary` in structuredContent stays the
+      // bare sentence spec 4.2 defines - the time is already its own field
+      // there, and duplicating it into the summary would give a client two
+      // renderings of one value to disagree about.
+      const zone = await deps.householdTimeZone();
       const text =
         events.length === 0
           ? `Nothing happened in the last ${hours} hours.`
           : speakList(
-              events.map(e => e.summary),
+              events.map(e => `${e.summary} at ${speakZonedClock(e.at, zone)}`),
               'event'
             );
       return { content: [{ type: 'text', text }], structuredContent: { events } };

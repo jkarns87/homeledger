@@ -4,7 +4,7 @@ import { VisitStatus, derivedId, providersForCategory } from '@homeledger/core';
 import { booleanField, elicitOutcome, enumField, supportsFormElicitation } from '../elicit.js';
 import { runAvailabilityCheck } from '../progress.js';
 import type { ServerDeps } from '../server.js';
-import { speakWeekdayDate } from '../voice.js';
+import { speakZonedDay, speakZonedInstant, speakZonedWindow } from '../voice.js';
 import { WIDGET_URIS, uiMeta } from '../widgets/index.js';
 
 /** Cross-round booking state, carried in the signed requestState. */
@@ -26,20 +26,22 @@ export interface ServiceWindow {
 const WINDOW_DAY_OFFSETS = [2, 3, 4];
 
 /**
- * Three 1-to-3 PM UTC windows, two to four days out from the current date.
- * Deterministic so tests can assert exact timestamps. Labels read in UTC;
- * localising to the household timezone is Plan 3's simulator concern.
+ * Three two-hour windows, two to four days out. The instants are UTC and
+ * unchanged - 13:00Z to 15:00Z, deterministic so tests can assert exact
+ * timestamps, and exactly what gets written to DynamoDB. Only the LABEL moved:
+ * it used to read the UTC wall clock back as if it were the household's ("1 to
+ * 3 PM"), which is how a person in a kitchen in Illinois was told 1 PM for a
+ * visit their own clock calls 8 AM. The label now renders those same instants
+ * in `zone`, with the abbreviation, so the spoken window, the elicitation
+ * option, the confirmation and the widget all say one thing.
  */
-export function availabilityWindows(nowIso: string): ServiceWindow[] {
+export function availabilityWindows(nowIso: string, zone: string): ServiceWindow[] {
   const base = new Date(`${nowIso.slice(0, 10)}T00:00:00Z`).getTime();
   return WINDOW_DAY_OFFSETS.map((offset, index) => {
     const day = new Date(base + offset * 86_400_000).toISOString().slice(0, 10);
-    return {
-      id: `win_${index + 1}`,
-      start: `${day}T13:00:00.000Z`,
-      end: `${day}T15:00:00.000Z`,
-      label: `${speakWeekdayDate(day)}, 1 to 3 PM`
-    };
+    const start = `${day}T13:00:00.000Z`;
+    const end = `${day}T15:00:00.000Z`;
+    return { id: `win_${index + 1}`, start, end, label: speakZonedWindow(start, end, zone) };
   });
 }
 
@@ -77,6 +79,13 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
         provider: z.string(),
         windowStart: z.string(),
         windowEnd: z.string(),
+        // The window as a person reads it, rendered server-side in the
+        // household's zone. Nullable-never, always present: the visit widget
+        // has no way of its own to know the household's zone, and letting it
+        // format `windowStart` itself would put the VIEWER's clock on a shared
+        // kitchen display - the one thing this must not do. One rendering,
+        // computed once, spoken and shown identically.
+        windowLabel: z.string(),
         status: VisitStatus
       }),
       _meta: uiMeta(WIDGET_URIS.visit)
@@ -104,6 +113,7 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
 
       const appliance = await deps.repo.getAppliance(applianceId);
       if (!appliance) return { content: [{ type: 'text', text: "I couldn't find that appliance." }], isError: true };
+      const zone = await deps.householdTimeZone();
 
       const carried = ctx.mcpReq.requestState<BookingState>();
       // requestState round-trips through the client. It is integrity-checked
@@ -140,7 +150,7 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       const provider = providers.find(p => p.id === state.providerId);
       if (!provider) return notBooked();
 
-      const windows = availabilityWindows(deps.now());
+      const windows = availabilityWindows(deps.now(), zone);
 
       if (!state.windowStart) {
         if (elicitOutcome(ctx.mcpReq.inputResponses, 'window') === 'declined') return notBooked();
@@ -212,7 +222,14 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
 
       return {
         content: [{ type: 'text', text: `Booked ${provider.name} for ${window.label}.` }],
-        structuredContent: { visitId, provider: provider.name, windowStart: window.start, windowEnd: window.end, status: 'scheduled' as const }
+        structuredContent: {
+          visitId,
+          provider: provider.name,
+          windowStart: window.start,
+          windowEnd: window.end,
+          windowLabel: window.label,
+          status: 'scheduled' as const
+        }
       };
     }
   );
@@ -233,8 +250,13 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
           issue: z.string(),
           windowStart: z.string(),
           windowEnd: z.string(),
+          // Rendered in the household's zone, alongside the raw UTC instants
+          // rather than instead of them - see book_service's windowLabel.
+          // `arrivedAtLabel` is null exactly when `arrivedAt` is.
+          windowLabel: z.string(),
           status: VisitStatus,
-          arrivedAt: z.string().nullable()
+          arrivedAt: z.string().nullable(),
+          arrivedAtLabel: z.string().nullable()
         }),
         snapshotUrl: z.string().nullable(),
         description: z.string().nullable()
@@ -248,11 +270,18 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       const appliance = await deps.repo.getAppliance(visit.applianceId);
       const applianceName = appliance?.name ?? 'appliance';
       const applianceWords = applianceName.toLowerCase();
-      const day = speakWeekdayDate(visit.windowStart.slice(0, 10));
+      const zone = await deps.householdTimeZone();
+      // `visit.windowStart.slice(0, 10)` - what this used to do - is the UTC
+      // date of a stored instant, not the day the visit falls on in the
+      // household's zone. For a window at 01:00Z those are different days, so
+      // the old form could name the wrong day entirely, on top of the invented
+      // "1 to 3 PM" that ignored the stored clock time.
+      const windowLabel = speakZonedWindow(visit.windowStart, visit.windowEnd, zone);
+      const arrivedAtLabel = visit.arrivedAt ? speakZonedInstant(visit.arrivedAt, zone) : null;
       const spoken =
         visit.status === 'scheduled'
-          ? `${visit.providerName} is scheduled for the ${applianceWords} on ${day}, 1 to 3 PM.`
-          : `${visit.providerName} ${visit.status} for the ${applianceWords} on ${day}.`;
+          ? `${visit.providerName} is scheduled for the ${applianceWords} on ${windowLabel}.`
+          : `${visit.providerName} ${visit.status} for the ${applianceWords} on ${speakZonedDay(visit.windowStart, zone)}.`;
       return {
         content: [{ type: 'text', text: spoken }],
         structuredContent: {
@@ -264,8 +293,10 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
             issue: visit.issue,
             windowStart: visit.windowStart,
             windowEnd: visit.windowEnd,
+            windowLabel,
             status: visit.status,
-            arrivedAt: visit.arrivedAt
+            arrivedAt: visit.arrivedAt,
+            arrivedAtLabel
           },
           // Both filled in by the Ring plan: snapshotUrl from a short-TTL
           // presign of visit.snapshotKey, description from the Nova vision

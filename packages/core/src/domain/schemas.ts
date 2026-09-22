@@ -1,4 +1,5 @@
 import * as z from 'zod/v4';
+import { TimeZone } from './time.js';
 
 const prefixed = (p: string) => z.string().regex(new RegExp(`^${p}_[a-z2-7]{16}$`));
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -97,10 +98,19 @@ export const DeviceSchema = z.object({
   lastSeenAt: isoDateTime.nullable()
 });
 
+/**
+ * `timezone` is the household's own clock, and every human-facing time in the
+ * system renders in it (spec section 4.2). An IANA NAME, never an offset:
+ * offsets are frozen, so a window booked in September for a visit in November
+ * would read an hour wrong once the zone leaves daylight saving. `TimeZone`
+ * refuses offsets and unknown names, and `putHousehold` parses this schema, so
+ * a bad zone is rejected at the write rather than discovered as a wrong clock
+ * time later. Stored instants stay UTC; only rendering localises.
+ */
 export const HouseholdSchema = z.object({
   id: z.string().regex(/^hh_[a-z0-9_]+$/),
   name: z.string().min(1),
-  timezone: z.string().min(1)
+  timezone: TimeZone
 });
 
 export type Appliance = z.infer<typeof ApplianceSchema>;

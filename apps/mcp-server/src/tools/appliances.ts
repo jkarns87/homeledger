@@ -1,6 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { ApplianceCategory, TaskType, isOverdue } from '@homeledger/core';
+import { ApplianceCategory, TaskType, isOverdue, todayInZone } from '@homeledger/core';
 import type { ServerDeps } from '../server.js';
 import { speakDate, speakList, taskWords } from '../voice.js';
 import { WIDGET_URIS, uiMeta } from '../widgets/index.js';
@@ -34,7 +34,9 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
       _meta: uiMeta(WIDGET_URIS.appliances)
     },
     async ({ room, category }) => {
-      const today = deps.now().slice(0, 10);
+      // The household's today, not UTC's - a warranty does not expire eight
+      // hours early because UTC has already rolled over. See maintenance_due.
+      const today = todayInZone(deps.now(), await deps.householdTimeZone());
       const rows = await deps.repo.listAppliances({ room, category });
       const appliances = rows.map(a => ({
         id: a.id,
@@ -87,7 +89,7 @@ export function registerApplianceTools(server: McpServer, deps: ServerDeps): voi
       _meta: uiMeta(WIDGET_URIS.appliance)
     },
     async ({ applianceId }) => {
-      const today = deps.now().slice(0, 10);
+      const today = todayInZone(deps.now(), await deps.householdTimeZone());
       const a = await deps.repo.getAppliance(applianceId);
       if (!a) return { content: [{ type: 'text', text: "I couldn't find that appliance." }], isError: true };
       const maintenance = [];

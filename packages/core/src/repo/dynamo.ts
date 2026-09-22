@@ -1,6 +1,7 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { BatchWriteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import type { Alert, Appliance, Device, Doc, Event, Household, LogEntry, MaintenanceItem, TaskTypeValue, Visit } from '../domain/schemas.js';
+import { HouseholdSchema } from '../domain/schemas.js';
 import { gsi1, gsi2, pk, sk } from './keys.js';
 import type { Repository } from './repository.js';
 
@@ -59,8 +60,12 @@ export function createDynamoRepository(opts: {
     async getHousehold() {
       return get<Household>(sk.household());
     },
+    // Parsed, not just typed: `timezone` is the only field whose validity the
+    // compiler cannot check, and a bad zone written here becomes a wrong clock
+    // time spoken to a person days later. Throwing at the write is the whole
+    // point of the boundary - see HouseholdSchema.
     async putHousehold(h) {
-      await put(sk.household(), 'household', h);
+      await put(sk.household(), 'household', HouseholdSchema.parse(h));
     },
     async resetHousehold() {
       const keys: { PK: string; SK: string }[] = [];

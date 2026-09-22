@@ -234,7 +234,11 @@ describe('the stdio bridge, driven the way Claude Code drives it', () => {
 
     expect(session.asked.map(a => a.field)).toEqual(['provider', 'window', 'confirm']);
     expect(session.asked[0]?.message).toBe('Who should I book for the water heater?');
-    expect(session.asked[2]?.message).toBe('Book Kettle Creek Water Heaters for Tuesday, September 15, 1 to 3 PM?');
+    // The household's zone (America/Chicago), not UTC and not this machine's:
+    // 13:00Z is 8:00 AM Central. The bridge relays the server's words
+    // verbatim, so this is also the proof that the localisation survives the
+    // stdio hop rather than being re-rendered anywhere in between.
+    expect(session.asked[2]?.message).toBe('Book Kettle Creek Water Heaters for Tuesday, September 15, 8:00 AM to 10:00 AM CDT?');
     expect(progress).toEqual([0, 1, 2, 3]);
 
     const sc = booked.structuredContent as { provider: string; status: string; visitId: string };

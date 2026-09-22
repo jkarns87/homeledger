@@ -11,6 +11,7 @@ import type {
   TaskTypeValue,
   Visit
 } from '../domain/schemas.js';
+import { HouseholdSchema } from '../domain/schemas.js';
 import { isOverdue } from '../domain/maintenance.js';
 import type { Repository } from './repository.js';
 
@@ -33,8 +34,12 @@ export function createMemoryRepository(_householdId: string): Repository {
     async getHousehold() {
       return household;
     },
+    // Parsed, not just typed: `timezone` is the only field whose validity the
+    // compiler cannot check, and a bad zone here becomes a wrong clock time
+    // spoken to a person days later. Throwing at the write is the whole point
+    // of the boundary - see HouseholdSchema.
     async putHousehold(h) {
-      household = h;
+      household = HouseholdSchema.parse(h);
     },
     async resetHousehold() {
       household = null;
