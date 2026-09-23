@@ -44,22 +44,38 @@ export function widgetUriOf(tool: McpToolDescriptor): string | null {
  *
  * This exists because a transport error is now an input to an inference
  * engine, and a vague one does not stay vague — it gets turned into a fluent
- * answer nobody has reason to doubt. Twice, a 404 was read as "there are no
- * appliances registered" and answered from this repository's own seed
- * fixtures (FL-039). So the notice says what did NOT happen, not only what
- * went wrong, and it names the specific wrong move.
+ * answer nobody has reason to doubt. So the notice says what did NOT happen,
+ * not only what went wrong, and it names the specific wrong moves.
  *
- * Deliberately the same four claims, in the same order, as
- * `apps/mcp-bridge/src/errors.ts`'s notice of the same name: nothing was
- * retrieved, no result is implied, memory and repository fixtures are not a
- * substitute, and the failure is to be reported rather than worked around. The
- * last sentence differs only in who is being addressed — the bridge speaks to a
- * client, this speaks to the agent driving the simulator.
+ * FL-039 produced TWO of those, and they are different failures that need
+ * separate clauses. The second time, a 404 was answered from this repository's
+ * own seed fixtures rendered as a table of the household's appliances — invented
+ * DATA, which claim 3 forbids. The FIRST time, the same 404 came back as "no
+ * appliances have been registered yet": no data was claimed and no fixture was
+ * read, so every word of claim 3 was satisfied, and a fabricated CAUSE was
+ * still presented to the owner as fact. Claim 4 is that incident, and it is
+ * there because a notice that forbids only invented data leaves the more
+ * plausible fabrication wide open — an explanation is easier to reach for than
+ * a dataset, and harder to spot as invention.
+ *
+ * Relationship to `apps/mcp-bridge/src/errors.ts`'s notice of the same name,
+ * stated exactly rather than as "the same claims": claims 1 and 2 are
+ * identical. Claim 3 is the bridge's, with two further sources enumerated
+ * ("from anything earlier in this conversation") AHEAD of the bridge's
+ * catch-all "or from any other source", which is kept — an enumeration that
+ * replaces a catch-all is weaker than the catch-all, because anything not
+ * enumerated reads as permitted, so this adds to it rather than standing in for
+ * it. Claim 4 has no counterpart in the bridge at all. Claim 5 is the bridge's
+ * last sentence with the addressee changed: the bridge speaks to a client, this
+ * speaks to the agent driving the simulator. Net: strictly stronger than the
+ * deployed notice, never weaker. The bridge is deployed and out of scope here,
+ * but it should pick up claim 4.
  */
 export const NO_DATA_NOTICE = [
   'NO DATA WAS RETRIEVED.',
   'This call did not execute, so nothing was read from the household and no result — empty or otherwise — is implied.',
-  'Do not answer from memory, from repository fixtures or seed data, or from anything earlier in this conversation: you do not know what this household contains.',
+  'Do not answer from memory, from repository fixtures or seed data, from anything earlier in this conversation, or from any other source: you do not know what this household contains.',
+  'Do not explain why the call failed beyond what the error above says, and do not offer a likely cause: a plausible reason you infer — "nothing has been registered yet", or anything like it — is an invention, and stating one is the same error as inventing the data.',
   'Tell the person the call failed and say what the error above was.'
 ].join(' ');
 
@@ -101,7 +117,14 @@ export function readToolResult(result: unknown): ToolOutcome {
   const spoken = firstText(record.content);
   if (record.isError === true) return { ok: false, message: spoken ?? 'the server reported an error and gave no message' };
   if (spoken === undefined) return { ok: false, message: 'the server returned a result with no spoken text' };
-  return { ok: true, spoken, content: record.content ?? null, structured: record.structuredContent ?? null };
+  // `content` needs no `?? null`: reaching here means `firstText` found a
+  // string inside it, which means it is an array, which is never nullish. The
+  // nullish coalesce that used to sit here was unreachable and has been removed
+  // rather than covered - there is no fixture that can express it.
+  // `structuredContent` DOES need one: a tool that declares no `outputSchema`
+  // returns none, and `null` is what `toToolResultBlock` branches on so it
+  // never appends the word "null" to a model as the tool's payload.
+  return { ok: true, spoken, content: record.content, structured: record.structuredContent ?? null };
 }
 
 export function toToolResultBlock(callId: string, outcome: ToolOutcome): Anthropic.ToolResultBlockParam {

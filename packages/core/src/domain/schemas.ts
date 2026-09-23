@@ -69,6 +69,31 @@ export const VisitSchema = z.object({
   createdAt: isoDateTime
 });
 
+/**
+ * What `book_service` returns when a person declines — the shape, and the value.
+ *
+ * Here rather than in `apps/mcp-server` because it is a CONTRACT between two
+ * packages that never call each other. The server emits it (`NOT_BOOKED` is the
+ * literal `structuredContent`, `NotBooked` the branch of the tool's
+ * `outputSchema` that validates it); the simulator's reader has to classify it
+ * as an ordinary result rather than a failure, and its test builds its fixture
+ * from `NOT_BOOKED` instead of retyping `{booked: false}` by hand.
+ *
+ * The hand-typed copy is what this replaces, and FL-046 is why. A consumer
+ * fixture written to match a producer looks like a pin and is not one: change
+ * the producer and the copy sits there agreeing with nothing. Deriving the
+ * simulator's fixture from the server directly is not available — both schemas
+ * were module-private and `@homeledger/mcp-server` declares no `main` or
+ * `exports` — so the shared constant is the one seam that exists, and
+ * `apps/simulator` already depends on this package.
+ *
+ * `booked: false` is the whole payload. There is no visit to describe, and
+ * minting a visitId so the success schema would accept a decline is the lie the
+ * decline fix exists to remove.
+ */
+export const NotBooked = z.object({ booked: z.literal(false) });
+export const NOT_BOOKED = { booked: false } as const;
+
 export const EventSchema = z.object({
   id: prefixed('evt'),
   ringEventId: z.string().min(1),
