@@ -26,6 +26,13 @@ jobs:
       # a fresh checkout must build it before typecheck/test of mcp-server can
       # resolve the module.
       - run: pnpm --filter @homeledger/core build
+      # Same reasoning, one package along. @homeledger/simulator consumes
+      # @homeledger/mcp-bridge through the subpath `exports` map added in Plan 3
+      # Task 2, and every entry in it points at `./dist/*`, which is gitignored.
+      # Without this line a clean checkout fails `pnpm typecheck` with seven
+      # TS2307s and `pnpm test` with "Cannot find package
+      # '@homeledger/mcp-bridge/config'" — verified by moving `dist/` aside.
+      - run: pnpm --filter @homeledger/mcp-bridge build
       - run: pnpm format
       - run: pnpm typecheck
       - run: pnpm test

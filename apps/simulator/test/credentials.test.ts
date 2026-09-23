@@ -32,6 +32,22 @@ describe('readSimulatorEnv', () => {
     });
   });
 
+  it('pins the default model, round budget and elicitation timeout to literal values', () => {
+    // The test above compares `readSimulatorEnv`'s output against the same
+    // symbols the function fills it from, so it is `x === x` and all three
+    // constants can be changed to anything at all without failing it —
+    // confirmed by setting them to 'totally-wrong-model-id', 9999 and 1
+    // simultaneously and watching the suite stay green. These are not cosmetic
+    // values: DEFAULT_MODEL is posted to the Anthropic API, and an elicitation
+    // timeout of 1ms expires every prompt before a person can read it. Written
+    // out as literals here, which is the only form that can disagree.
+    expect({ DEFAULT_MODEL, DEFAULT_MAX_ROUNDS, DEFAULT_ELICITATION_TIMEOUT_MS }).toEqual({
+      DEFAULT_MODEL: 'claude-opus-5',
+      DEFAULT_MAX_ROUNDS: 8,
+      DEFAULT_ELICITATION_TIMEOUT_MS: 120_000
+    });
+  });
+
   it('names the variable, and the file it belongs in, when the key is missing', () => {
     expect(() => readSimulatorEnv(env({}))).toThrow(SimulatorConfigError);
     expect(() => readSimulatorEnv(env({}))).toThrow(/ANTHROPIC_API_KEY is not set/);

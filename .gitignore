@@ -4,7 +4,12 @@ dist/
 next-env.d.ts
 *.tsbuildinfo
 .env
-.env.local
+# The whole `.local` family, not just `.env.local`. Next loads
+# `.env.$(NODE_ENV).local` at higher precedence than `.env.local`, so
+# `.env.development.local` is an equally standard place to put the real key and
+# was not ignored when only the bare spelling was listed. This is what
+# create-next-app ships.
+.env*.local
 *.tfstate
 *.tfstate.backup
 .terraform/
