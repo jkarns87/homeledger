@@ -9,7 +9,15 @@
  */
 export class SimulatorConfigError extends Error {}
 
-export const DEFAULT_MODEL = 'claude-opus-5';
+/**
+ * Sonnet, not Opus, by default. This agent's work is tool-calling and short
+ * spoken replies to a person waiting in front of a display — turn latency
+ * matters more here than maximum reasoning depth, which is exactly the
+ * tradeoff Sonnet is for. `HOMELEDGER_SIMULATOR_MODEL` overrides it per
+ * `readSimulatorEnv` below, so a deployed run can move to Opus without a code
+ * change if the tool-calling accuracy ever needs it.
+ */
+export const DEFAULT_MODEL = 'claude-sonnet-5';
 /** Model turns per user turn before the loop gives up. Eight covers list -> get -> book (three elicitations) with room to spare. */
 export const DEFAULT_MAX_ROUNDS = 8;
 /** How long one elicitation may wait for a person to click. Two minutes: a demo pause, not an outage. */

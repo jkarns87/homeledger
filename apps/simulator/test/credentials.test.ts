@@ -42,7 +42,7 @@ describe('readSimulatorEnv', () => {
     // timeout of 1ms expires every prompt before a person can read it. Written
     // out as literals here, which is the only form that can disagree.
     expect({ DEFAULT_MODEL, DEFAULT_MAX_ROUNDS, DEFAULT_ELICITATION_TIMEOUT_MS }).toEqual({
-      DEFAULT_MODEL: 'claude-opus-5',
+      DEFAULT_MODEL: 'claude-sonnet-5',
       DEFAULT_MAX_ROUNDS: 8,
       DEFAULT_ELICITATION_TIMEOUT_MS: 120_000
     });
@@ -59,11 +59,16 @@ describe('readSimulatorEnv', () => {
   });
 
   it('overrides every default from the environment', () => {
+    // The model override is deliberately set to something OTHER than
+    // DEFAULT_MODEL. If it matched, a broken override (readSimulatorEnv
+    // silently falling back to the default) would still produce the expected
+    // value by coincidence, and this assertion would stop proving the
+    // override path runs at all.
     expect(
       readSimulatorEnv(
         env({
           ANTHROPIC_API_KEY: 'sk-ant-test',
-          HOMELEDGER_SIMULATOR_MODEL: 'claude-sonnet-5',
+          HOMELEDGER_SIMULATOR_MODEL: 'claude-opus-5',
           HOMELEDGER_SIMULATOR_MAX_ROUNDS: '3',
           HOMELEDGER_SIMULATOR_ELICITATION_TIMEOUT_MS: '5000',
           HOMELEDGER_SIMULATOR_ALLOW_ORIGIN: 'http://127.0.0.1:3000'
@@ -71,7 +76,7 @@ describe('readSimulatorEnv', () => {
       )
     ).toEqual({
       anthropicApiKey: 'sk-ant-test',
-      model: 'claude-sonnet-5',
+      model: 'claude-opus-5',
       maxRounds: 3,
       elicitationTimeoutMs: 5000,
       allowOrigin: 'http://127.0.0.1:3000'
