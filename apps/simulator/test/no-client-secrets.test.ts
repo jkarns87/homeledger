@@ -10,10 +10,12 @@ import {
   credentialNamesIn,
   credentialOffenders,
   dynamicEnvOffenders,
+  EXCLUDED_ROOT_DIRECTORIES,
   importSpecifiersIn,
   isClientModule,
   isServerSpecifier,
-  publicPrefixOffenders
+  publicPrefixOffenders,
+  unscannedImportOffenders
 } from './guard.js';
 
 const packageRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -59,6 +61,10 @@ describe('client-side secret guard', () => {
     expect(dynamicEnvOffenders(files, packageRoot)).toEqual([]);
   });
 
+  it('never imports out of the scanned region into an excluded directory', () => {
+    expect(unscannedImportOffenders(files, packageRoot)).toEqual([]);
+  });
+
   it('keeps next.config.ts free of an env block entirely', async () => {
     // The credential-name half of this is now `credentialOffenders`, which
     // reads next.config.ts along with everything else. What is left is the
@@ -78,13 +84,19 @@ describe('client-side secret guard', () => {
 });
 
 /**
- * The seven ways the first version of this guard could be walked past.
+ * The nine ways a version of this guard could be walked past.
  *
  * Each is built as a real file tree in a temporary directory and scanned by the
  * real `collectPackageFiles`, so what is tested is the guard end to end rather
- * than a predicate in isolation. Three of these were demonstrated putting a
- * credential into a built bundle; the rest evade an assertion without a
- * confirmed leak. All seven are pinned here so the shape cannot regress.
+ * than a predicate in isolation. Six of the nine were demonstrated putting a
+ * credential into a built artifact a browser receives; the rest evade an
+ * assertion without a confirmed leak. All nine are pinned here so the shapes
+ * cannot regress.
+ *
+ * 1-7 came from the first review, 8 from the second, and 9 was found while
+ * fixing 8 — which is the argument for `8b` being generated from the exclusion
+ * list rather than written out. The list is the thing that generates holes, so
+ * the probe has to grow with it automatically.
  */
 describe('guard probes — the shapes that used to walk past it', () => {
   let root: string;
@@ -167,6 +179,58 @@ describe('guard probes — the shapes that used to walk past it', () => {
     expect(credentialOffenders(found, root)).toEqual([]);
     expect(publicPrefixOffenders(found)).toEqual([]);
     expect(dynamicEnvOffenders(found, root)).toEqual([`${join(root, 'src', 'app', 'built', 'page.tsx')}: process.env[NAME]`]);
+  });
+
+  // The eighth, found by the re-review, and it is the exclusion list's own
+  // shape rather than any one entry: the names were matched by basename at any
+  // depth, and every one of them is also a plausible route segment.
+  it('8. a route segment named like an excluded directory — src/app/test/page.tsx', async () => {
+    await write('src/app/test/page.tsx', 'export default function P() {\n  return <span>{process.env.ANTHROPIC_API_KEY}</span>;\n}\n');
+    const found = await scan();
+    expect(found.map(file => file.path)).toContain(join(root, 'src', 'app', 'test', 'page.tsx'));
+    expect(credentialOffenders(found, root)).toEqual([`${join(root, 'src', 'app', 'test', 'page.tsx')}: ANTHROPIC_API_KEY`]);
+  });
+
+  // Generative rather than written out, so the list cannot be extended without
+  // the probe extending with it. Every name that buys an exemption at the root
+  // has to prove it does not buy one anywhere else.
+  it.each([...EXCLUDED_ROOT_DIRECTORIES])('8b. %s is excluded at the root only, never as a nested directory', async name => {
+    await write(join('src', 'app', name, 'page.tsx'), 'export default function P() {\n  return <span>{process.env.ANTHROPIC_API_KEY}</span>;\n}\n');
+    const offenders = credentialOffenders(await scan(), root);
+    expect(offenders).toEqual([`${join(root, 'src', 'app', name, 'page.tsx')}: ANTHROPIC_API_KEY`]);
+  });
+
+  it('8c. an excluded file name is likewise exempt only at the root', async () => {
+    await write('src/lib/playwright.config.ts', 'export const k = process.env.ANTHROPIC_API_KEY;\n');
+    const offenders = credentialOffenders(await scan(), root);
+    expect(offenders).toEqual([`${join(root, 'src', 'lib', 'playwright.config.ts')}: ANTHROPIC_API_KEY`]);
+  });
+
+  it('8d. an import that crosses into an excluded directory is refused, not silently unfollowed', async () => {
+    await write('test/shared-fixture.ts', 'export const k = process.env.ANTHROPIC_API_KEY;\n');
+    await write('src/app/page.tsx', "import { k } from '../../test/shared-fixture';\nexport default function P() {\n  return <span>{k}</span>;\n}\n");
+    const found = await scan();
+    // The fixture itself is genuinely not scanned — that is what `test/` at the
+    // root means, and widening the scan would drag credentials.test.ts back in.
+    expect(found.map(file => file.path)).not.toContain(join(root, 'test', 'shared-fixture.ts'));
+    // So the import is the offence.
+    expect(unscannedImportOffenders(found, root)).toEqual([`${join(root, 'src', 'app', 'page.tsx')}: ../../test/shared-fixture`]);
+  });
+
+  // The ninth, found while anchoring the list rather than reported.
+  it('9. public/ is served verbatim, so it is scanned whatever the extension', async () => {
+    await write('public/notes.txt', 'reminder: ANTHROPIC_API_KEY lives in .env.local\n');
+    const found = await scan();
+    // `.txt` is not a source extension and the extension filter would have
+    // skipped it — but everything under public/ is readable at the site root
+    // (`/notes.txt`), so the filter is the wrong question there entirely.
+    expect(found.map(file => file.path)).toContain(join(root, 'public', 'notes.txt'));
+    expect(credentialOffenders(found, root)).toEqual([`${join(root, 'public', 'notes.txt')}: ANTHROPIC_API_KEY`]);
+  });
+
+  it('9b. but does not try to read a binary payload in public/ as text', async () => {
+    await write('public/logo.png', 'not really a png, but named like one');
+    expect((await scan()).map(file => file.path)).not.toContain(join(root, 'public', 'logo.png'));
   });
 });
 

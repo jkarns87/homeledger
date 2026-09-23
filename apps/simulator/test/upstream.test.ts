@@ -179,6 +179,24 @@ describe('resolveUpstream', () => {
     expect(error.constructor.name).toBe('DiscoveryError');
   });
 
+  // The third of the three output channels, and the one the round-1 fix left
+  // correct but unasserted — `scrubbed()` could be lifted off `resolveUpstream`
+  // itself and nothing failed. This is the same shape as the `stack` line one
+  // level up: a fix whose absence no test would notice is a fix that is only
+  // true until someone tidies it away.
+  it('scrubs a rejection from resolveUpstream itself, before it ever returns credentials', async () => {
+    lister.throws = new Error('Throttling: the operator sent client_secret=not-a-real-secret-value');
+    const err = await resolveUpstream(env()).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+    expect(err, 'resolveUpstream resolved when it should have rejected').toBeInstanceOf(Error);
+    const error = err as Error;
+    expect(error.message).toContain('[redacted]');
+    expect(error.message).not.toContain('not-a-real-secret-value');
+    expect(error.constructor.name).toBe('DiscoveryError');
+  });
+
   it('scrubs a rejection from token, which echoes the Cognito error body by design', async () => {
     // Stubbed before `resolveUpstream`, because `createTokenSource` captures
     // `fetch` at construction (`token.ts`: `options.fetchImpl ?? fetch`), so a
