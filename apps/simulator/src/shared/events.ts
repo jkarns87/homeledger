@@ -48,9 +48,19 @@ export function encodeSse(event: TurnEvent): string {
 function parseFrame(frame: string): TurnEvent | undefined {
   const dataLines: string[] = [];
   for (const line of frame.split('\n')) {
-    if (line === '' || line.startsWith(':')) continue;
+    if (line === '') continue;
     const colon = line.indexOf(':');
     const field = colon === -1 ? line : line.slice(0, colon);
+    // A comment line (SSE framing for "ignore me", used here for keep-alives)
+    // starts with ':', which is itself the first colon `indexOf` finds, so
+    // `field` is always '' for one — never 'data', whatever the comment's
+    // payload looks like. That makes this the only check needed to keep a
+    // comment out of `dataLines`: no separate `startsWith(':')` guard is
+    // reachable by anything this one doesn't already catch (verified by
+    // removing each independently — dropping this filter alone lets a
+    // JSON-shaped comment or a stray "event:" line fabricate a real event;
+    // dropping a startsWith(':') check alone, on its own, catches nothing
+    // this filter wasn't already catching).
     if (field !== 'data') continue;
     let value = colon === -1 ? '' : line.slice(colon + 1);
     if (value.startsWith(' ')) value = value.slice(1);

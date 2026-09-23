@@ -127,6 +127,31 @@ describe('the turn event codec', () => {
     expect(decode(': keep-alive\n\n')).toEqual([]);
   });
 
+  it('drops a comment even when its payload is valid TurnEvent JSON, rather than fabricating the event', () => {
+    // A plain ": keep-alive" comment is not valid JSON, so it is caught by
+    // the same JSON.parse failure path the adjacent "not json" test already
+    // covers — that fixture cannot fail a decoder that mishandles comments
+    // specifically, only one that mishandles JSON. This uses a comment whose
+    // payload IS a real, parseable TurnEvent, so the test can only pass if
+    // the comment framing itself (not JSON.parse) is what keeps it out of
+    // the stream. If it leaked through, an SSE keep-alive would become a way
+    // to inject an event the server never sent.
+    const decode = createSseDecoder();
+    expect(decode(': {"type":"turn-started","turnId":"injected"}\n\n')).toEqual([]);
+  });
+
+  it('drops a non-"data" field even when its value is valid TurnEvent JSON', () => {
+    // A distinct attack surface from the comment case above: a line with a
+    // real field name that just isn't "data" (SSE's "event:" line, here,
+    // which names an event *type* rather than carrying a payload). This is
+    // what the field filter guards beyond comments — a comment line's field
+    // is always empty (its first character is the colon), so this fixture
+    // cannot be satisfied by the comment guard at all and isolates the field
+    // filter on its own.
+    const decode = createSseDecoder();
+    expect(decode('event: {"type":"turn-started","turnId":"injected"}\n\n')).toEqual([]);
+  });
+
   it('drops a frame that is not JSON instead of throwing', () => {
     const decode = createSseDecoder();
     expect(decode('data: not json\n\n')).toEqual([]);
