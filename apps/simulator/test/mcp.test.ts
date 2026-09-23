@@ -308,6 +308,63 @@ describe('HomeLedgerMcp against a real socket', () => {
     expect(mcp.endpointUrl).toBe(live);
   });
 
+  it('mints a bearer for every HTTP request, not once per connection and not once per call', async () => {
+    // Client-side behaviour, and provable here precisely because it needs no
+    // cooperation from the endpoint: the local server ignores the header
+    // entirely, but HOW MANY TIMES the token source is asked is decided on this
+    // side of the socket, so a spy settles it with no live Cognito anywhere.
+    // Deferring this to a deployed run was the wrong call — what a deployed run
+    // adds is that a real rotation is honoured end to end, not that the token is
+    // re-read per request.
+    //
+    // It matters because the failure is invisible until it is expensive: a
+    // client that caches the bearer for the life of a connection works
+    // perfectly until the token expires mid-conversation, and a Cognito token
+    // outlives neither a long booking nor a demo.
+    const url = await listen();
+    const token = vi.fn(async () => 'unused-locally');
+    const mcp = new HomeLedgerMcp({
+      url,
+      token,
+      onElicit: async prompt => {
+        const properties = (prompt.requestedSchema as { properties: Record<string, unknown> }).properties;
+        const field = Object.keys(properties)[0] ?? '';
+        if (field === 'provider') return { action: 'accept', content: { provider: 'prov_kettle_water' } };
+        if (field === 'window') return { action: 'accept', content: { window: 'win_1' } };
+        return { action: 'accept', content: { confirm: true } };
+      }
+    });
+    closeClient = () => mcp.close();
+    await mcp.connect();
+    // The handshake is three requests, not one: the `initialize` POST, the
+    // `notifications/initialized` POST, and the standalone GET stream the SDK
+    // opens once that notification is accepted. Asserted as "more than one"
+    // rather than as the literal 3, because how many requests a handshake costs
+    // is the transport's business; what this pins is that the count is not 1.
+    const afterConnect = token.mock.calls.length;
+    expect(afterConnect).toBeGreaterThan(1);
+
+    await mcp.callTool('list_appliances', {});
+    const afterFirst = token.mock.calls.length;
+    await mcp.callTool('list_appliances', {});
+    const afterSecond = token.mock.calls.length;
+    // One POST each, so one mint each. A token cached at connect() freezes all
+    // three of these numbers at `afterConnect`.
+    expect(afterFirst).toBe(afterConnect + 1);
+    expect(afterSecond).toBe(afterFirst + 1);
+
+    const list = (await mcp.callTool('list_appliances', { category: 'water_heater' })) as { structuredContent: { appliances: Array<{ id: string }> } };
+    const beforeBooking = token.mock.calls.length;
+    await mcp.callTool('book_service', { applianceId: list.structuredContent.appliances[0]!.id, issue: 'water heater leaking at the base' });
+    // The assertion that separates "per request" from "per call", which the two
+    // above cannot: ONE `callTool` here costs FOUR HTTP requests — the
+    // `tools/call` POST, plus one POST for each of the three answers the
+    // booking test pins as ['provider', 'window', 'confirm']. A bearer minted
+    // once per tool call would satisfy every other assertion in this test and
+    // fail this one with 1; one minted per connection fails it with 0.
+    expect(token.mock.calls.length - beforeBooking).toBe(4);
+  });
+
   it('mints a fresh bearer and retries once when the endpoint refuses the one it had', async () => {
     const url = await listen();
     let refused = 0;

@@ -261,9 +261,14 @@ export class HomeLedgerMcp {
     });
     const base = this.options.fetchImpl ?? fetch;
     const transport = new StreamableHTTPClientTransport(new URL(this.url), {
-      // Per-request, not per-connection. A Cognito token lives about an hour
-      // and a booking conversation can outlast one; minting here means the
-      // refresh happens inside the token source and nothing above it notices.
+      // Per-request, not per-connection and not per call. A Cognito token lives
+      // about an hour and a booking conversation can outlast one; minting here
+      // means the refresh happens inside the token source and nothing above it
+      // notices. Pinned by "mints a bearer for every HTTP request" in
+      // `mcp.test.ts`, which counts calls to the token source with a spy — the
+      // count is decided entirely on this side of the socket, so it needs no
+      // live endpoint. What a deployed run still has to add is that a real
+      // rotation is honoured end to end, not that this is re-read per request.
       fetch: async (input, init) => {
         const headers = new Headers(init?.headers);
         headers.set('authorization', `Bearer ${await this.options.token()}`);
