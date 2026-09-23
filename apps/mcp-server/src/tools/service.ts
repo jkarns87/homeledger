@@ -49,7 +49,54 @@ const ProviderAnswer = z.object({ provider: z.string() });
 const WindowAnswer = z.object({ window: z.string() });
 const ConfirmAnswer = z.object({ confirm: z.boolean() });
 
-const notBooked = () => ({ content: [{ type: 'text' as const, text: "Okay, I haven't booked anything." }], isError: true });
+const BookedVisit = z.object({
+  visitId: z.string(),
+  provider: z.string(),
+  windowStart: z.string(),
+  windowEnd: z.string(),
+  // The window as a person reads it, rendered server-side in the household's
+  // zone. Nullable-never, always present: the visit widget has no way of its
+  // own to know the household's zone, and letting it format `windowStart`
+  // itself would put the VIEWER's clock on a shared kitchen display - the one
+  // thing this must not do. One rendering, computed once, spoken and shown
+  // identically.
+  windowLabel: z.string(),
+  status: VisitStatus
+});
+
+/**
+ * Nothing was booked, and that is an ordinary outcome of a working call.
+ *
+ * It needs a shape at all only because `outputSchema` is declared: the SDK
+ * validates any result that is not flagged `isError`, and the flag is exactly
+ * what this stopped using. `booked: false` is the whole payload - there is no
+ * visit to describe, and inventing a visitId so the success schema would
+ * accept it is the lie this change exists to remove. The success branch is
+ * left byte-identical, so the visit widget and every existing assertion about
+ * a completed booking are untouched.
+ */
+const NotBooked = z.object({ booked: z.literal(false) });
+
+/**
+ * A person pressed "Not now", and that is a call that RAN and answered no.
+ *
+ * `isError` is MCP's "the tool did not execute" flag, and this used to carry
+ * it. Claude Code renders such a result as `Error: Okay, I haven't booked
+ * anything.`, and Plan 3's simulator would render a red failure card to
+ * somebody who simply changed their mind - the same papering-over this project
+ * keeps fighting, pointed the other way. Dropping the flag on its own is not
+ * enough: `validateToolOutput` skips validation only while `isError` is set,
+ * and throws `Output validation error: Tool book_service has an output schema
+ * but no structured content was provided` for an unflagged result that carries
+ * none. So the decline gets a structured shape of its own, and `outputSchema`
+ * becomes a union of the two. The union is unambiguous in both directions - a
+ * booking has no `booked` key and fails NotBooked's literal, a decline has no
+ * `visitId` and fails BookedVisit - so no result can validate as the wrong one.
+ */
+const notBooked = () => ({
+  content: [{ type: 'text' as const, text: "Okay, I haven't booked anything." }],
+  structuredContent: { booked: false as const }
+});
 
 /**
  * What a person hears when their client cannot be asked anything.
@@ -74,20 +121,7 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       description:
         'Book a service visit for an appliance. Asks which provider to use, which arrival window to take, and for a final confirmation before anything is written. Providers come from a sample marketplace, not a real booking network.',
       inputSchema: z.object({ applianceId: z.string(), issue: z.string().min(3).max(300), preferredWindow: z.string().max(100).optional() }),
-      outputSchema: z.object({
-        visitId: z.string(),
-        provider: z.string(),
-        windowStart: z.string(),
-        windowEnd: z.string(),
-        // The window as a person reads it, rendered server-side in the
-        // household's zone. Nullable-never, always present: the visit widget
-        // has no way of its own to know the household's zone, and letting it
-        // format `windowStart` itself would put the VIEWER's clock on a shared
-        // kitchen display - the one thing this must not do. One rendering,
-        // computed once, spoken and shown identically.
-        windowLabel: z.string(),
-        status: VisitStatus
-      }),
+      outputSchema: z.union([BookedVisit, NotBooked]),
       _meta: uiMeta(WIDGET_URIS.visit)
     },
     async ({ applianceId, issue }, ctx: ServerContext) => {

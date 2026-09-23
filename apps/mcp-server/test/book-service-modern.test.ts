@@ -100,7 +100,8 @@ describe('book_service over multi round-trip requests (2026-07-28)', () => {
     close = h.close;
     const applianceId = await waterHeaterId(h.client);
     const r = await h.client.callTool({ name: 'book_service', arguments: { applianceId, issue: 'no hot water' } });
-    expect(r.isError).toBe(true);
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toEqual({ booked: false });
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe("Okay, I haven't booked anything.");
     expect(h.asked.map(a => a.field)).toEqual(['provider']);
     expect(await h.deps.repo.listVisitsSince('2026-01-01T00:00:00.000Z')).toEqual([]);
@@ -115,7 +116,8 @@ describe('book_service over multi round-trip requests (2026-07-28)', () => {
     close = h.close;
     const applianceId = await waterHeaterId(h.client);
     const r = await h.client.callTool({ name: 'book_service', arguments: { applianceId, issue: 'no hot water' } });
-    expect(r.isError).toBe(true);
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toEqual({ booked: false });
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe("Okay, I haven't booked anything.");
     expect(await h.deps.repo.listVisitsSince('2026-01-01T00:00:00.000Z')).toEqual([]);
   });
@@ -137,7 +139,8 @@ describe('book_service over multi round-trip requests (2026-07-28)', () => {
     close = h.close;
     const applianceId = await waterHeaterId(h.client);
     const r = await h.client.callTool({ name: 'book_service', arguments: { applianceId, issue: 'no hot water' } });
-    expect(r.isError).toBe(true);
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toEqual({ booked: false });
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe("Okay, I haven't booked anything.");
     expect(h.asked.map(a => a.field)).toEqual(['provider', 'window']);
     expect(await h.deps.repo.listVisitsSince('2026-01-01T00:00:00.000Z')).toEqual([]);

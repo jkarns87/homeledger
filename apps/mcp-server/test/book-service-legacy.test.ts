@@ -75,7 +75,8 @@ describe('book_service over a 2025-era session (legacy shim)', () => {
     const applianceId = (list.structuredContent as { appliances: Array<{ id: string }> }).appliances[0]!.id;
     const r = await client.callTool({ name: 'book_service', arguments: { applianceId, issue: 'no hot water' } });
     expect(asks).toBe(1);
-    expect(r.isError).toBe(true);
+    expect(r.isError).toBeFalsy();
+    expect(r.structuredContent).toEqual({ booked: false });
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe("Okay, I haven't booked anything.");
     expect(await deps.repo.listVisitsSince('2026-01-01T00:00:00.000Z')).toEqual([]);
     await client.close();
