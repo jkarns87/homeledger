@@ -25,6 +25,23 @@ interface Slot {
   timer: NodeJS.Timeout;
 }
 
+/** How many open turns trigger a tripwire log if no caller supplies its own. */
+export const DEFAULT_TURN_COUNT_WARNING_THRESHOLD = 500;
+
+export interface ElicitationRegistryOptions {
+  /**
+   * Called once for every multiple of `turnCountWarningThreshold` a newly
+   * opened turn reaches. Defaults to `console.warn` rather than a no-op —
+   * this registry has no way to tell a legitimately idle turn from an
+   * abandoned one (see the class doc comment), so it does not evict either
+   * one; the tripwire exists so a caller that never close()s a turn on some
+   * exit path shows up as a signal instead of silent, gradual growth. A
+   * caller that already has a structured logger can pass it here instead.
+   */
+  log?: (message: string) => void;
+  turnCountWarningThreshold?: number;
+}
+
 /**
  * The join between the MCP client's elicitation callback and a person's click.
  *
@@ -33,12 +50,43 @@ interface Slot {
  * This is the only thing that connects them, and it lives in process memory —
  * which is exactly why `POST /api/agent/answer` must reach the process running
  * the turn. `unknown-turn` is what a person sees when it does not.
+ *
+ * No `Slot` (a pending `ask()` promise and its timer) ever outlives its own
+ * settlement — `answer()`, the per-question timeout, and `close()` are the
+ * only three places one is removed, and each clears the native timer and
+ * settles the promise before returning. What this registry does *not*
+ * guarantee is that `open()` is always followed by a `close()`: the turn-level
+ * entry (empty of any Slot once its questions are settled) stays registered
+ * until something calls `close(turnId, ...)` for it. That pairing is the
+ * caller's obligation — on every exit path, not just the happy one — because
+ * the interface gives this registry no activity signal to tell a legitimately
+ * idle turn from an abandoned one, and a guessed TTL or sweep would silently
+ * kill the former. `size` and the tripwire log below exist so a caller that
+ * gets this wrong is observable rather than a slow, unattributed memory leak.
  */
 export class ElicitationRegistry {
   private readonly turns = new Map<string, Map<string, Slot>>();
+  private readonly log: (message: string) => void;
+  private readonly turnCountWarningThreshold: number;
+
+  constructor(options: ElicitationRegistryOptions = {}) {
+    this.log = options.log ?? (message => console.warn(message));
+    this.turnCountWarningThreshold = options.turnCountWarningThreshold ?? DEFAULT_TURN_COUNT_WARNING_THRESHOLD;
+  }
+
+  /** How many turns are currently open. Observability only — see the class doc comment: nothing here evicts on it. */
+  get size(): number {
+    return this.turns.size;
+  }
 
   open(turnId: string): void {
-    if (!this.turns.has(turnId)) this.turns.set(turnId, new Map());
+    if (this.turns.has(turnId)) return;
+    this.turns.set(turnId, new Map());
+    if (this.turns.size % this.turnCountWarningThreshold === 0) {
+      this.log(
+        `ElicitationRegistry has ${this.turns.size} open turns, a multiple of its ${this.turnCountWarningThreshold}-turn tripwire. If every open() is not paired with a close() on every exit path, this grows without bound.`
+      );
+    }
   }
 
   has(turnId: string): boolean {
