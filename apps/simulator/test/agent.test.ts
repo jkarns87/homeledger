@@ -285,19 +285,40 @@ describe('runTurn', () => {
       { role: 'user', content: 'what is the boiler' },
       { role: 'assistant', content: 'A water heater in the basement.' }
     ];
-    const { turnDeps } = loopDeps({ model: scriptedModel([() => [toolUse('c1', 'list_appliances', {})], () => [text('Six appliances.')]], seen) });
+    // Two tools, given in descending (non-alphabetical) order, and a `today`
+    // that is not `loopDeps`' own default ('2026-09-13'). Every other test in
+    // this file runs against that default with `loopDeps`' one tool, so a
+    // loop that hardcoded `toolNames: ['list_appliances']` or
+    // `today: '2026-09-13'` instead of reading `deps.tools` and `deps.today`
+    // would still satisfy every one of them — the fixture and the hardcoded
+    // pair would agree by coincidence. Overriding both here is what makes
+    // this test the one that disagrees with a hardcoded pair.
+    const tools = [
+      { name: 'schedule_visit', description: 'Schedule a visit.', inputSchema: { type: 'object' } },
+      { name: 'list_appliances', description: 'List the appliances.', inputSchema: { type: 'object' } }
+    ];
+    const { turnDeps } = loopDeps({
+      model: scriptedModel([() => [toolUse('c1', 'list_appliances', {})], () => [text('Six appliances.')]], seen),
+      today: '2030-01-01',
+      tools
+    });
     await runTurn(turnDeps, 't1', history, 'and the washer');
 
     expect(seen).toHaveLength(2);
     // Equality against the prompt builder pins the wiring — the deps' `today`
-    // and the LIVE tool names, not a hardcoded pair — and the two fragments
-    // beside it are the independent anchor that a prompt quietly emptied of
-    // its failure rules would fail even though both sides still agreed.
-    expect(seen[0]?.system).toBe(buildSystemPrompt({ today: '2026-09-13', toolNames: ['list_appliances'] }));
+    // and the LIVE tool names, read off the fixture above rather than off
+    // `loopDeps`' default — and the two fragments beside it are the
+    // independent anchor that a prompt quietly emptied of its failure rules
+    // would fail even though both sides still agreed.
+    expect(seen[0]?.system).toBe(buildSystemPrompt({ today: '2030-01-01', toolNames: ['schedule_visit', 'list_appliances'] }));
     expect(seen[0]?.system).toContain('If a tool call fails, say so.');
-    expect(seen[0]?.system).toContain('Today is 2026-09-13.');
-    // The tools as the server described them, not a list of bare names.
-    expect(seen[0]?.tools).toEqual([{ name: 'list_appliances', description: 'List the appliances.', input_schema: { type: 'object' } }]);
+    expect(seen[0]?.system).toContain('Today is 2030-01-01.');
+    // The tools as the server described them, not a list of bare names, and
+    // in the order the fixture gave them.
+    expect(seen[0]?.tools).toEqual([
+      { name: 'schedule_visit', description: 'Schedule a visit.', input_schema: { type: 'object' } },
+      { name: 'list_appliances', description: 'List the appliances.', input_schema: { type: 'object' } }
+    ]);
     // The conversation so far, ahead of this turn's own text.
     expect(seen[0]?.messages).toHaveLength(3);
     expect(seen[0]?.messages.slice(0, 2)).toEqual(history);
