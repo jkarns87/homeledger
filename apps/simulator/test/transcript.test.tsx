@@ -330,7 +330,7 @@ describe('Transcript', () => {
         ms: 900
       }
     ].reduce(reduceTurn, INITIAL_STATE);
-    render(<Transcript state={state} />);
+    render(<Transcript state={state} theme="dark" />);
     expect(screen.getByText('Two tasks are due.')).toBeDefined();
     expect(document.body.textContent).not.toContain('"items"');
   });
@@ -340,7 +340,7 @@ describe('Transcript', () => {
       { type: 'tool-started', callId: 'c1', tool: 'ask_manual', args: {} },
       { type: 'tool-failed', callId: 'c1', tool: 'ask_manual', message: 'Model access is blocked on this account.', ms: 1130 }
     ].reduce(reduceTurn, INITIAL_STATE);
-    render(<Transcript state={state} />);
+    render(<Transcript state={state} theme="dark" />);
     const failure = screen.getByTestId('tool-c1');
     expect(failure.dataset.status).toBe('failed');
     expect(failure.textContent).toContain('ask_manual');

@@ -76,7 +76,7 @@ describe('ElicitationCard, choice', () => {
     const state = { ...INITIAL_STATE, pending: choice };
     render(
       <>
-        <Transcript state={state} />
+        <Transcript state={state} theme="dark" />
         <ElicitationCard question={choice} onAnswer={() => {}} />
       </>
     );

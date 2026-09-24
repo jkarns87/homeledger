@@ -280,3 +280,11 @@ button.link {
   max-height: 90px;
   overflow-y: auto;
 }
+
+.widget {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  margin-top: 8px;
+  background: var(--bg);
+}

@@ -19,7 +19,7 @@ export default function Home() {
   const snapshot = useDebugSnapshot(turn.state.running || turn.state.pending !== null);
   return (
     <Frame theme={theme} onToggleTheme={() => setTheme(current => (current === 'dark' ? 'light' : 'dark'))}>
-      <Transcript state={turn.state} />
+      <Transcript state={turn.state} theme={theme} />
       {turn.state.progress ? <ProgressMeter progress={turn.state.progress} /> : null}
       {turn.state.pending ? <ElicitationCard question={turn.state.pending} onAnswer={(action, content) => void turn.answer(action, content)} /> : null}
       <Composer disabled={turn.state.running || turn.state.pending !== null} onAsk={text => void turn.ask(text)} />

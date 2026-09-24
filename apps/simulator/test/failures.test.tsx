@@ -26,7 +26,7 @@ const declined = [
 
 describe('Transcript failures', () => {
   it('explains a blocked manual search instead of showing the AWS sentence alone', () => {
-    render(<Transcript state={blocked} />);
+    render(<Transcript state={blocked} theme="dark" />);
     const card = screen.getByTestId('tool-c1');
     expect(card.dataset.status).toBe('failed');
     expect(card.textContent).toContain('The manuals could not be searched');
@@ -34,7 +34,7 @@ describe('Transcript failures', () => {
   });
 
   it('still shows the server’s own words, so the cause is not lost in the explanation', () => {
-    render(<Transcript state={blocked} />);
+    render(<Transcript state={blocked} theme="dark" />);
     expect(screen.getByTestId('tool-c1').textContent).toContain('Error 002');
   });
 
@@ -44,7 +44,7 @@ describe('Transcript failures', () => {
     // `explainFailure` produced "book_service failed - Nothing was retrieved,
     // so this is not an answer and not an empty one either", which is untrue
     // about somebody who chose not to book.
-    render(<Transcript state={declined} />);
+    render(<Transcript state={declined} theme="dark" />);
     const card = screen.getByTestId('tool-c9');
     expect(card.dataset.status).toBe('ok');
     expect(card.textContent).toContain("Okay, I haven't booked anything.");

@@ -440,3 +440,49 @@ describe('GET /api/debug', () => {
     expect(response.status).toBe(200);
   });
 });
+
+describe('the widget routes', () => {
+  it('serves a ui:// resource as HTML and refuses anything else', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidget } = await import('../src/server/http.js');
+    const ok = await handleWidget(convo, new Request('http://x/api/widget?uri=ui%3A%2F%2Fhomeledger%2Fappliances'));
+    expect(ok.status).toBe(200);
+    expect((await ok.text()).startsWith('<!doctype html>')).toBe(true);
+    for (const uri of ['homeledger://appliances', 'ui://elsewhere/x', 'file:///etc/passwd', '']) {
+      const refused = await handleWidget(convo, new Request(`http://x/api/widget?uri=${encodeURIComponent(uri)}`));
+      expect(refused.status, uri).toBe(400);
+    }
+  });
+
+  it('runs only the tools a widget is allowed to run', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const { WIDGET_TOOLS, handleWidgetTool } = await import('../src/server/http.js');
+
+    // Two properties, neither of them `expect(WIDGET_TOOLS).toEqual(['log_maintenance'])`
+    // - that line restated the producer's own literal from the same package
+    //   with no independent party, and proved only that a constant equals
+    //   itself. What matters is (1) the allowlist names tools that exist, so a
+    //   typo cannot silently allow nothing, and (2) every OTHER tool the
+    //   server offers is refused, which is the boundary this endpoint is.
+    const offered = convo.tools.map(tool => tool.name);
+    for (const allowed of WIDGET_TOOLS) expect(offered, allowed).toContain(allowed);
+    for (const name of offered.filter(candidate => !WIDGET_TOOLS.includes(candidate))) {
+      const refused = await handleWidgetTool(convo, new Request('http://x/api/widget/tool', { method: 'POST', body: JSON.stringify({ name, arguments: {} }) }));
+      expect(refused.status, name).toBe(403);
+    }
+
+    const list = (await convo.mcp.callTool('maintenance_due', {})) as { structuredContent: { items: Array<{ applianceId: string; taskType: string }> } };
+    const item = list.structuredContent.items[0]!;
+    const allowed = await handleWidgetTool(
+      convo,
+      new Request('http://x/api/widget/tool', { method: 'POST', body: JSON.stringify({ name: 'log_maintenance', arguments: item }) })
+    );
+    expect(allowed.status).toBe(200);
+    const refused = await handleWidgetTool(
+      convo,
+      new Request('http://x/api/widget/tool', { method: 'POST', body: JSON.stringify({ name: 'book_service', arguments: {} }) })
+    );
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).message).toContain('book_service');
+  });
+});

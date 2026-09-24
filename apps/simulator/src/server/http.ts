@@ -187,6 +187,55 @@ export async function handleAnswer(conversation: Conversation, request: Request)
  * stranger's browser cares to send. `next dev` binds all interfaces, so
  * "small blast radius" is not "no blast radius".
  */
+/**
+ * The only tools a widget may run, and the reason the list is short.
+ *
+ * The calendar widget's "log as done" button is the one interaction the
+ * widgets have (`apps/mcp-server/src/widgets/calendar.ts`). A general
+ * tool-calling endpoint reachable from a sandboxed frame would let anything
+ * running in that frame book a service visit, which is a write nobody asked
+ * for. An allowlist checked server-side is the boundary; the widget's own good
+ * behaviour is not.
+ */
+export const WIDGET_TOOLS: readonly string[] = ['log_maintenance'];
+
+export async function handleWidget(conversation: Conversation, request: Request): Promise<Response> {
+  // Checked here too, and not only on the tool route. This endpoint is fetched
+  // by the browser like every other one, and an Origin check that covers four
+  // routes out of five is a check somebody will reasonably believe covers all
+  // five.
+  const forbidden = checkOrigin(request, conversation.env.allowOrigin);
+  if (forbidden) return forbidden;
+  const uri = new URL(request.url).searchParams.get('uri') ?? '';
+  // Prefix-checked, not merely scheme-checked: this endpoint exists to serve
+  // this server's widgets and must not become a way to read any resource the
+  // MCP server exposes.
+  if (!uri.startsWith('ui://homeledger/'))
+    return json({ ok: false, reason: 'bad-request', message: `Only ui://homeledger/ resources are served here; got ${JSON.stringify(uri)}.` }, 400);
+  try {
+    const html = await conversation.mcp.readResource(uri);
+    return new Response(html, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+  } catch (error) {
+    return json({ ok: false, reason: 'unavailable', message: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
+export async function handleWidgetTool(conversation: Conversation, request: Request): Promise<Response> {
+  const forbidden = checkOrigin(request, conversation.env.allowOrigin);
+  if (forbidden) return forbidden;
+  const body = await readJson(request);
+  const name = body?.name;
+  if (typeof name !== 'string') return json({ ok: false, reason: 'bad-request', message: 'The body needs a string "name".' }, 400);
+  if (!WIDGET_TOOLS.includes(name))
+    return json({ ok: false, reason: 'forbidden-tool', message: `A widget may not call ${name}. Allowed here: ${WIDGET_TOOLS.join(', ')}.` }, 403);
+  const args = (typeof body?.arguments === 'object' && body.arguments !== null ? body.arguments : {}) as Record<string, unknown>;
+  try {
+    return json(await conversation.mcp.callTool(name, args), 200);
+  } catch (error) {
+    return json({ ok: false, reason: 'tool-failed', message: error instanceof Error ? error.message : String(error) }, 502);
+  }
+}
+
 export function handleDebug(conversation: Conversation, request: Request): Response {
   const forbidden = checkOrigin(request, conversation.env.allowOrigin);
   if (forbidden) return forbidden;
