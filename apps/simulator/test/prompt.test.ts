@@ -46,6 +46,21 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('ask_manual returns source passages');
   });
 
+  it('tells the model an empty ask_manual result is a real answer, not a broken search', () => {
+    // `apps/mcp-server/src/tools/manual.ts` returns zero passages as a
+    // SUCCESSFUL call - `{ passages: [] }`, no `isError` - with its own spoken
+    // text "I couldn't find anything about that in the manuals." Instructing
+    // the model to say the manual "could not be searched" would put a false
+    // cause on a true, ordinary outcome: the search worked and found nothing,
+    // which is not the same claim as the search being broken. This is the
+    // general failure rule's mistake in reverse - inventing a failure for a
+    // success rather than inventing a cause for a failure - so both the honest
+    // wording and the absence of the false one are pinned here.
+    const prompt = buildSystemPrompt({ today: '2026-09-21', toolNames: NINE });
+    expect(prompt).toContain('you could not find anything about that in the manuals');
+    expect(prompt).not.toContain('could not be searched');
+  });
+
   it('carries the date it was given', () => {
     expect(buildSystemPrompt({ today: '2026-10-22', toolNames: NINE })).toContain('2026-10-22');
   });
@@ -89,6 +104,12 @@ describe('wordmark guard', () => {
     // `src/server/mcp.ts`'s class comment named the product in the draft of
     // this plan, and it is written one task earlier than this test.
     const root = fileURLToPath(new URL('../src', import.meta.url));
+    // Exact path, not a suffix: `file.endsWith(join('server', 'prompt.ts'))`
+    // also matches a directory that merely ENDS in "server" -
+    // `fooserver/prompt.ts` - because `.endsWith` has no notion of a path
+    // boundary. `join(root, ...)` reproduces the one real path this exemption
+    // means, so nothing else can collide with it.
+    const promptModule = join(root, 'server', 'prompt.ts');
     const walk = async (dir: string): Promise<string[]> => {
       const entries = await readdir(dir, { withFileTypes: true });
       const files: string[] = [];
@@ -101,8 +122,15 @@ describe('wordmark guard', () => {
     };
     const offenders: string[] = [];
     for (const file of await walk(root)) {
-      if (file.endsWith(join('server', 'prompt.ts'))) continue; // the list itself lives here
-      const text = await readFile(file, 'utf8').then(t => t.toLowerCase());
+      const raw = await readFile(file, 'utf8');
+      // `prompt.ts` is exempted line-by-line, not file-wide: the
+      // FORBIDDEN_WORDMARKS array literal is the one place a mark may
+      // legitimately appear as data, so only that declaration's own line is
+      // stripped before scanning. Every other line in this file - including
+      // its own prose - is checked exactly like every other file, because
+      // this is the text that shapes what the model says out loud, which
+      // makes it the single most damaging place for a false claim to hide.
+      const text = (file === promptModule ? raw.replace(/^export const FORBIDDEN_WORDMARKS.*$/m, '') : raw).toLowerCase();
       for (const mark of FORBIDDEN_WORDMARKS) if (text.includes(mark.toLowerCase())) offenders.push(`${file}: ${mark}`);
     }
     expect(offenders).toEqual([]);

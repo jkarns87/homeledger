@@ -60,7 +60,16 @@ export function buildSystemPrompt(input: { today: string; toolNames: readonly st
     // only list either of these may be keyed on.
     ...(offers('ask_manual')
       ? [
-          '- ask_manual returns source passages; you write the answer from them and cite the document title and page. If it returns no passages, say the manual could not be searched — do not invent the answer.'
+          // "No passages" is a SUCCESSFUL call, not a failed one: `ask_manual`
+          // returns `{ passages: [] }` with no `isError`, and its own spoken
+          // text is "I couldn't find anything about that in the manuals."
+          // (`apps/mcp-server/src/tools/manual.ts`). Telling the model to say
+          // the manual "could not be searched" would put a false cause on a
+          // true, ordinary outcome — the same mistake `NO_DATA_NOTICE` exists
+          // to prevent, arriving from the opposite direction: that notice
+          // stops an invented cause for a failure, and the wrong wording here
+          // would have invented a failure for a success.
+          '- ask_manual returns source passages; you write the answer from them and cite the document title and page. If it returns no passages, say you could not find anything about that in the manuals - that is a normal result, not a failure, so do not say the search failed and do not invent an answer from outside them.'
         ]
       : []),
     ...(offers('book_service')
