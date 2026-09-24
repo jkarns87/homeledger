@@ -361,3 +361,32 @@ describe('householdTimeZone', () => {
     expect(zone).toBe(SEED_TIMEZONE);
   });
 });
+
+describe('GET /api/debug', () => {
+  it('describes the connection without carrying a credential', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const body = (await (await import('../src/server/http.js')).handleDebug(convo).json()) as Record<string, unknown>;
+    expect(body.addressing).toBe('url');
+    expect(typeof body.sessionId).toBe('string');
+    expect(body.rebuilds).toBe(0);
+    expect(Array.isArray(body.tools)).toBe(true);
+    const serialised = JSON.stringify(body).toLowerCase();
+    for (const forbidden of ['bearer', 'authorization', 'secret', 'anthropic', 'password', 'token']) {
+      expect(serialised, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('carries the two spec section 7 fields the drawer cannot get anywhere else', async () => {
+    const convo = await conversation(scriptedModel([]));
+    await convo.mcp.callTool('list_appliances', {});
+    const body = (await (await import('../src/server/http.js')).handleDebug(convo).json()) as { protocolVersion: unknown; log: Array<{ method: string }> };
+    expect(body.protocolVersion).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(body.log.map(entry => entry.method)).toContain('tools/call');
+    // `token` is on the forbidden list above and `progressToken` is on every
+    // progress notification this server sends, so the log has to be methods
+    // and timings rather than payloads. This asserts that the credential test
+    // above is passing because the log holds no bodies, not because this
+    // particular call happened to send nothing interesting.
+    expect(JSON.stringify(body.log)).not.toContain('appliances');
+  });
+});

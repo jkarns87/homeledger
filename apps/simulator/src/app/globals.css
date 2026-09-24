@@ -259,3 +259,24 @@ button.link {
   background: var(--accent);
   transition: width 120ms linear;
 }
+
+.debug {
+  flex: 0 0 auto;
+  font-size: 11px;
+}
+
+.debug summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.debug ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+
+.debug ul.rpc {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-height: 90px;
+  overflow-y: auto;
+}

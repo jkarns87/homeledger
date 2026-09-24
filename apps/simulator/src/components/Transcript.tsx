@@ -1,5 +1,6 @@
 'use client';
 
+import { FailureCard } from './FailureCard.js';
 import type { AgentState, Entry } from '../lib/transcript.js';
 
 function ToolRow({ entry }: { entry: Extract<Entry, { kind: 'tool' }> }) {
@@ -10,7 +11,7 @@ function ToolRow({ entry }: { entry: Extract<Entry, { kind: 'tool' }> }) {
         <span className="pill">{entry.status === 'running' ? 'working' : entry.status === 'ok' ? `${entry.ms ?? 0} ms` : 'failed'}</span>
       </div>
       {entry.status === 'ok' && entry.spoken !== '' ? <p className="spoken">{entry.spoken}</p> : null}
-      {entry.status === 'failed' ? <p className="warn">{entry.message}</p> : null}
+      {entry.status === 'failed' ? <FailureCard tool={entry.tool} message={entry.message} /> : null}
     </div>
   );
 }

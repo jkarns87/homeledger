@@ -165,3 +165,36 @@ export async function handleAnswer(conversation: Conversation, request: Request)
   if (outcome === 'unknown-turn') return json({ ok: false, reason: 'unknown-turn', message: UNKNOWN_TURN_MESSAGE }, 409);
   return json({ ok: false, reason: 'unknown-question', message: UNKNOWN_QUESTION_MESSAGE }, 409);
 }
+
+/**
+ * What the drawer shows. Built by hand rather than by serialising the
+ * conversation, because the conversation holds a token source and an API key
+ * and a spread would put both on the wire the first time somebody adds a field.
+ *
+ * Four things, and spec section 7 names all four: the JSON-RPC log, the
+ * negotiated protocol version, the session id, and the timing per call (that
+ * last one is on the client, from the transcript's own entries). The address
+ * is read from `mcp.endpointUrl` and not from `conversation.endpoint`, because
+ * the client heals the address on a rebuild and a drawer that showed the
+ * startup URL would be confidently wrong about the one thing somebody opens it
+ * to check.
+ */
+export function handleDebug(conversation: Conversation): Response {
+  const url = new URL(conversation.mcp.endpointUrl);
+  return new Response(
+    JSON.stringify({
+      endpointHost: url.host,
+      endpointPath: url.pathname,
+      addressing: conversation.endpoint.origin,
+      protocolVersion: conversation.mcp.protocolVersion ?? null,
+      sessionId: conversation.mcp.sessionId ?? null,
+      rebuilds: conversation.mcp.rebuilds,
+      tools: conversation.tools.map(tool => tool.name),
+      // Methods and timings. `HomeLedgerMcp.record` keeps payloads out at the
+      // source; this endpoint spreads the entries it is given and adds
+      // nothing, so there is one place to read to know what can appear here.
+      log: conversation.mcp.jsonRpcLog.map(entry => ({ ...entry }))
+    }),
+    { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } }
+  );
+}
