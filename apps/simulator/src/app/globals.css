@@ -200,3 +200,62 @@ body {
   opacity: 0.5;
   cursor: default;
 }
+
+.elicitation {
+  flex: 0 0 auto;
+  border-color: var(--accent);
+}
+
+.prompt {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.choices button {
+  font: inherit;
+  font-size: 13px;
+  color: var(--card);
+  background: var(--accent);
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.choices button.secondary {
+  background: var(--nested);
+  color: var(--text);
+}
+
+button.link {
+  margin-top: 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.progress [role='progressbar'] {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--nested);
+  overflow: hidden;
+}
+
+.progress .bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
