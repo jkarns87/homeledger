@@ -124,6 +124,38 @@ describe('useAgentTurn', () => {
     });
   });
 
+  // RULING 1, pinned in the hook (fix round 1): the reducer-level pin
+  // (transcript.test.ts) is not enough on its own - the read loop itself
+  // must keep reading after `finished` flips to `true`, because the server
+  // can send `turn-finished` and THEN `turn-failed` on a turn that threw
+  // after its own `finally` already ran (task-11-brief's "Context the brief
+  // cannot know"). Stopping the loop early the moment `finished` is set
+  // (`if (finished) break`) would drop that exact failure - the review's own
+  // mutation, confirmed to survive the fix-round-0 suite 10/10 before this
+  // test existed.
+  it('keeps reading after turn-finished so a failure that arrives after it still renders', async () => {
+    const message = 'The model connection reset while finishing this turn.';
+    const fetchImpl = vi.fn(async () =>
+      streamOf([
+        { type: 'turn-started', turnId: 't1' },
+        { type: 'turn-finished', turnId: 't1' },
+        { type: 'turn-failed', message }
+      ])
+    ) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    await act(async () => {
+      await result.current.ask('what appliances do we have');
+    });
+    await waitFor(() => expect(result.current.state.running).toBe(false));
+    const notices = result.current.state.entries.filter(e => e.kind === 'notice');
+    // Exactly one: the real failure from the wire. If the loop stopped
+    // reading at `turn-finished`, this would be zero. If ruling 2's
+    // backstop fired on top of the real failure (it must not, because this
+    // turn DID receive `turn-finished`), this would be two.
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ tone: 'failure', text: message });
+  });
+
   // RULING 2(a) (STREAM-END, task-11 brief): the stream can end (`done`) without
   // ever sending `turn-finished` - a network intermediary closing the
   // connection, or a server process dying mid-turn. Left unhandled, `running`
@@ -189,6 +221,12 @@ describe('useAgentTurn', () => {
     });
     const notice = result.current.state.entries.find(e => e.kind === 'notice');
     expect(notice).toMatchObject({ tone: 'failure' });
+    // The ruling's own sentence, not only the underlying error text: without
+    // it, a network drop on the answer path would read identically to any
+    // other failure, and there would be nothing distinguishing "the answer
+    // itself never reached the server" from every other kind of failure
+    // notice on the transcript.
+    expect(notice && notice.kind === 'notice' && notice.text).toContain('answer could not be sent');
     expect(notice && notice.kind === 'notice' && notice.text).toContain('network down');
     // The turn's own stream is still open - only the sibling answer request
     // failed - so `turn-finished` must NOT have been applied on its behalf.
