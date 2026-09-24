@@ -7,8 +7,9 @@ import { createElicitRouter, runTurn, type TurnDeps } from '../src/server/agent.
 import { ElicitationRegistry } from '../src/server/elicitation.js';
 import type { TurnEvent } from '../src/shared/events.js';
 import { HomeLedgerMcp } from '../src/server/mcp.js';
-import type { ModelPort } from '../src/server/model.js';
+import type { ModelPort, ModelRequest } from '../src/server/model.js';
 import { NO_DATA_NOTICE } from '../src/server/tools.js';
+import { buildSystemPrompt } from '../src/server/prompt.js';
 
 let server: Server | undefined;
 let closeApp: () => Promise<void> = async () => {};
@@ -23,11 +24,27 @@ afterEach(async () => {
   closeClient = async () => {};
 });
 
-/** A model that plays a fixed script of turns, one per round. */
-function scriptedModel(script: Array<(messages: Anthropic.MessageParam[]) => Anthropic.ContentBlock[]>): ModelPort {
+/**
+ * A model that plays a fixed script of turns, one per round.
+ *
+ * `seen` is not decoration. A fake that reads only `request.messages` cannot
+ * express a loop that hands the model an empty system prompt or an empty tool
+ * list, and the first of those silently strips every anti-fabrication rule
+ * Task 7 wrote — the honest-failure instruction, the no-invented-cause clause,
+ * the spoken-text discipline — while every assertion about events and tool
+ * results stays green. So every request the loop makes is recorded, and
+ * `'hands the model the system prompt, the tools and the history'` reads them.
+ */
+function scriptedModel(script: Array<(messages: Anthropic.MessageParam[]) => Anthropic.ContentBlock[]>, seen: ModelRequest[] = []): ModelPort {
   let round = 0;
   return {
     async respond(request, onText) {
+      // A SNAPSHOT, not the live object. `runTurn` pushes into one `messages`
+      // array and hands the same reference to every round, so recording the
+      // reference would make each round's assertion read the conversation as it
+      // ended rather than as that round received it — and a loop that sent the
+      // whole history on round one would be indistinguishable from this one.
+      seen.push({ ...request, messages: [...request.messages] });
       const content = script[round++]?.(request.messages) ?? [{ type: 'text', text: 'Done.' } as Anthropic.ContentBlock];
       for (const block of content) if (block.type === 'text') onText(block.text);
       return {
@@ -46,6 +63,10 @@ function scriptedModel(script: Array<(messages: Anthropic.MessageParam[]) => Ant
 
 function toolUse(id: string, name: string, input: Record<string, unknown>): Anthropic.ContentBlock {
   return { type: 'tool_use', id, name, input } as unknown as Anthropic.ContentBlock;
+}
+
+function text(value: string): Anthropic.ContentBlock {
+  return { type: 'text', text: value } as Anthropic.ContentBlock;
 }
 
 /** Pulls the first appliance id out of the tool_result text the previous round produced. */
@@ -252,6 +273,43 @@ describe('runTurn', () => {
     expect(events.some(e => e.type === 'elicitation-opened')).toBe(false);
   });
 
+  it('hands the model the system prompt, the tools and the history, on every round', async () => {
+    // Three things the loop passes and nothing else in this file reads. The
+    // system prompt is the dangerous one: blanked, it strips every
+    // anti-fabrication rule Task 7 added — the instruction to say a call
+    // failed, the ban on inventing a cause, the spoken-text discipline — and
+    // every other assertion in this file stays green, because the fakes here
+    // do as they are told whatever they are asked.
+    const seen: ModelRequest[] = [];
+    const history: Anthropic.MessageParam[] = [
+      { role: 'user', content: 'what is the boiler' },
+      { role: 'assistant', content: 'A water heater in the basement.' }
+    ];
+    const { turnDeps } = loopDeps({ model: scriptedModel([() => [toolUse('c1', 'list_appliances', {})], () => [text('Six appliances.')]], seen) });
+    await runTurn(turnDeps, 't1', history, 'and the washer');
+
+    expect(seen).toHaveLength(2);
+    // Equality against the prompt builder pins the wiring — the deps' `today`
+    // and the LIVE tool names, not a hardcoded pair — and the two fragments
+    // beside it are the independent anchor that a prompt quietly emptied of
+    // its failure rules would fail even though both sides still agreed.
+    expect(seen[0]?.system).toBe(buildSystemPrompt({ today: '2026-09-13', toolNames: ['list_appliances'] }));
+    expect(seen[0]?.system).toContain('If a tool call fails, say so.');
+    expect(seen[0]?.system).toContain('Today is 2026-09-13.');
+    // The tools as the server described them, not a list of bare names.
+    expect(seen[0]?.tools).toEqual([{ name: 'list_appliances', description: 'List the appliances.', input_schema: { type: 'object' } }]);
+    // The conversation so far, ahead of this turn's own text.
+    expect(seen[0]?.messages).toHaveLength(3);
+    expect(seen[0]?.messages.slice(0, 2)).toEqual(history);
+    expect(seen[0]?.messages[2]).toEqual({ role: 'user', content: 'and the washer' });
+    // Round two is not a fresh conversation: the same prompt and tools, and the
+    // first round's assistant turn and tool result appended to what it had.
+    expect(seen[1]?.system).toBe(seen[0]?.system);
+    expect(seen[1]?.tools).toEqual(seen[0]?.tools);
+    expect(seen[1]?.messages).toHaveLength(5);
+    expect(seen[1]?.messages.slice(0, 3)).toEqual(seen[0]?.messages);
+  });
+
   it('keeps the assistant turn in history exactly as the model wrote it, thinking blocks included', async () => {
     // A thinking block is bound to the model that produced it and has to be
     // echoed back byte-identical for the next round to continue the same
@@ -342,6 +400,50 @@ describe('runTurn closes its turn on every exit path', () => {
     expect(turnDeps.registry.size).toBe(0);
   });
 
+  it('announces a call with the id and the arguments the model actually chose', async () => {
+    // The transcript renders these and the debug drawer cannot: `mcp.ts`
+    // deliberately logs no payloads, so this event is the only place the
+    // arguments of a call are ever visible. An empty object or a missing id
+    // reads as a call with no inputs rather than as a bug.
+    const { turnDeps, events } = loopDeps({
+      model: scriptedModel([() => [toolUse('call_7', 'list_appliances', { category: 'water_heater', limit: 3 })], () => [text('Three.')]])
+    });
+    await runTurn(turnDeps, 't1', [], 'what water heaters do we have');
+    const started = events.find(e => e.type === 'tool-started');
+    expect(started && started.type === 'tool-started' && started.callId).toBe('call_7');
+    expect(started && started.type === 'tool-started' && started.tool).toBe('list_appliances');
+    expect(started && started.type === 'tool-started' && started.args).toEqual({ category: 'water_heater', limit: 3 });
+    // The same id ties the result back to the call it belongs to.
+    const succeeded = events.find(e => e.type === 'tool-succeeded');
+    expect(succeeded && succeeded.type === 'tool-succeeded' && succeeded.callId).toBe('call_7');
+  });
+
+  it('carries the question the server asked, word for word, to the card that renders it', async () => {
+    // The person reads this sentence and nothing else: `field` and `options`
+    // are ids. A card that showed the field name instead would ask "provider"
+    // where the server asked who should be sent for the water heater.
+    const events: TurnEvent[] = [];
+    const { turnDeps } = fakeDeps(CHOICE_SCHEMA, {
+      emit: event => {
+        events.push(event);
+        if (event.type === 'elicitation-opened') setTimeout(() => turnDeps.registry.answer('t1', event.elicitationId, { action: 'decline' }), 0);
+      }
+    });
+    await runTurn(turnDeps, 't1', [], 'book a plumber');
+    const opened = events.find(e => e.type === 'elicitation-opened');
+    expect(opened && opened.type === 'elicitation-opened' && opened.prompt).toBe('pick one');
+    expect(opened && opened.type === 'elicitation-opened' && opened.callId).toBe('c1');
+    expect(opened && opened.type === 'elicitation-opened' && opened.options).toEqual([
+      { value: 'p1', label: 'One' },
+      { value: 'p2', label: 'Two' }
+    ]);
+    // The card is closed against the same id it was opened with.
+    const closed = events.find(e => e.type === 'elicitation-closed');
+    expect(closed && closed.type === 'elicitation-closed' && closed.elicitationId).toBe(
+      opened && opened.type === 'elicitation-opened' ? opened.elicitationId : 'missing'
+    );
+  });
+
   it('closes a turn the model threw out of', async () => {
     const sizes: number[] = [];
     const { turnDeps } = loopDeps({
@@ -392,6 +494,10 @@ describe('runTurn closes its turn on every exit path', () => {
 
     const failure = events.find(e => e.type === 'tool-failed');
     expect(failure && failure.type === 'tool-failed' && failure.message).toBe('socket hang up');
+    // Which call and which tool, so a transcript with two calls in flight can
+    // put the failure against the right one.
+    expect(failure && failure.type === 'tool-failed' && failure.tool).toBe('list_appliances');
+    expect(failure && failure.type === 'tool-failed' && failure.callId).toBe('c1');
     expect(events.some(e => e.type === 'tool-succeeded')).toBe(false);
     // Whole, not summarised: the transport's own sentence and every claim the
     // notice makes reach the model unedited. `toContain` on the imported
@@ -400,10 +506,10 @@ describe('runTurn closes its turn on every exit path', () => {
     // is what a `.slice()` or a reworded paraphrase fails.
     const block = (messages[2]?.content as Anthropic.ToolResultBlockParam[])[0];
     expect(block?.is_error).toBe(true);
-    const text = (block?.content as Array<{ text: string }>)[0]?.text ?? '';
-    expect(text).toContain('socket hang up');
-    expect(text).toContain(NO_DATA_NOTICE);
-    expect(text).toHaveLength('socket hang up'.length + 2 + NO_DATA_NOTICE.length);
+    // Equality, not two `toContain`s: those two pass just as well with the
+    // notice ahead of the error, which buries the one sentence naming what
+    // went wrong under five that do not.
+    expect((block?.content as Array<{ text: string }>)[0]?.text).toBe(`socket hang up\n\n${NO_DATA_NOTICE}`);
     expect(sizes).toEqual([1]);
     expect(turnDeps.registry.size).toBe(0);
   });
@@ -481,14 +587,72 @@ describe('runTurn closes its turn on every exit path', () => {
     expect(events.some(e => e.type === 'tool-succeeded')).toBe(false);
   });
 
-  it('closes a turn whose question nobody ever answered', async () => {
+  it('reports a session rebuild on a call that was replayed and then SUCCEEDED, which is the ordinary case', async () => {
+    // The common production shape and the one a failure-only fixture cannot
+    // express: the instance holding the session was recycled, `HomeLedgerMcp`
+    // re-established it and replayed the call, and the call then worked. The
+    // person still has to be told once that the connection was rebuilt.
+    let rebuilds = 0;
+    const { turnDeps, events } = loopDeps({
+      mcp: {
+        get rebuilds() {
+          return rebuilds;
+        },
+        callTool: async () => {
+          rebuilds += 1;
+          return { content: [{ type: 'text', text: 'Six appliances.' }] };
+        }
+      }
+    });
+    await runTurn(turnDeps, 't1', [], 'what appliances do we have');
+    expect(events.filter(e => e.type === 'session-rebuilt')).toHaveLength(1);
+    expect(events.some(e => e.type === 'tool-succeeded')).toBe(true);
+    expect(events.some(e => e.type === 'tool-failed')).toBe(false);
+    // Ordered: the rebuild is announced before the result it belongs to.
+    expect(events.map(e => e.type).indexOf('session-rebuilt')).toBeLessThan(events.map(e => e.type).indexOf('tool-succeeded'));
+  });
+
+  it('does not report a rebuild on a call that needed none', async () => {
+    const { turnDeps, events } = loopDeps();
+    await runTurn(turnDeps, 't1', [], 'what appliances do we have');
+    expect(events.some(e => e.type === 'session-rebuilt')).toBe(false);
+  });
+
+  it('closes a turn whose question nobody ever answered, and tells the server cancel rather than decline', async () => {
     const events: TurnEvent[] = [];
     const { turnDeps } = fakeDeps(CHOICE_SCHEMA, { elicitationTimeoutMs: 20, emit: event => events.push(event) });
     const sizes: number[] = [];
     watchSize(turnDeps, 'elicitation-opened', sizes);
     await runTurn(turnDeps, 't1', [], 'book a plumber');
     expect(events.some(e => e.type === 'elicitation-closed' && e.action === 'abandoned')).toBe(true);
+    // The value the server actually received, read back out of the fake's own
+    // spoken line. `decline` would type-check, would satisfy every other
+    // assertion here, and would tell the server a person said no to a question
+    // they were never shown — indistinguishable downstream from a real decline,
+    // which is the contract `NOT_BOOKED` pins in `packages/core`. The fixture
+    // computed this value before and threw it away.
+    const answered = events.find(e => e.type === 'tool-succeeded');
+    expect(answered && answered.type === 'tool-succeeded' && answered.spoken).toBe('answered cancel');
     expect(sizes).toEqual([1]);
+    expect(turnDeps.registry.size).toBe(0);
+  });
+
+  it('closes a turn whose question the person declined, and passes the decline through as a decline', async () => {
+    // The other half of the pair, so neither action can be hardcoded: a real
+    // decline must survive the loop as `decline`, and the loop must not
+    // manufacture one.
+    const events: TurnEvent[] = [];
+    const { turnDeps } = fakeDeps(CHOICE_SCHEMA, {
+      emit: event => {
+        events.push(event);
+        if (event.type === 'elicitation-opened') setTimeout(() => turnDeps.registry.answer('t1', event.elicitationId, { action: 'decline' }), 0);
+      }
+    });
+    await runTurn(turnDeps, 't1', [], 'book a plumber');
+    const answered = events.find(e => e.type === 'tool-succeeded');
+    expect(answered && answered.type === 'tool-succeeded' && answered.spoken).toBe('answered decline');
+    expect(events.some(e => e.type === 'elicitation-closed' && e.action === 'decline')).toBe(true);
+    expect(events.some(e => e.type === 'elicitation-closed' && e.action === 'abandoned')).toBe(false);
     expect(turnDeps.registry.size).toBe(0);
   });
 
@@ -579,6 +743,107 @@ describe('runTurn closes its turn on every exit path', () => {
     // A rejection settled after this point still has to be adopted, so give
     // the microtask queue a turn before the test ends.
     await new Promise(resolve => setTimeout(resolve, 0));
+  });
+
+  it('closes a turn whose own registration threw on the way in', async () => {
+    // `open()` is not throw-free. It sets the map entry and THEN calls the
+    // injected tripwire logger — the logger Task 9 wires to a real one — so a
+    // logger that throws leaves an entry created by a call that never returned.
+    // Registering outside the `try` leaks it permanently, which is the same
+    // defect as the `turn-started` emit one line below it and was still here
+    // after that one was fixed.
+    const registry = new ElicitationRegistry({
+      turnCountWarningThreshold: 1,
+      log: () => {
+        throw new Error('the structured logger rejected the tripwire line');
+      }
+    });
+    const { turnDeps, events } = loopDeps({ registry });
+    await expect(runTurn(turnDeps, 't1', [], 'hello')).rejects.toThrow(/tripwire line/);
+    // The entry existed — `open()` sets it before it logs — and is gone again.
+    expect(registry.has('t1')).toBe(false);
+    expect(registry.size).toBe(0);
+    // Nothing was announced: the turn never got as far as its first frame.
+    expect(events).toHaveLength(0);
+  });
+
+  it('refuses a second turn on an id that is already running, and leaves the first turn untouched', async () => {
+    // `open()` is idempotent, so before it returned a boolean the loop could
+    // not tell "I registered this" from "somebody already had it". Joining is
+    // the dangerous reading: the second turn's `finally` would close the FIRST
+    // turn's entry and reject its open question, which downstream looks exactly
+    // like a person who cancelled a booking they were still deciding on.
+    const registry = new ElicitationRegistry();
+    const opened = Promise.withResolvers<void>();
+    const first = fakeDeps(CHOICE_SCHEMA, {
+      registry,
+      elicitationTimeoutMs: 2000,
+      emit: event => {
+        if (event.type === 'elicitation-opened') {
+          opened.resolve();
+          setTimeout(() => registry.answer('t1', event.elicitationId, { action: 'accept', content: { provider: 'p1' } }), 20);
+        }
+      }
+    });
+    const running = runTurn(first.turnDeps, 't1', [], 'book a plumber');
+    await opened.promise;
+
+    const second = loopDeps({ registry });
+    await expect(runTurn(second.turnDeps, 't1', [], 'hello')).rejects.toThrow(/already running/);
+    // Refused before it announced anything, and the first turn is intact.
+    expect(second.events).toHaveLength(0);
+    expect(registry.has('t1')).toBe(true);
+    expect(registry.size).toBe(1);
+
+    // The first turn still answers its own question and closes its own entry.
+    await running;
+    expect(first.turnDeps.registry.size).toBe(0);
+  });
+
+  it('never lets a dead stream stand in for the reason a turn actually failed', async () => {
+    // Both failures are real and they are different problems: the model is
+    // rate-limited AND the browser is gone. A throw from the `finally`
+    // REPLACES whatever was in flight, so the naive version reports only the
+    // stream — and no caller can recover the original from the outside,
+    // because by the time they see it the original has been destroyed.
+    const rateLimited = new Error('the model rejected the request: rate limited');
+    const { turnDeps } = loopDeps({
+      model: {
+        async respond() {
+          throw rateLimited;
+        }
+      }
+    });
+    const inner = turnDeps.emit;
+    turnDeps.emit = event => {
+      if (event.type === 'turn-finished') throw new Error('the browser stopped reading this stream');
+      inner(event);
+    };
+    const thrown = await runTurn(turnDeps, 't1', [], 'hello').then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    // Both named, and the original object itself — type, stack and all —
+    // reachable as the cause rather than flattened into a string.
+    expect(String(thrown)).toContain('rate limited');
+    expect(String(thrown)).toContain('stopped reading this stream');
+    expect((thrown as Error).cause).toBe(rateLimited);
+    expect(turnDeps.registry.size).toBe(0);
+  });
+
+  it('reports a dead stream on its own when there was no other failure to protect', async () => {
+    // The other side of the same branch: with nothing in flight there is
+    // nothing to preserve, so the stream's own error propagates untouched
+    // rather than being wrapped in a second error that names a failure that
+    // never happened.
+    const { turnDeps } = loopDeps();
+    const inner = turnDeps.emit;
+    turnDeps.emit = event => {
+      if (event.type === 'turn-finished') throw new Error('the browser stopped reading this stream');
+      inner(event);
+    };
+    await expect(runTurn(turnDeps, 't1', [], 'hello')).rejects.toThrow(/^the browser stopped reading this stream$/);
+    expect(turnDeps.registry.size).toBe(0);
   });
 
   it('leaves no handler behind that a later question could reach', async () => {

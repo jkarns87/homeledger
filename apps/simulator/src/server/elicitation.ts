@@ -79,14 +79,32 @@ export class ElicitationRegistry {
     return this.turns.size;
   }
 
-  open(turnId: string): void {
-    if (this.turns.has(turnId)) return;
+  /**
+   * Registers a turn, and says whether THIS call is the one that registered it.
+   *
+   * The boolean is the whole point and it is not a convenience. `open()` is
+   * idempotent, which used to mean a caller could not tell "I opened this turn"
+   * from "somebody else already had it open" — and the caller's `close()` is
+   * unconditional, so a second turn admitted on the same id would have the
+   * first turn's `finally` reject the second's questions and delete its entry.
+   * Returning `false` lets the caller refuse instead of joining. That is a
+   * precondition, not the TTL-shaped heuristic this class declines to run: it
+   * decides on a fact the registry holds right now rather than on a guess about
+   * how long a turn is allowed to be idle.
+   */
+  open(turnId: string): boolean {
+    if (this.turns.has(turnId)) return false;
     this.turns.set(turnId, new Map());
+    // Note the ordering, which the caller depends on: the entry is in the map
+    // BEFORE the injected log runs. A log that throws therefore leaves an entry
+    // this call created and did not return for, so "open() threw" has to count
+    // as "the entry is mine" on the caller's side — see `runTurn`'s `mine`.
     if (this.turns.size % this.turnCountWarningThreshold === 0) {
       this.log(
         `ElicitationRegistry has ${this.turns.size} open turns, a multiple of its ${this.turnCountWarningThreshold}-turn tripwire. If every open() is not paired with a close() on every exit path, this grows without bound.`
       );
     }
+    return true;
   }
 
   has(turnId: string): boolean {

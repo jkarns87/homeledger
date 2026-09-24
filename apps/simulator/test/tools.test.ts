@@ -173,9 +173,12 @@ describe('toToolResultBlock', () => {
   it('flags a failure and tells the model in words that nothing was retrieved', () => {
     const block = toToolResultBlock('c1', { ok: false, message: 'Session not found.' });
     expect(block.is_error).toBe(true);
-    const text = (block.content as Array<{ text: string }>)[0]?.text ?? '';
-    expect(text).toContain('Session not found.');
-    expect(text).toContain(NO_DATA_NOTICE);
+    // Equality rather than two `toContain`s, which pass in either order. The
+    // order is the point: the error is the one sentence that says what went
+    // wrong, and the notice is five that say what must not be inferred from
+    // it — notice-first buries the first under the second, and a model reading
+    // top-down meets the prohibitions before it meets the fact.
+    expect((block.content as Array<{ text: string }>)[0]?.text).toBe(`Session not found.\n\n${NO_DATA_NOTICE}`);
   });
 
   it('states in the notice that repository fixtures are not an answer', () => {

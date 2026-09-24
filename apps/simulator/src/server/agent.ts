@@ -54,6 +54,11 @@ function isToolUse(block: Anthropic.ContentBlock): block is Anthropic.ToolUseBlo
   return block.type === 'tool_use';
 }
 
+/** A thrown value's own words, for a message that has to name two failures at once. */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function askThePerson(deps: TurnDeps, turnId: string, callId: string, prompt: ElicitPrompt): Promise<ElicitationAnswer> {
   const shape = elicitationShape(prompt.requestedSchema);
   // Refuse, loudly, rather than render something else. A free-text box where
@@ -110,7 +115,7 @@ async function runOneCall(deps: TurnDeps, turnId: string, call: Anthropic.ToolUs
     );
     outcome = readToolResult(raw);
   } catch (error) {
-    outcome = { ok: false, message: error instanceof Error ? error.message : String(error) };
+    outcome = { ok: false, message: reasonOf(error) };
   } finally {
     deps.router.handler = undefined;
   }
@@ -157,15 +162,32 @@ export async function runTurn(deps: TurnDeps, turnId: string, history: Anthropic
   const messages: Anthropic.MessageParam[] = [...history, { role: 'user', content: userText }];
   const system = buildSystemPrompt({ today: deps.today, toolNames: deps.tools.map(tool => tool.name) });
   const tools = toAnthropicTools(deps.tools);
-  deps.registry.open(turnId);
+  // `true` before anything runs, because `open()` is not throw-free and the
+  // order inside it decides who owns the entry: it sets the map entry first and
+  // then calls the injected tripwire log, so an `open()` that THREW has left an
+  // entry that this call created. Initialising to `true` makes the `finally`
+  // clean that up; only an `open()` that returns `false` — someone else's turn,
+  // already registered — leaves it alone.
+  let mine = true;
+  // Whether the browser was ever told this turn began. A `turn-finished` with
+  // no `turn-started` ahead of it is a frame for a turn nothing downstream has
+  // ever seen, and Task 11's reducer pairs the two.
+  let announced = false;
+  let failure: { error: unknown } | undefined;
   try {
-    // Inside the try, not before it. `open()` has already happened by the time
-    // anything is emitted, and an emit is a write onto a stream the browser can
-    // have dropped between the POST and the first frame — it throws when it
-    // has. Emitted outside the try, that one exit path skips the `finally` and
-    // leaks the turn's entry for the life of the process, which is the failure
+    // Every one of these is inside the try, and each for its own reason.
+    // `open()` because its logger can throw. The `turn-started` emit because an
+    // emit is a write onto a stream the browser can have dropped between the
+    // POST and the first frame. Outside the try, either one skips the `finally`
+    // and leaks the turn's entry for the life of the process — the failure
     // `ElicitationRegistry` documents that it cannot defend itself against.
+    mine = deps.registry.open(turnId);
+    // Refused, not joined. Two turns on one id would have the first one's
+    // `finally` reject the second one's open questions and delete its entry,
+    // which downstream is indistinguishable from a person who cancelled.
+    if (!mine) throw new Error(`turn ${turnId} is already running; a second turn cannot share its id`);
     deps.emit({ type: 'turn-started', turnId });
+    announced = true;
     for (let round = 0; round < deps.maxRounds; round++) {
       const reply = await deps.model.respond({ system, messages, tools }, text => deps.emit({ type: 'assistant-text', text }));
       // The whole content array, unedited — thinking blocks included. They are
@@ -180,13 +202,32 @@ export async function runTurn(deps: TurnDeps, turnId: string, history: Anthropic
     }
     deps.emit({ type: 'turn-failed', message: `The assistant used its ${deps.maxRounds} tool rounds without finishing, so the turn was stopped.` });
     return messages;
+  } catch (error) {
+    // Held only so the `finally` cannot destroy it. Rethrown unchanged here.
+    failure = { error };
+    throw error;
   } finally {
     // A `finally` rather than a `close()` at each return site, and `close()` as
     // its first statement so nothing can run — or throw — between the turn
     // ending and the entry going away. Returned, threw, timed out, the model
     // errored, the stream aborted, the browser disconnected: `apps/simulator/test/agent.test.ts`
     // has one test per way out and each asserts the registry is empty after it.
-    deps.registry.close(turnId, 'the turn ended');
-    deps.emit({ type: 'turn-finished', turnId });
+    if (mine) {
+      deps.registry.close(turnId, 'the turn ended');
+      try {
+        if (announced) deps.emit({ type: 'turn-finished', turnId });
+      } catch (error) {
+        // A throw from a `finally` REPLACES whatever was in flight, and the
+        // thing in flight is the reason the turn failed. Letting a dead stream
+        // stand in for a rate limit sends whoever reads it after the wrong
+        // problem entirely, and no caller can undo it from the outside — by the
+        // time they see it the original is gone. So both travel: the message
+        // names each, and `cause` carries the original error object with its own
+        // type and stack intact. Nothing is swallowed — with no turn failure to
+        // protect, this rethrows the stream's own error untouched.
+        if (!failure) throw error;
+        throw new Error(`the turn failed (${reasonOf(failure.error)}) and its stream could not be told: ${reasonOf(error)}`, { cause: failure.error });
+      }
+    }
   }
 }

@@ -215,6 +215,41 @@ describe('ElicitationRegistry tripwire', () => {
     expect(log).not.toHaveBeenCalled();
   });
 
+  it('says whether THIS call registered the turn, so a caller can refuse instead of joining', () => {
+    // The return value is what lets `runTurn` tell "I opened this" from
+    // "somebody already had it". Without it the idempotence above is a trap:
+    // the second caller's unconditional `close()` in its `finally` deletes the
+    // FIRST caller's entry and rejects its open questions, which reaches the
+    // person as a booking cancelled by nobody. A precondition on a fact held
+    // right now — not the TTL-shaped guess this class declines to make.
+    const registry = new ElicitationRegistry();
+    expect(registry.open('t1')).toBe(true);
+    expect(registry.open('t1')).toBe(false);
+    // Closed and re-opened is a new turn again, not a permanently burnt id.
+    registry.close('t1', 'done');
+    expect(registry.open('t1')).toBe(true);
+    // And a different id is never confused with it.
+    expect(registry.open('t2')).toBe(true);
+    expect(registry.size).toBe(2);
+  });
+
+  it('registers the turn BEFORE it logs, so a throwing logger leaves an entry the caller owns', () => {
+    // The ordering `runTurn` depends on to decide whether the entry is its own
+    // to clean up. `open()` is not throw-free — the logger is injected, and
+    // Task 9 wires a real one — so a caller that treated a thrown `open()` as
+    // "nothing was registered" would leak the entry permanently. Asserting the
+    // entry exists after the throw is what pins the order.
+    const registry = new ElicitationRegistry({
+      turnCountWarningThreshold: 1,
+      log: () => {
+        throw new Error('the structured logger rejected the tripwire line');
+      }
+    });
+    expect(() => registry.open('t1')).toThrow(/tripwire line/);
+    expect(registry.has('t1')).toBe(true);
+    expect(registry.size).toBe(1);
+  });
+
   it('closing a turn drops it from size, the same way it drops from has()', () => {
     const registry = new ElicitationRegistry();
     registry.open('t1');
