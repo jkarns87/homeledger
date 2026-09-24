@@ -1,33 +1,22 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Composer } from '../components/Composer.js';
-import { DebugDrawer, type DebugSnapshot } from '../components/DebugDrawer.js';
+import { DebugDrawer } from '../components/DebugDrawer.js';
 import { ElicitationCard } from '../components/ElicitationCard.js';
 import { Frame, type Theme } from '../components/Frame.js';
 import { ProgressMeter } from '../components/ProgressMeter.js';
 import { Transcript } from '../components/Transcript.js';
 import { useAgentTurn } from '../lib/useAgentTurn.js';
+import { useDebugSnapshot } from '../lib/useDebugSnapshot.js';
 
 export default function Home() {
   const [theme, setTheme] = useState<Theme>('dark');
   const turn = useAgentTurn();
-  const [snapshot, setSnapshot] = useState<DebugSnapshot | null>(null);
-  // Re-read after every turn, so a session rebuilt mid-conversation shows up
-  // in the count rather than only in the transcript.
-  useEffect(() => {
-    if (turn.state.running) return;
-    let cancelled = false;
-    void fetch('/api/debug')
-      .then(response => (response.ok ? (response.json() as Promise<DebugSnapshot>) : null))
-      .then(value => {
-        if (!cancelled) setSnapshot(value);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [turn.state.running]);
+  // Polls `/api/debug` roughly once a second while a turn is running or a
+  // question is open, so the log and rebuild count are live during the turn
+  // they explain rather than stale until it ends (spec section 7).
+  const snapshot = useDebugSnapshot(turn.state.running || turn.state.pending !== null);
   return (
     <Frame theme={theme} onToggleTheme={() => setTheme(current => (current === 'dark' ? 'light' : 'dark'))}>
       <Transcript state={turn.state} />

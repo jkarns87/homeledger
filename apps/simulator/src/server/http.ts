@@ -178,8 +178,18 @@ export async function handleAnswer(conversation: Conversation, request: Request)
  * the client heals the address on a rebuild and a drawer that showed the
  * startup URL would be confidently wrong about the one thing somebody opens it
  * to check.
+ *
+ * Takes the request and runs `checkOrigin` first, the same as `turn` and
+ * `answer` (fix round 1, review Minor 4 promoted to a ruling): this payload
+ * holds no credential, but it does hold the runtime ARN, which carries the
+ * AWS account id, and a cross-site GET with no origin check still runs
+ * `getConversation()` - a token mint and a connect - on every request a
+ * stranger's browser cares to send. `next dev` binds all interfaces, so
+ * "small blast radius" is not "no blast radius".
  */
-export function handleDebug(conversation: Conversation): Response {
+export function handleDebug(conversation: Conversation, request: Request): Response {
+  const forbidden = checkOrigin(request, conversation.env.allowOrigin);
+  if (forbidden) return forbidden;
   const url = new URL(conversation.mcp.endpointUrl);
   return new Response(
     JSON.stringify({

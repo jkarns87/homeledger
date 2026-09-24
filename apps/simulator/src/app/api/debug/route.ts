@@ -4,9 +4,9 @@ import { getConversation } from '@/server/session';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function GET(): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
   try {
-    return handleDebug(await getConversation());
+    return handleDebug(await getConversation(), request);
   } catch (error) {
     return new Response(JSON.stringify({ ok: false, reason: 'unavailable', message: error instanceof Error ? error.message : String(error) }), {
       status: 503,

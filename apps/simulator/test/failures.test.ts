@@ -48,6 +48,31 @@ describe('explainFailure', () => {
     expect(explained.title).toBe('The connection to the household server expired');
     expect(explained.detail).toContain('retried once');
     expect(explained.detail).toContain('Nothing was retrieved');
+    // Fix round 1, review Minor 2: this clause was unguarded - dropping
+    // `The server said: ${message}` from the lost-session branch left all 15
+    // tests in this file and failures.test.tsx green, because no assertion
+    // read for the message itself. Pinned here on the fixture's own text
+    // rather than a substring of the title, so a rewording of the title
+    // cannot make this pass by accident.
+    expect(explained.detail).toContain('HTTP 404: Session not found');
+  });
+
+  it('does not claim a retry for a message that merely mentions a missing session', () => {
+    // Fix round 1, ruling on Minor 1: `isLostSessionError` (mcp.ts:95-101)
+    // only treats a MESSAGE as a lost session when it carries a `404`
+    // alongside "session not found" - `HomeLedgerMcp.attempt` never rebuilds
+    // or replays for a message that fails that test, so a message like this
+    // one was thrown straight through with no repair attempted at all. The
+    // old, looser `/session not found/i` match would have sent this through
+    // the lost-session branch anyway, claiming "the connection was rebuilt
+    // and the call retried once" about a call that never was - an invented
+    // cause, which is the failure this whole module exists to rule out.
+    const explained = explainFailure('get_visit', 'Session not found in the local elicitation registry');
+    expect(explained.title).toBe('get_visit failed');
+    expect(explained.detail).not.toContain('retried once');
+    expect(explained.detail).not.toContain('rebuilt');
+    expect(explained.detail).toContain(NOTHING_RETRIEVED);
+    expect(explained.detail).toContain('Session not found in the local elicitation registry');
   });
 
   it('passes an unrecognised failure through verbatim rather than dressing it up', () => {

@@ -80,6 +80,10 @@ function post(body: unknown, headers: Record<string, string> = {}): Request {
   });
 }
 
+function debugRequest(headers: Record<string, string> = {}): Request {
+  return new Request('http://127.0.0.1:3000/api/debug', { headers });
+}
+
 /** Reads the stream and calls `onEvent` for each event AS IT ARRIVES, never after. */
 async function drain(response: Response, onEvent: (event: TurnEvent) => void): Promise<TurnEvent[]> {
   const reader = response.body!.getReader();
@@ -365,7 +369,7 @@ describe('householdTimeZone', () => {
 describe('GET /api/debug', () => {
   it('describes the connection without carrying a credential', async () => {
     const convo = await conversation(scriptedModel([]));
-    const body = (await (await import('../src/server/http.js')).handleDebug(convo).json()) as Record<string, unknown>;
+    const body = (await (await import('../src/server/http.js')).handleDebug(convo, debugRequest()).json()) as Record<string, unknown>;
     expect(body.addressing).toBe('url');
     expect(typeof body.sessionId).toBe('string');
     expect(body.rebuilds).toBe(0);
@@ -379,7 +383,10 @@ describe('GET /api/debug', () => {
   it('carries the two spec section 7 fields the drawer cannot get anywhere else', async () => {
     const convo = await conversation(scriptedModel([]));
     await convo.mcp.callTool('list_appliances', {});
-    const body = (await (await import('../src/server/http.js')).handleDebug(convo).json()) as { protocolVersion: unknown; log: Array<{ method: string }> };
+    const body = (await (await import('../src/server/http.js')).handleDebug(convo, debugRequest()).json()) as {
+      protocolVersion: unknown;
+      log: Array<{ method: string }>;
+    };
     expect(body.protocolVersion).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(body.log.map(entry => entry.method)).toContain('tools/call');
     // `token` is on the forbidden list above and `progressToken` is on every
@@ -388,5 +395,48 @@ describe('GET /api/debug', () => {
     // above is passing because the log holds no bodies, not because this
     // particular call happened to send nothing interesting.
     expect(JSON.stringify(body.log)).not.toContain('appliances');
+  });
+
+  it(
+    'reports the protocol as not negotiated rather than a stale one, when the transport has none to give',
+    async () => {
+      // Fix round 1, Important 1: the report claimed this was covered by
+      // Task 6's `mcp.test.ts`, which asserts `HomeLedgerMcp.protocolVersion`
+      // directly and never imports `http.ts` - so a `handleDebug` that hard-
+      // codes the literal `conversation.mcp.protocolVersion` reads from
+      // passed every test in this file too. This fixture overrides just the
+      // one getter, on an object whose prototype is the real, connected
+      // `HomeLedgerMcp` (so `endpointUrl`, `sessionId`, `rebuilds` and
+      // `jsonRpcLog` still resolve normally through it) - a JS-level
+      // substitution, not a mock of the whole class, so nothing here can be
+      // satisfied by a value `handleDebug` invents on its own.
+      const convo = await conversation(scriptedModel([]));
+      const unnegotiated = { ...convo, mcp: Object.create(convo.mcp, { protocolVersion: { get: () => undefined } }) };
+      const body = (await (await import('../src/server/http.js')).handleDebug(unnegotiated, debugRequest()).json()) as { protocolVersion: unknown };
+      expect(body.protocolVersion).toBeNull();
+    },
+    { timeout: 15000 }
+  );
+
+  it('refuses a foreign origin, the same as turn and answer', async () => {
+    // Fix round 1, ruling on Minor 4: `handleDebug` took no `Request` and so
+    // could not honour `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` at all - a cross-
+    // site GET reached `getConversation()` (a token mint and a connect) and
+    // read back the runtime ARN (which carries the AWS account id) and the
+    // MCP session id. This is the plan's own guard, extended to cover the
+    // route it was missing from.
+    const convo = await conversation(scriptedModel([]));
+    convo.env = { ...convo.env, allowOrigin: 'http://127.0.0.1:3000' };
+    const response = (await import('../src/server/http.js')).handleDebug(convo, debugRequest({ origin: 'https://elsewhere.invalid' }));
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+  });
+
+  it('still answers a request that sends no Origin header at all, even with one configured', async () => {
+    const convo = await conversation(scriptedModel([]));
+    convo.env = { ...convo.env, allowOrigin: 'http://127.0.0.1:3000' };
+    const response = (await import('../src/server/http.js')).handleDebug(convo, debugRequest());
+    expect(response.status).toBe(200);
   });
 });
