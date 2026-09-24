@@ -194,6 +194,75 @@ describe('POST /api/agent/turn', () => {
     expect(systems[0]).toContain('Today is 2026-09-13.');
     expect(systems[0]).not.toContain('2026-09-14');
   });
+
+  it('reports a thrown model as a failure on the stream, closes it, and leaves the history and registry clean', async () => {
+    // The honest-failure global constraint, pointed at the route itself rather
+    // than at a tool call: `runTurn` rejects when the model throws, and
+    // `handleTurn`'s `.catch` is the only thing standing between that
+    // rejection and a stream that just quietly ends. `runTurn`'s own `finally`
+    // emits `turn-finished` before it rethrows (see the module doc on event
+    // order), so the honest ['turn-started', 'turn-finished', 'turn-failed']
+    // order is itself part of what this pins, not incidental.
+    const convo = await conversation({
+      async respond() {
+        throw new Error('boom-from-fake-model');
+      }
+    });
+    const response = await handleTurn(convo, post({ text: 'hello' }));
+    const events = await drain(response, () => {});
+    expect(events.map(e => e.type)).toEqual(['turn-started', 'turn-finished', 'turn-failed']);
+    const failed = events.find(e => e.type === 'turn-failed');
+    expect(failed && failed.type === 'turn-failed' && failed.message).toBe('boom-from-fake-model');
+    expect(convo.history).toEqual([]);
+    expect(convo.registry.size).toBe(0);
+  });
+
+  it(
+    'closes the registry entry when the browser cancels the stream, well under the elicitation timeout',
+    async () => {
+      // The controller ruling: `cancel() -> registry.close(turnId)` is the
+      // ONLY external close in production, and it exists so a disconnected
+      // browser does not leave an open question waiting out the full
+      // elicitation timeout. Waiting the full timeout would let this pass
+      // even with `cancel()` gutted, because the question's own timeout
+      // would eventually remove the entry anyway - so this polls for well
+      // under it (200 ms against a 3000 ms elicitationTimeoutMs) and fails
+      // rather than waits if the entry is still there.
+      const convo = await conversation(
+        scriptedModel([
+          () => [toolUse('c1', 'list_appliances', { category: 'water_heater' })],
+          messages => [
+            toolUse('c2', 'book_service', { applianceId: /appl_[a-z0-9]{16}/.exec(JSON.stringify(messages))?.[0] ?? 'appl_missing', issue: 'leak' })
+          ],
+          () => [{ type: 'text', text: 'Booked.' } as Anthropic.ContentBlock]
+        ])
+      );
+      const response = await handleTurn(convo, post({ text: 'book a plumber for the water heater' }));
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      const decode = createSseDecoder();
+      let turnId = '';
+      readLoop: for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const event of decode(decoder.decode(value, { stream: true }))) {
+          if (event.type === 'turn-started') turnId = event.turnId;
+          if (event.type === 'elicitation-opened') break readLoop;
+        }
+      }
+      expect(turnId).not.toBe('');
+      expect(convo.registry.has(turnId)).toBe(true);
+
+      await reader.cancel();
+
+      const deadline = Date.now() + 200;
+      while (convo.registry.has(turnId) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(convo.registry.has(turnId)).toBe(false);
+    },
+    { timeout: 15000 }
+  );
 });
 
 describe('POST /api/agent/answer', () => {
