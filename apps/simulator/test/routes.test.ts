@@ -3,7 +3,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { SEED_TIMEZONE } from '@homeledger/core';
 import { createApp } from '@homeledger/mcp-server/app';
 import { seededDeps } from '@homeledger/mcp-server/test-harness';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElicitRouter } from '../src/server/agent.js';
 import { ElicitationRegistry } from '../src/server/elicitation.js';
 import { createSseDecoder, type TurnEvent } from '../src/shared/events.js';
@@ -82,6 +82,22 @@ function post(body: unknown, headers: Record<string, string> = {}): Request {
 
 function debugRequest(headers: Record<string, string> = {}): Request {
   return new Request('http://127.0.0.1:3000/api/debug', { headers });
+}
+
+/**
+ * Same shape as `post()`, above, at the widget/tool route's own origin.
+ *
+ * Fix round 1: every existing call site here built a raw `new Request(...,
+ * {body: JSON.stringify(...)})` with no explicit `content-type`. The Fetch
+ * spec then set one FOR them — `text/plain;charset=UTF-8`, its default for a
+ * string body — which is precisely the value `requireJsonContentType` now
+ * refuses. That was invisible before this round because nothing checked
+ * content-type at all; it would have made every existing widget/tool test
+ * fail with 415 the moment the guard landed, for reasons that had nothing to
+ * do with what each test was proving.
+ */
+function widgetToolPost(body: unknown, headers: Record<string, string> = {}): Request {
+  return new Request('http://x/api/widget/tool', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...headers } });
 }
 
 /** Reads the stream and calls `onEvent` for each event AS IT ARRIVES, never after. */
@@ -291,14 +307,93 @@ describe('POST /api/agent/answer', () => {
     const response = await handleAnswer(convo, post({ turnId: 't', elicitationId: 'e', action: 'accept', content: 'prov_kettle_water' }));
     expect(response.status).toBe(400);
   });
+
+  it('refuses a foreign origin when allowOrigin is unset, and never delivers the answer', async () => {
+    // Fix round 1, Critical (plan-mandated): the same default-open posture
+    // Critical 1 found on the widget/tool route reaches this route too — a
+    // cross-site page could confirm or decline someone else's open
+    // `book_service` question. `post()` here points at
+    // `http://127.0.0.1:3000/...`, so the request's own origin is
+    // `http://127.0.0.1:3000`; `https://elsewhere.invalid` is foreign to that,
+    // and `allowOrigin` is left unset (the default), so the new same-origin
+    // default in `checkOrigin` must refuse it without ever touching the
+    // registry.
+    const convo = await conversation(scriptedModel([]));
+    convo.registry.open('t-foreign');
+    const { elicitationId } = convo.registry.ask('t-foreign', 5000);
+    const response = await handleAnswer(
+      convo,
+      post({ turnId: 't-foreign', elicitationId, action: 'accept', content: {} }, { origin: 'https://elsewhere.invalid' })
+    );
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+    // No side effect: the slot the foreign request tried to answer is still
+    // open. A legitimate, same-origin delivery straight through the registry
+    // still finds it waiting and reports 'delivered' — proof the cross-site
+    // attempt never reached `registry.answer` at all.
+    expect(convo.registry.answer('t-foreign', elicitationId, { action: 'decline' })).toBe('delivered');
+  });
+
+  it('refuses a non-JSON body even with no Origin header at all, forcing a preflight', async () => {
+    // The other half of the same Critical fix: a cross-site `no-cors` POST
+    // never carries a useful `Origin` for `checkOrigin` to compare (or may
+    // carry none, depending on the sender), so the content-type gate is what
+    // stops it — a real browser cross-site request needing `application/json`
+    // must preflight, and this application grants no CORS headers to let that
+    // preflight succeed.
+    const convo = await conversation(scriptedModel([]));
+    const response = await handleAnswer(
+      convo,
+      new Request('http://127.0.0.1:3000/api/agent/answer', {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: JSON.stringify({ turnId: 't', elicitationId: 'e', action: 'accept', content: {} })
+      })
+    );
+    expect(response.status).toBe(415);
+  });
 });
 
 describe('checkOrigin', () => {
-  it('lets everything through when no origin is configured', async () => {
+  it('refuses a foreign origin even when allowOrigin is unset, the same-origin default', async () => {
+    // Fix round 1, Critical (plan-mandated). This used to assert 200 under
+    // the title "lets everything through when no origin is configured" — that
+    // WAS the vulnerability the reviewer's probe found: `allowOrigin` unset
+    // compared the incoming Origin against nothing, so any cross-site Origin
+    // passed. `post()` targets `http://127.0.0.1:3000/...`, so that is this
+    // request's own origin; `https://elsewhere.invalid` is foreign to it.
     const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
     const response = await handleTurn(convo, post({ text: 'hi' }, { origin: 'https://elsewhere.invalid' }));
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+    // No side effect: no turn ran, so no history was written.
+    expect(convo.history).toEqual([]);
+  });
+
+  it('accepts a same-origin Origin header even when allowOrigin is unset', async () => {
+    // The positive case for the same fix: a real same-origin browser request
+    // sends `Origin: http://127.0.0.1:3000` on a POST to
+    // `http://127.0.0.1:3000/...` whether or not anyone configured
+    // `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` — the demo must not need that
+    // variable set just to talk to itself.
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
+    const response = await handleTurn(convo, post({ text: 'hi' }, { origin: 'http://127.0.0.1:3000' }));
     expect(response.status).toBe(200);
     await drain(response, () => {});
+    expect(convo.history).toHaveLength(2);
+  });
+
+  it('refuses a non-JSON body even with no Origin header, forcing a preflight', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const response = await handleTurn(
+      convo,
+      new Request('http://127.0.0.1:3000/api/agent/turn', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify({ text: 'hi' }) })
+    );
+    expect(response.status).toBe(415);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('unsupported-media-type');
   });
 
   it('refuses a foreign origin when one is configured', async () => {
@@ -467,22 +562,85 @@ describe('the widget routes', () => {
     const offered = convo.tools.map(tool => tool.name);
     for (const allowed of WIDGET_TOOLS) expect(offered, allowed).toContain(allowed);
     for (const name of offered.filter(candidate => !WIDGET_TOOLS.includes(candidate))) {
-      const refused = await handleWidgetTool(convo, new Request('http://x/api/widget/tool', { method: 'POST', body: JSON.stringify({ name, arguments: {} }) }));
+      const refused = await handleWidgetTool(convo, widgetToolPost({ name, arguments: {} }));
       expect(refused.status, name).toBe(403);
     }
 
     const list = (await convo.mcp.callTool('maintenance_due', {})) as { structuredContent: { items: Array<{ applianceId: string; taskType: string }> } };
     const item = list.structuredContent.items[0]!;
-    const allowed = await handleWidgetTool(
-      convo,
-      new Request('http://x/api/widget/tool', { method: 'POST', body: JSON.stringify({ name: 'log_maintenance', arguments: item }) })
-    );
+    const allowed = await handleWidgetTool(convo, widgetToolPost({ name: 'log_maintenance', arguments: item }));
     expect(allowed.status).toBe(200);
-    const refused = await handleWidgetTool(
-      convo,
-      new Request('http://x/api/widget/tool', { method: 'POST', body: JSON.stringify({ name: 'book_service', arguments: {} }) })
-    );
+    // Fix round 1, Important 2: 200 alone does not prove the write happened -
+    // that was exactly the bug. Pin the success shape too, so a regression
+    // that reintroduces an unnoticed `isError` fails here as well as on the
+    // dedicated isError test below.
+    const allowedBody = (await allowed.json()) as { isError?: boolean; structuredContent?: { logged?: boolean } };
+    expect(allowedBody.isError).toBeUndefined();
+    expect(allowedBody.structuredContent?.logged).toBe(true);
+    const refused = await handleWidgetTool(convo, widgetToolPost({ name: 'book_service', arguments: {} }));
     expect(refused.status).toBe(403);
     expect((await refused.json()).message).toContain('book_service');
+  });
+
+  it('reports an isError tool result as a failure, not as a 200 success', async () => {
+    // Fix round 1, Important (plan-mandated, FL-039): `log_maintenance`
+    // returns `{isError: true}` without throwing when the appliance id is
+    // unknown (apps/mcp-server/src/tools/maintenance.ts). The old code sent
+    // that back as HTTP 200; `WidgetFrame.callTool` only throws on
+    // `!response.ok`, and the widget's own bridge resolves a JSON-RPC
+    // `result` either way, so the calendar widget would have shown "Logged"
+    // for a write that never happened.
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidgetTool } = await import('../src/server/http.js');
+    const response = await handleWidgetTool(
+      convo,
+      widgetToolPost({ name: 'log_maintenance', arguments: { applianceId: 'appl_missing', taskType: 'filter_change' } })
+    );
+    expect(response.status).not.toBe(200);
+    const body = (await response.json()) as { reason: string; message: string };
+    expect(body.reason).toBe('tool-failed');
+    expect(body.message).toContain("couldn't find that appliance");
+  });
+
+  it('refuses a foreign origin when allowOrigin is unset, and never calls the tool', async () => {
+    // Fix round 1, Critical (plan-mandated). Verified live by the reviewer's
+    // probe against this exact route: a cross-site `Origin` with no
+    // `allowOrigin` configured used to reach `conversation.mcp.callTool` and
+    // run `log_maintenance`. Spying on the real, connected `HomeLedgerMcp`'s
+    // own method (rather than asserting on a side effect further away) pins
+    // the call never happens at all, not merely that its result is discarded.
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidgetTool } = await import('../src/server/http.js');
+    const spy = vi.spyOn(convo.mcp, 'callTool');
+    const response = await handleWidgetTool(convo, widgetToolPost({ name: 'log_maintenance', arguments: {} }, { origin: 'https://evil.example' }));
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('accepts a same-origin JSON request even when allowOrigin is unset', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidgetTool } = await import('../src/server/http.js');
+    const response = await handleWidgetTool(convo, widgetToolPost({ name: 'book_service', arguments: {} }, { origin: 'http://x' }));
+    // Same-origin, so it passes both guards and reaches the allowlist check -
+    // 403 for a tool this route refuses, not 415 or 403-for-origin.
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-tool');
+  });
+
+  it('refuses a non-JSON body even with no Origin header, forcing a preflight', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidgetTool } = await import('../src/server/http.js');
+    const response = await handleWidgetTool(
+      convo,
+      new Request('http://x/api/widget/tool', {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: JSON.stringify({ name: 'log_maintenance', arguments: {} })
+      })
+    );
+    expect(response.status).toBe(415);
   });
 });

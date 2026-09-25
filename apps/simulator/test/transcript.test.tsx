@@ -346,4 +346,68 @@ describe('Transcript', () => {
     expect(failure.textContent).toContain('ask_manual');
     expect(failure.textContent).toContain('Model access is blocked on this account.');
   });
+
+  // Fix round 1, Ruling (was Minor 1): the Task 14 report claimed this was
+  // untestable in jsdom because the widget's own script never runs there.
+  // True, and beside the point — the claim under test is that `Transcript`
+  // hands `WidgetFrame` the entry's REAL content array rather than a literal
+  // `null` (Step 5 of the Task 14 brief), and that is a fact about the HOST
+  // side, which jsdom runs in full: `attachWidgetHost` is plain application
+  // code, `postMessage` is a real jsdom API, and a `srcdoc` iframe really does
+  // get a `contentWindow`. Only the widget's OWN reaction to that message is
+  // out of reach here, and nothing here claims to prove that.
+  it("hands the widget host the entry's real content, not a literal null", async () => {
+    const entryContent = [{ type: 'text', text: 'Two tasks are due.' }];
+    const state = [
+      { type: 'tool-started', callId: 'c1', tool: 'maintenance_due', args: {} },
+      {
+        type: 'tool-succeeded',
+        callId: 'c1',
+        tool: 'maintenance_due',
+        spoken: 'Two tasks are due.',
+        content: entryContent,
+        structured: { items: [{ applianceId: 'appl_x' }] },
+        widgetUri: 'ui://homeledger/calendar',
+        ms: 900
+      }
+    ].reduce(reduceTurn, INITIAL_STATE);
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('<!doctype html><html><body></body></html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+    try {
+      render(<Transcript state={state} theme="dark" />);
+      const iframe = (await screen.findByTestId('widget-ui://homeledger/calendar')) as HTMLIFrameElement;
+
+      // Poll for the srcdoc navigation to settle rather than listening for a
+      // one-shot 'load' event: jsdom may fire that event before this test
+      // gets a listener attached (the exact race the review's own probe hit
+      // on its first attempt), while polling `readyState` cannot miss it.
+      await waitFor(() => expect(iframe.contentDocument?.readyState).toBe('complete'));
+
+      // Spied AFTER the navigation settles - jsdom replaces the frame's own
+      // window/document across a navigation, so a spy installed earlier is
+      // clobbered and silently stops recording calls made after this point.
+      const postMessageSpy = vi.spyOn(iframe.contentWindow!, 'postMessage');
+
+      // The widget bridge's own handshake, from the widget's side: it posts
+      // `ui/notifications/initialized` once `ui/initialize` resolves. Faked
+      // here directly, the same way widget-host.test.tsx's `fakeFrame().send`
+      // does, since no script actually runs inside this srcdoc in jsdom.
+      const event = new Event('message');
+      Object.assign(event, {
+        data: { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
+        source: iframe.contentWindow
+      });
+      window.dispatchEvent(event);
+
+      await waitFor(() => expect(postMessageSpy).toHaveBeenCalled());
+      const toolResultCall = postMessageSpy.mock.calls.find(([message]) => (message as { method?: string }).method === 'ui/notifications/tool-result');
+      expect(toolResultCall).toBeDefined();
+      const [message] = toolResultCall!;
+      expect((message as { params: { content: unknown } }).params.content).toEqual(entryContent);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
 });

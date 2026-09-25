@@ -16,23 +16,71 @@ function json(body: unknown, status: number): Response {
 }
 
 /**
- * Same-origin check, off unless an origin is configured.
+ * Same-origin check. Off only for a request that carries no `Origin` header at all.
  *
- * The MCP spec asks servers to validate `Origin` for exactly this reason: a
- * browser will happily POST cross-site, and these routes spend an API key and
- * write to a household. Off by default because the demo runs on localhost and
- * a check nobody configured that blocks the owner's own browser is worse than
- * no check; on the moment `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` is set, which is
- * the first thing a hosted deployment must do.
+ * Fix round 1, Critical (plan-mandated): the previous version returned
+ * "allowed" the instant `allowOrigin` was unset — which is the default, since
+ * `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` is not set for a localhost demo — so an
+ * unconfigured deployment compared the incoming `Origin` against nothing and
+ * let every cross-site request through. A reviewer's probe confirmed this
+ * reaches `handleWidgetTool` and runs `log_maintenance`: `fetch(..., {mode:
+ * 'no-cors', body: '...'})` from any website sets `Origin` on the request
+ * without the page ever needing to read the response, and the old check never
+ * looked at it because nothing had been configured to compare it against.
+ *
+ * The fix keeps the configured case exactly as it was — `allowOrigin`, when
+ * set, is still the only value an `Origin` may equal — and gives the
+ * unconfigured case a same-origin default instead of an open one: `Origin`,
+ * when present, must equal *this request's own origin*, derived from
+ * `request.url` rather than from a `Host` header this application never reads
+ * elsewhere (Next.js resolves `request.url` to the address the request
+ * actually arrived on, which is the same fact `Host` would give here, without
+ * adding a second header this file would have to trust). A request with NO
+ * `Origin` header — curl, the tests, a same-origin top-level navigation, the
+ * MCP spec's own non-browser callers — is unchanged: `fetch` from a page
+ * always sets one, so a missing header is still not the cross-site case this
+ * check exists for.
  */
 export function checkOrigin(request: Request, allowOrigin: string | undefined): Response | undefined {
-  if (!allowOrigin) return undefined;
   const origin = request.headers.get('origin');
-  // A request with no Origin is not a cross-site browser request: `fetch` from
-  // a page always sets one. curl and the tests do not, and refusing those
-  // would block the diagnosis of everything else.
-  if (origin === null || origin === allowOrigin) return undefined;
-  return json({ ok: false, reason: 'forbidden-origin', message: `This server accepts requests from ${allowOrigin} only; this one came from ${origin}.` }, 403);
+  if (origin === null) return undefined;
+  const expected = allowOrigin ?? new URL(request.url).origin;
+  if (origin === expected) return undefined;
+  return json({ ok: false, reason: 'forbidden-origin', message: `This server accepts requests from ${expected} only; this one came from ${origin}.` }, 403);
+}
+
+/**
+ * Requires `content-type: application/json` on every route that reads a JSON body.
+ *
+ * Fix round 1, Critical (plan-mandated), the other half of the fix above.
+ * `checkOrigin` closes the hole for a cross-site request that carries an
+ * `Origin` header that does not match — but the reviewer's probe used
+ * `mode: 'no-cors'` with a `text/plain` body, which is a CORS *simple
+ * request*. A browser sends a simple request with no preflight and, for a
+ * `no-cors` fetch, the page never reads the response either way — so the
+ * request still reaches this server and still runs whatever it names, origin
+ * check or not, as long as its `Content-Type` is one of the three simple-request
+ * values (`text/plain`, `multipart/form-data`,
+ * `application/x-www-form-urlencoded`). `application/json` is not on that
+ * list: a same-origin browser request that sends it goes through unchanged,
+ * but a cross-site one must first send an OPTIONS preflight, which this
+ * application answers with no `Access-Control-Allow-Origin` header — so the
+ * browser blocks the real request before it ever reaches this function. This
+ * check and `checkOrigin` are independent layers on purpose: this one is what
+ * stops the `no-cors`/`text/plain` shape that carries no useful `Origin` to
+ * compare in the first place.
+ */
+function requireJsonContentType(request: Request): Response | undefined {
+  const contentType = request.headers.get('content-type') ?? '';
+  if (contentType.toLowerCase().startsWith('application/json')) return undefined;
+  return json(
+    {
+      ok: false,
+      reason: 'unsupported-media-type',
+      message: `This endpoint requires "content-type: application/json"; got ${JSON.stringify(contentType)}.`
+    },
+    415
+  );
 }
 
 async function readJson(request: Request): Promise<Record<string, unknown> | undefined> {
@@ -58,6 +106,8 @@ async function readJson(request: Request): Promise<Record<string, unknown> | und
 export async function handleTurn(conversation: Conversation, request: Request): Promise<Response> {
   const forbidden = checkOrigin(request, conversation.env.allowOrigin);
   if (forbidden) return forbidden;
+  const wrongMediaType = requireJsonContentType(request);
+  if (wrongMediaType) return wrongMediaType;
   const body = await readJson(request);
   const text = body?.text;
   if (typeof text !== 'string' || text.trim() === '')
@@ -148,6 +198,8 @@ function readAnswer(body: Record<string, unknown> | undefined): ElicitationAnswe
 export async function handleAnswer(conversation: Conversation, request: Request): Promise<Response> {
   const forbidden = checkOrigin(request, conversation.env.allowOrigin);
   if (forbidden) return forbidden;
+  const wrongMediaType = requireJsonContentType(request);
+  if (wrongMediaType) return wrongMediaType;
   const body = await readJson(request);
   const turnId = body?.turnId;
   const elicitationId = body?.elicitationId;
@@ -220,9 +272,26 @@ export async function handleWidget(conversation: Conversation, request: Request)
   }
 }
 
+/** True when an MCP tool result is `isError`, the shape a call answers with when it did not do what it names — an unknown appliance, a task the appliance doesn't have. */
+function isErrorResult(result: unknown): result is { isError: true; content?: unknown } {
+  return typeof result === 'object' && result !== null && (result as { isError?: unknown }).isError === true;
+}
+
+/** The result's own first text block, so the widget's failure card quotes the server rather than a generic sentence. */
+function toolResultText(result: { content?: unknown }): string {
+  const content = Array.isArray(result.content) ? result.content : [];
+  for (const block of content) {
+    const text = (block as { text?: unknown } | null)?.text;
+    if (typeof text === 'string') return text;
+  }
+  return 'The tool call did not succeed.';
+}
+
 export async function handleWidgetTool(conversation: Conversation, request: Request): Promise<Response> {
   const forbidden = checkOrigin(request, conversation.env.allowOrigin);
   if (forbidden) return forbidden;
+  const wrongMediaType = requireJsonContentType(request);
+  if (wrongMediaType) return wrongMediaType;
   const body = await readJson(request);
   const name = body?.name;
   if (typeof name !== 'string') return json({ ok: false, reason: 'bad-request', message: 'The body needs a string "name".' }, 400);
@@ -230,7 +299,16 @@ export async function handleWidgetTool(conversation: Conversation, request: Requ
     return json({ ok: false, reason: 'forbidden-tool', message: `A widget may not call ${name}. Allowed here: ${WIDGET_TOOLS.join(', ')}.` }, 403);
   const args = (typeof body?.arguments === 'object' && body.arguments !== null ? body.arguments : {}) as Record<string, unknown>;
   try {
-    return json(await conversation.mcp.callTool(name, args), 200);
+    const result = await conversation.mcp.callTool(name, args);
+    // FL-039, the write-tool half: `callTool` does not throw for `isError` -
+    // that is MCP's flag for "the call did not execute", set by the tool
+    // itself rather than by a transport failure - so answering 200 here would
+    // tell `WidgetFrame.callTool` (which only throws on `!response.ok`) and
+    // the widget's own bridge (which resolves a JSON-RPC result, not an
+    // error) that a write succeeded when it did not. The calendar widget then
+    // shows "Logged" for a task that is still overdue.
+    if (isErrorResult(result)) return json({ ok: false, reason: 'tool-failed', message: toolResultText(result) }, 422);
+    return json(result, 200);
   } catch (error) {
     return json({ ok: false, reason: 'tool-failed', message: error instanceof Error ? error.message : String(error) }, 502);
   }

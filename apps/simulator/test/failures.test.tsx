@@ -1,9 +1,30 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DebugDrawer } from '../src/components/DebugDrawer.js';
 import { Transcript } from '../src/components/Transcript.js';
 import { NOTHING_RETRIEVED } from '../src/lib/failures.js';
 import { INITIAL_STATE, reduceTurn } from '../src/lib/transcript.js';
+
+// Fix round 1, Ruling (was Minor 6): the `declined` fixture below is `status:
+// 'ok'` with a `widgetUri`, so rendering it mounts a real `WidgetFrame`, which
+// fires an unstubbed `fetch('/api/widget?...')` in what is otherwise a pure
+// component-rendering unit test. It was silent only because `WidgetFrame`
+// sets `cancelled = true` on unmount before the rejected fetch's `.catch`
+// runs - a real network call this file never needed and never declared.
+// Stubbed globally for every test here rather than per-test, since any test
+// in this file could gain a widget-bearing fixture later and the point is
+// that NONE of them should reach the network.
+let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+beforeEach(() => {
+  fetchSpy = vi
+    .spyOn(globalThis, 'fetch')
+    .mockResolvedValue(new Response('<!doctype html><html><body></body></html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+});
+
+afterEach(() => {
+  fetchSpy.mockRestore();
+});
 
 const blocked = [
   { type: 'tool-started', callId: 'c1', tool: 'ask_manual', args: { question: 'what does F21 mean' } },
