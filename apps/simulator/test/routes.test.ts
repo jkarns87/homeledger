@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElicitRouter } from '../src/server/agent.js';
 import { ElicitationRegistry } from '../src/server/elicitation.js';
 import { createSseDecoder, type TurnEvent } from '../src/shared/events.js';
-import { handleAnswer, handleTurn, UNKNOWN_TURN_MESSAGE } from '../src/server/http.js';
+import { checkOrigin, handleAnswer, handleTurn, UNKNOWN_TURN_MESSAGE } from '../src/server/http.js';
 import { HomeLedgerMcp } from '../src/server/mcp.js';
 import type { ModelPort } from '../src/server/model.js';
 import { householdTimeZone, type Conversation } from '../src/server/session.js';
@@ -95,9 +95,21 @@ function debugRequest(headers: Record<string, string> = {}): Request {
  * content-type at all; it would have made every existing widget/tool test
  * fail with 415 the moment the guard landed, for reasons that had nothing to
  * do with what each test was proving.
+ *
+ * Fix round 2: the base URL is a loopback address (`127.0.0.1`, Task 15's own
+ * Playwright port so the fixture reads as a real one) rather than the
+ * arbitrary `http://x` this used before. `checkOrigin` with `allowOrigin`
+ * unset now refuses any request whose `Host` (or, lacking one, whose
+ * `request.url`) is not a loopback name — `x` never was one, so every test
+ * built on it started failing at the origin check before reaching whatever it
+ * actually meant to prove.
  */
 function widgetToolPost(body: unknown, headers: Record<string, string> = {}): Request {
-  return new Request('http://x/api/widget/tool', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...headers } });
+  return new Request('http://127.0.0.1:3100/api/widget/tool', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', ...headers }
+  });
 }
 
 /** Reads the stream and calls `onEvent` for each event AS IT ARRIVES, never after. */
@@ -427,6 +439,82 @@ describe('checkOrigin', () => {
   });
 });
 
+describe('checkOrigin, the Host-derived default (fix round 2)', () => {
+  // A second review caught that fix round 1's own repair was itself broken:
+  // it compared `Origin` against `new URL(request.url).origin`, and Next
+  // 15.5 synthesises `request.url` as `http://localhost:<port>` from its own
+  // listen options - NEVER from the `Host` header a real browser sent -
+  // unless `experimental.trustHostHeader` is on, which it is not anywhere in
+  // this application. A live probe (`next dev`) confirmed a request that
+  // arrived with `Host: 127.0.0.1:<port>` still reported `request.url` as
+  // `http://localhost:<port>/...`, so fix round 1 refused every POST from a
+  // browser at `127.0.0.1` - including Task 15's own Playwright `baseURL`.
+  //
+  // Every case below builds its `Request` with `url` fixed at
+  // `http://localhost:3000/...` (what Next actually hands a route handler)
+  // while `Host` varies - the exact mismatch fix round 1 could not survive,
+  // so a regression back to comparing `request.url` alone shows up here
+  // rather than only against a real browser.
+  const cases: Array<{ label: string; host: string; origin: string; allowed: boolean }> = [
+    { label: 'loopback IP Host, matching Origin', host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000', allowed: true },
+    { label: 'loopback name Host, matching Origin', host: 'localhost:3000', origin: 'http://localhost:3000', allowed: true },
+    { label: 'DNS-rebinding Host, Origin matching the SAME lie', host: 'evil.example:3000', origin: 'http://evil.example:3000', allowed: false },
+    { label: 'loopback Host, foreign Origin', host: '127.0.0.1:3000', origin: 'https://elsewhere.invalid', allowed: false }
+  ];
+
+  it.each(cases)('$label -> allowed=$allowed', ({ host, origin, allowed }) => {
+    const request = new Request('http://localhost:3000/api/agent/turn', {
+      method: 'POST',
+      headers: { host, origin, 'content-type': 'application/json' }
+    });
+    const forbidden = checkOrigin(request, undefined);
+    if (allowed) expect(forbidden).toBeUndefined();
+    else {
+      expect(forbidden).toBeDefined();
+      expect(forbidden!.status).toBe(403);
+    }
+  });
+
+  it(
+    "a real route (handleTurn) accepts a browser at 127.0.0.1 even though Next's request.url says localhost",
+    async () => {
+      // Mutation (a): revert to `allowOrigin ?? new URL(request.url).origin`
+      // and this must fail - `request.url`'s origin is `http://localhost:3000`,
+      // which never equals the browser's real `Origin: http://127.0.0.1:3000`.
+      const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
+      const request = new Request('http://localhost:3000/api/agent/turn', {
+        method: 'POST',
+        headers: { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000', 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hi' })
+      });
+      const response = await handleTurn(convo, request);
+      expect(response.status).toBe(200);
+      await drain(response, () => {});
+      expect(convo.history).toHaveLength(2);
+    },
+    { timeout: 15000 }
+  );
+
+  it('a real route (handleTurn) refuses a DNS-rebinding Host even though its Origin agrees with the same lie', async () => {
+    // Mutation (b): drop the loopback-Host requirement (derive `expected`
+    // from `Host` alone, with no membership check) and this must fail -
+    // `Host` and `Origin` here both name `evil.example`, which is exactly the
+    // rebinding shape a Host-alone comparison cannot distinguish from a
+    // legitimate request.
+    const convo = await conversation(scriptedModel([]));
+    const request = new Request('http://localhost:3000/api/agent/turn', {
+      method: 'POST',
+      headers: { host: 'evil.example:3000', origin: 'http://evil.example:3000', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' })
+    });
+    const response = await handleTurn(convo, request);
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+    expect(convo.history).toEqual([]);
+  });
+});
+
 describe('householdTimeZone', () => {
   it('reads the zone the household record names', async () => {
     const convo = await conversation(scriptedModel([]));
@@ -540,11 +628,11 @@ describe('the widget routes', () => {
   it('serves a ui:// resource as HTML and refuses anything else', async () => {
     const convo = await conversation(scriptedModel([]));
     const { handleWidget } = await import('../src/server/http.js');
-    const ok = await handleWidget(convo, new Request('http://x/api/widget?uri=ui%3A%2F%2Fhomeledger%2Fappliances'));
+    const ok = await handleWidget(convo, new Request('http://127.0.0.1:3100/api/widget?uri=ui%3A%2F%2Fhomeledger%2Fappliances'));
     expect(ok.status).toBe(200);
     expect((await ok.text()).startsWith('<!doctype html>')).toBe(true);
     for (const uri of ['homeledger://appliances', 'ui://elsewhere/x', 'file:///etc/passwd', '']) {
-      const refused = await handleWidget(convo, new Request(`http://x/api/widget?uri=${encodeURIComponent(uri)}`));
+      const refused = await handleWidget(convo, new Request(`http://127.0.0.1:3100/api/widget?uri=${encodeURIComponent(uri)}`));
       expect(refused.status, uri).toBe(400);
     }
   });
@@ -622,7 +710,7 @@ describe('the widget routes', () => {
   it('accepts a same-origin JSON request even when allowOrigin is unset', async () => {
     const convo = await conversation(scriptedModel([]));
     const { handleWidgetTool } = await import('../src/server/http.js');
-    const response = await handleWidgetTool(convo, widgetToolPost({ name: 'book_service', arguments: {} }, { origin: 'http://x' }));
+    const response = await handleWidgetTool(convo, widgetToolPost({ name: 'book_service', arguments: {} }, { origin: 'http://127.0.0.1:3100' }));
     // Same-origin, so it passes both guards and reaches the allowlist check -
     // 403 for a tool this route refuses, not 415 or 403-for-origin.
     expect(response.status).toBe(403);
@@ -635,7 +723,7 @@ describe('the widget routes', () => {
     const { handleWidgetTool } = await import('../src/server/http.js');
     const response = await handleWidgetTool(
       convo,
-      new Request('http://x/api/widget/tool', {
+      new Request('http://127.0.0.1:3100/api/widget/tool', {
         method: 'POST',
         headers: { 'content-type': 'text/plain' },
         body: JSON.stringify({ name: 'log_maintenance', arguments: {} })

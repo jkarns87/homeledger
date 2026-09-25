@@ -16,35 +16,92 @@ function json(body: unknown, status: number): Response {
 }
 
 /**
- * Same-origin check. Off only for a request that carries no `Origin` header at all.
+ * Loopback hostnames this server treats as "the demo's own machine" when no
+ * explicit allowlist is configured. `new URL('http://' + host).hostname`
+ * always strips brackets from an IPv6 literal, so `[::1]` never appears here
+ * literally — it normalises to `::1`, which is what this set holds instead.
+ */
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1']);
+
+/** The bare hostname a `Host` header names, with its port (and, for IPv6, its brackets) stripped. `undefined` if the header cannot be parsed as one. */
+function loopbackHostnameOf(hostHeader: string): string | undefined {
+  try {
+    return new URL(`http://${hostHeader}`).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Same-origin check. Off only for a request whose `Host` names this machine's
+ * own loopback address and carries no `Origin` header at all.
  *
- * Fix round 1, Critical (plan-mandated): the previous version returned
+ * Fix round 1, Critical (plan-mandated): the original version returned
  * "allowed" the instant `allowOrigin` was unset — which is the default, since
  * `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` is not set for a localhost demo — so an
  * unconfigured deployment compared the incoming `Origin` against nothing and
  * let every cross-site request through. A reviewer's probe confirmed this
- * reaches `handleWidgetTool` and runs `log_maintenance`: `fetch(..., {mode:
- * 'no-cors', body: '...'})` from any website sets `Origin` on the request
- * without the page ever needing to read the response, and the old check never
- * looked at it because nothing had been configured to compare it against.
+ * reaches `handleWidgetTool` and runs `log_maintenance`.
  *
- * The fix keeps the configured case exactly as it was — `allowOrigin`, when
- * set, is still the only value an `Origin` may equal — and gives the
- * unconfigured case a same-origin default instead of an open one: `Origin`,
- * when present, must equal *this request's own origin*, derived from
- * `request.url` rather than from a `Host` header this application never reads
- * elsewhere (Next.js resolves `request.url` to the address the request
- * actually arrived on, which is the same fact `Host` would give here, without
- * adding a second header this file would have to trust). A request with NO
- * `Origin` header — curl, the tests, a same-origin top-level navigation, the
- * MCP spec's own non-browser callers — is unchanged: `fetch` from a page
- * always sets one, so a missing header is still not the cross-site case this
- * check exists for.
+ * Fix round 1's own repair compared `Origin` against `new URL(request.url).origin`,
+ * and a second review caught that this is wrong for a real browser: Next
+ * 15.5 synthesises `request.url` from its own listen options
+ * (`resolve-routes.js`'s `initURL` uses `opts.hostname || 'localhost'`), NOT
+ * from the `Host` header the browser actually sent, unless
+ * `experimental.trustHostHeader` is on (it is not, anywhere in this
+ * application). A live probe with `next dev` confirmed a request that
+ * arrived as `Host: 127.0.0.1:3199` still reports `request.url` as
+ * `http://localhost:3199/...` — so comparing against `request.url` refused
+ * every POST from a browser that opened the page at `127.0.0.1`, including
+ * Task 15's own Playwright `baseURL`.
+ *
+ * Fix round 2: the expected origin is built from the **`Host` header**
+ * instead (protocol still comes from `request.url`, which Next does report
+ * correctly — only the hostname/port half was wrong). `Host` cannot be set by
+ * a cross-site page the way `Origin` sometimes can be spoofed by non-browser
+ * senders, but a DNS-rebinding page's `Host` and `Origin` would both name the
+ * attacker's own domain and agree with each other — deriving the expected
+ * value from `Host` ALONE, with no further check, would wave that straight
+ * through. The extra condition that closes it: when `allowOrigin` is unset,
+ * `Host`'s hostname must ALSO be a loopback name (`localhost`, `127.0.0.1`,
+ * `::1`) — this application's whole reason for trusting an unconfigured
+ * `Host` at all is that "the demo runs on localhost", and a `Host` that
+ * claims to be `evil.example` is refused regardless of what `Origin` says,
+ * because nothing on this machine is actually reachable at that name. LAN or
+ * proxied access past loopback requires setting
+ * `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` explicitly, which the refusal message
+ * says.
+ *
+ * A request with no `Host` header at all can only be a hand-built `Request`
+ * in a test — real HTTP always carries one — and is treated as loopback only
+ * when `request.url`'s own hostname already is, which is the origin check
+ * this file ran before fix round 2 and is a reasonable fallback for exactly
+ * the callers who cannot supply a `Host`.
  */
 export function checkOrigin(request: Request, allowOrigin: string | undefined): Response | undefined {
   const origin = request.headers.get('origin');
+  if (allowOrigin) {
+    if (origin === null || origin === allowOrigin) return undefined;
+    return json(
+      { ok: false, reason: 'forbidden-origin', message: `This server accepts requests from ${allowOrigin} only; this one came from ${origin}.` },
+      403
+    );
+  }
+
+  const hostHeader = request.headers.get('host');
+  const hostname = hostHeader !== null ? loopbackHostnameOf(hostHeader) : new URL(request.url).hostname;
+  if (hostname === undefined || !LOOPBACK_HOSTNAMES.has(hostname))
+    return json(
+      {
+        ok: false,
+        reason: 'forbidden-origin',
+        message: `This server only accepts loopback requests by default (got Host ${JSON.stringify(hostHeader)}); set HOMELEDGER_SIMULATOR_ALLOW_ORIGIN to allow requests from a specific origin.`
+      },
+      403
+    );
+
   if (origin === null) return undefined;
-  const expected = allowOrigin ?? new URL(request.url).origin;
+  const expected = `${new URL(request.url).protocol}//${hostHeader ?? new URL(request.url).host}`;
   if (origin === expected) return undefined;
   return json({ ok: false, reason: 'forbidden-origin', message: `This server accepts requests from ${expected} only; this one came from ${origin}.` }, 403);
 }
@@ -54,21 +111,20 @@ export function checkOrigin(request: Request, allowOrigin: string | undefined): 
  *
  * Fix round 1, Critical (plan-mandated), the other half of the fix above.
  * `checkOrigin` closes the hole for a cross-site request that carries an
- * `Origin` header that does not match — but the reviewer's probe used
- * `mode: 'no-cors'` with a `text/plain` body, which is a CORS *simple
- * request*. A browser sends a simple request with no preflight and, for a
- * `no-cors` fetch, the page never reads the response either way — so the
- * request still reaches this server and still runs whatever it names, origin
- * check or not, as long as its `Content-Type` is one of the three simple-request
- * values (`text/plain`, `multipart/form-data`,
- * `application/x-www-form-urlencoded`). `application/json` is not on that
- * list: a same-origin browser request that sends it goes through unchanged,
- * but a cross-site one must first send an OPTIONS preflight, which this
- * application answers with no `Access-Control-Allow-Origin` header — so the
- * browser blocks the real request before it ever reaches this function. This
- * check and `checkOrigin` are independent layers on purpose: this one is what
- * stops the `no-cors`/`text/plain` shape that carries no useful `Origin` to
- * compare in the first place.
+ * `Origin` header that does not match. A browser DOES send a truthful
+ * cross-site `Origin` on a `no-cors` POST — a second review corrected an
+ * earlier version of this comment that claimed otherwise — so `checkOrigin`
+ * alone already stops that shape. This check is the independent layer for a
+ * sender that omits `Origin` altogether (a non-browser HTTP client, or a
+ * future browser behaviour this application should not have to predict): a
+ * simple CORS request (`Content-Type` of `text/plain`,
+ * `multipart/form-data` or `application/x-www-form-urlencoded`) needs no
+ * preflight and reaches this server whether or not it carried a useful
+ * `Origin`. `application/json` is not on that list: a same-origin browser
+ * request that sends it goes through unchanged, but a cross-site one must
+ * first send an OPTIONS preflight, which this application answers with no
+ * `Access-Control-Allow-Origin` header — so the browser blocks the real
+ * request before it ever reaches this function.
  */
 function requireJsonContentType(request: Request): Response | undefined {
   const contentType = request.headers.get('content-type') ?? '';
