@@ -70,9 +70,9 @@ apps/mcp-server/
 
 apps/simulator/
 ├── package.json                    # NEW  T1
-├── next.config.ts                  # NEW  T1   no env block, no NEXT_PUBLIC_ anything
+├── next.config.ts                  # NEW  T1, MOD T9   no env block, no NEXT_PUBLIC_ anything; T9 adds experimental.extensionAlias so webpack resolves src/server's .js-naming-.ts imports (FL-048) — Task 16 3a reconciliation
 ├── tsconfig.json                   # NEW  T1   extends the base, overrides module/jsx for Next
-├── vitest.config.ts                # NEW  T1   two projects: node for *.test.ts, jsdom for *.test.tsx
+├── vitest.config.ts                # NEW  T1, MOD T10   two projects: node for *.test.ts, jsdom for *.test.tsx; T10 adds setupFiles (ui project only) so every .tsx test gets RTL's cleanup() between tests — Task 16 3a reconciliation
 ├── playwright.config.ts            # NEW  T15  local, scripted, no credential
 ├── src/
 │   ├── shared/                     # vocabulary both halves speak: holds no credential, imports no React
@@ -92,7 +92,7 @@ apps/simulator/
 │   │   └── http.ts                 # NEW  T9   the Request/Response layer every route adapter delegates to
 │   ├── app/
 │   │   ├── layout.tsx              # NEW  T1
-│   │   ├── page.tsx                # NEW  T1, replaced T11, extended T12 T13 T14
+│   │   ├── page.tsx                # NEW  T1, replaced T11, extended T12 T13 T14 T15 (T15 passes the scripted flag from useDebugSnapshot to Frame — Task 16 3a reconciliation)
 │   │   ├── globals.css             # NEW  T1, appended T10 T11 T12 T13 T14
 │   │   └── api/
 │   │       ├── health/route.ts     # NEW  T1
@@ -103,20 +103,21 @@ apps/simulator/
 │   │           ├── turn/route.ts   # NEW  T9   SSE, never buffered
 │   │           └── answer/route.ts # NEW  T9   one elicitation answer, sibling request
 │   ├── components/
-│   │   ├── Frame.tsx               # NEW  T10  1280x800 shell, 768x480 canvas at 1.667
-│   │   ├── Disclosure.tsx          # NEW  T10  the simulation + sample-data notice
+│   │   ├── Frame.tsx               # NEW  T10, MOD T15   1280x800 shell, 768x480 canvas at 1.667; T15 adds the scripted prop threaded to Disclosure — Task 16 3a reconciliation
+│   │   ├── Disclosure.tsx          # NEW  T10, MOD T15   the simulation + sample-data notice; T15 adds the scripted prop and the on-screen "Scripted replies" marker paragraph — Task 16 3a reconciliation
 │   │   ├── Transcript.tsx          # NEW  T11, modified T13 T14
 │   │   ├── Composer.tsx            # NEW  T11
 │   │   ├── ElicitationCard.tsx     # NEW  T12  choice (<=5) and confirm
 │   │   ├── ProgressMeter.tsx       # NEW  T12  0 -> 3
 │   │   ├── FailureCard.tsx         # NEW  T13  one failed call, explained and quoted
-│   │   ├── DebugDrawer.tsx         # NEW  T13  protocol version, session id, JSON-RPC log, per-call timing
+│   │   ├── DebugDrawer.tsx         # NEW  T13, MOD T15   protocol version, session id, JSON-RPC log, per-call timing; T15 adds the scripted field to DebugSnapshot — Task 16 3a reconciliation
 │   │   └── WidgetFrame.tsx         # NEW  T14  sandboxed iframe + host attach
 │   └── lib/
 │       ├── transcript.ts           # NEW  T11  Entry/AgentState and the pure reducer
 │       ├── useAgentTurn.ts         # NEW  T11  client hook over the SSE stream
 │       ├── failures.ts             # NEW  T13  explainFailure, NOTHING_RETRIEVED
-│       └── widget-host.ts          # NEW  T14  the view-side protocol's host half
+│       ├── widget-host.ts          # NEW  T14  the view-side protocol's host half
+│       └── useDebugSnapshot.ts     # NEW  T13 fix round 1  polls /api/debug while a turn or an elicitation is live (spec §7 "live JSON-RPC log") — not in this block; added by the review's Important 2, Task 16 3a reconciliation
 └── test/
     ├── health.test.ts              # NEW  T1
     ├── credentials.test.ts         # NEW  T2,  appended T15
@@ -128,8 +129,8 @@ apps/simulator/
     ├── prompt.test.ts              # NEW  T7
     ├── model.test.ts               # NEW  T7
     ├── agent.test.ts               # NEW  T8   fake model, real in-process server
-    ├── routes.test.ts              # NEW  T9,  appended T13 T14
-    ├── frame.test.tsx              # NEW  T10
+    ├── routes.test.ts              # NEW  T9,  appended T13 T14 T15
+    ├── frame.test.tsx              # NEW  T10, appended T15
     ├── transcript.test.ts          # NEW  T11  the reducer, no React
     ├── transcript.test.tsx         # NEW  T11  the hook and the view
     ├── elicitation-card.test.tsx   # NEW  T12
@@ -137,7 +138,14 @@ apps/simulator/
     ├── failures.test.tsx           # NEW  T13
     ├── widget-host.test.tsx        # NEW  T14  .tsx, NOT .ts: it needs the jsdom project (see Task 14, Step 1)
     ├── e2e/fixtures.ts             # NEW  T15
-    └── e2e/simulator.spec.ts       # NEW  T15  Playwright, run deliberately
+    ├── e2e/simulator.spec.ts       # NEW  T15  Playwright, run deliberately
+    ├── env-routing.test.ts         # NEW  T1 fix round  pins the vitest project routing (.test.ts -> node) so the split T1 relies on cannot silently drift — not in this block, Task 16 3a reconciliation
+    ├── env-routing.test.tsx        # NEW  T1 fix round  same, for .test.tsx -> jsdom — not in this block, Task 16 3a reconciliation
+    ├── upstream.test.ts            # NEW  T2   resolveUpstream against a runtime address that changes between calls (FL-038's destroy/recreate shape); the brief left resolveUpstream untested, T2 added this instead — not in this block, Task 16 3a reconciliation
+    ├── guard.ts                    # NEW  T2 fix round  the no-client-secrets predicates lifted into named exported functions, shared by no-client-secrets.test.ts, redaction-order.test.ts and upstream.test.ts — not in this block, Task 16 3a reconciliation
+    ├── redaction-order.test.ts     # NEW  T2 fix round  proves resolveUpstream's log callback is wrapped in the bridge's redact() from the first call, closing the real credential leak the brief's version had on a pinned-ARN failure path — not in this block, Task 16 3a reconciliation
+    ├── use-debug-snapshot.test.tsx # NEW  T13 fix round 1  the fake-clock/fake-fetch coverage for src/lib/useDebugSnapshot.ts (poll while live, stop on idle, cancel on unmount) — not in this block, Task 16 3a reconciliation
+    └── setup-dom.ts                # NEW  T10  loaded only by the ui vitest project; runs @testing-library/react's cleanup() after each .tsx test, which this workspace's non-Jest-globals vitest config does not register automatically — not in this block, Task 16 3a reconciliation
 
 .prettierignore                     # MOD  T1   .next
 .gitignore                          # MOD  T2   .env.local

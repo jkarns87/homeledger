@@ -53,7 +53,6 @@ Real today: appliances, warranties, and maintenance history are the author's own
 
 - **Manual retrieval against Bedrock.** The Knowledge Base, S3 Vectors bucket, and index in `infra/modules/knowledge-base` **are applied and exist** — that part works. What does not is putting anything into them: starting an ingestion job makes the Knowledge Base role call the Titan embedding model, and Bedrock model invocation is blocked account-wide on this AWS account (`FRICTION-LOG.md` FL-019, re-verified 2026-09-16; FL-032 for why "provisioned" and "usable" turned out to be different things). So the Knowledge Base is real, addressable, wired into the runtime — and **unusable in both directions**. It cannot be ingested into, and it cannot be queried either: `Retrieve` embeds the *question* as well as the documents, so the same block refuses the read path, and against the deployed Knowledge Base `ask_manual` returns an error result rather than an empty one. That result now carries spoken prose naming the cause — model access is blocked on the account, the question was fine — instead of the raw AWS sentence ("Invalid input or configuration provided. Check the input and Knowledge Base configuration and try your request again."), which is AWS's wording for its own API and reads as a HomeLedger bug. A retrieval failure the server has not positively recognised says so plainly instead of borrowing that explanation. Locally and wherever `KNOWLEDGE_BASE_ID` is unset, `ask_manual` serves a small in-memory fixture set instead. The Bedrock adapter in `packages/core/src/retrieval/bedrock.ts` is written and tested against a stubbed sender, never against a live index. The deployed smoke reflects all of this rather than papering over it: it prints a loud `ask_manual: SKIPPED` naming the specific cause and carries on running every other assertion, in each of the three blocked states (no Knowledge Base; one that could not be ingested into; one that cannot be queried at all). Once a Knowledge Base is provisioned *and* content has actually been ingested, the check is enforced with no way to opt out — a mismatched title, an empty result, or an error result all fail the run, which is the point of the assertion.
 - **Ring events.** No Ring integration exists in this repository. `recent_events` reads door and sensor rows from DynamoDB and returns only what something else has written there; nothing writes them yet. The webhook, correlation, snapshot, and vision-description pipeline is a later plan.
-- **The Echo Show simulator.** Planned as `apps/simulator`: a Strands agent driving the deployed server and rendering the documented Alexa+ visual foundations. It does not exist in this tree — `apps/` contains `mcp-server` only.
 
 ## Local development
 
@@ -194,6 +193,44 @@ Other variables, none of them required:
 - `HOMELEDGER_BRIDGE_SSE=off` — stops the bridge holding open the spec's optional standalone `GET` event stream. Nothing this server sends arrives on it.
 
 What the bridge does **not** do is translate between protocol revisions. Claude Code 2.1.56 negotiates `2025-11-25` and answers elicitation with session-based `elicitation/create` over the call's own event stream — not the 2026-07-28 multi round-trip requests the modern client uses — so it lands on the server's legacy shim, which is the same path `pnpm smoke`'s legacy block exercises. FL-033 records what that means for a proxy; the short version is that the response stream must be relayed as it arrives and requests must be allowed to overlap, or `book_service` deadlocks on its first question.
+
+## The simulator
+
+`apps/simulator` is a web client shaped like a smart display: a 768 × 480 base canvas at the published 1.667 scale, dark by default with a light toggle, rendering the documented visual foundations. It drives the **deployed** MCP server — the same nine tools, the same three-round `book_service` elicitation with its `0 → 3` progress, the same four `ui://` widgets — through an agent.
+
+**The agent runs on the Anthropic API, not on Bedrock.** That is a deliberate deviation from the design spec, which called for a Strands agent on Bedrock. Bedrock model invocation is refused account-wide on this account and has been since 2026-09-14 (FL-019, FL-032), so a Bedrock-backed agent could not make one call; the Anthropic API sidesteps the block entirely and is the same path Claude Code already uses to drive this server.
+
+**Nothing here is a real assistant product, and the frame says so on screen.** The disclosure strip is always visible and states both of the things that have to be stated: this is a simulation, and the service-provider marketplace is sample data.
+
+Elicitation is the interesting part. `book_service`'s `tools/call` answers with an event stream that stays open across all three questions, and each answer is a separate request sent while it is open. The simulator has the same shape end to end: `POST /api/agent/turn` returns an SSE stream for the whole turn, and `POST /api/agent/answer` delivers one answer on a sibling request. Buffering either response, or serialising the requests, deadlocks silently rather than failing — FL-033 is the entry that cost.
+
+The questions never appear in the transcript as text. An `elicitation-opened` event puts a card between the transcript and the composer, the composer is disabled while it is up, the buttons carry the `enumNames` labels, and the value posted back is the enum value the server will accept.
+
+**"Not now" is an answer, not an error.** `book_service` returns a normal result with `structuredContent: { booked: false }` when somebody declines, and the transcript shows it as a call that worked and booked nothing. It used to set `isError: true`, which is MCP's flag for *the call did not execute* — so a clean decline reached Claude Code as `Error: Okay, I haven't booked anything` and would have reached this transcript as "book_service failed — Nothing was retrieved". A real failure still renders as a failure, loudly, with the server's own sentence quoted; the two are different things and the wire now says which is which.
+
+Run it against the deployed server:
+
+```bash
+aws login --profile homeledger-admin
+export AWS_PROFILE=homeledger-admin
+pnpm --filter @homeledger/mcp-bridge run print-setup    # prints the two Cognito values below
+printf 'ANTHROPIC_API_KEY=%s\nHOMELEDGER_COGNITO_TOKEN_URL=%s\nHOMELEDGER_COGNITO_CLIENT_ID=%s\nAWS_REGION=us-east-1\n' \
+  "$ANTHROPIC_API_KEY" "$TOKEN_URL" "$CLIENT_ID" > apps/simulator/.env.local
+pnpm --filter @homeledger/simulator run dev             # http://127.0.0.1:3000
+```
+
+Or against a local server, with no AWS account and no Cognito at all:
+
+```bash
+HOUSEHOLD_ID=hh_harlow MEMORY_REPO=1 HOMELEDGER_DEV_TOOLS=1 PORT=8010 pnpm --filter @homeledger/mcp-server run dev
+HOMELEDGER_MCP_URL=http://127.0.0.1:8010/mcp ANTHROPIC_API_KEY=sk-ant-... pnpm --filter @homeledger/simulator run dev
+```
+
+A loopback `HOMELEDGER_MCP_URL` with no `HOMELEDGER_COGNITO_TOKEN_URL` is the one configuration that sends no bearer token. It cannot be pointed at the deployed runtime: the check requires a loopback host.
+
+**Where the secrets are.** `ANTHROPIC_API_KEY` is read inside a request handler in `apps/simulator/src/server/`, never at import time and never under a `NEXT_PUBLIC_` name; the Cognito client secret comes from Secrets Manager through the same code path the bridge uses; the AgentCore bearer is minted per HTTP request and never leaves the server. The browser talks only to `/api/agent/*`, `/api/widget*` and `/api/debug`, and `apps/simulator/test/no-client-secrets.test.ts` fails the build if any credential name appears outside `src/server/` or if a `'use client'` module imports from it.
+
+`ask_manual` fails against the deployed server and the simulator shows that as a failure: a card titled "The manuals could not be searched", the server's own sentence quoted underneath, and an explanation that model access is blocked on the account. It never renders a blocked retrieval as an empty one.
 
 ## Deployed endpoint
 
