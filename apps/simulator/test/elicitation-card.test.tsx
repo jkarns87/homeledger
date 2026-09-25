@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ElicitationCard } from '../src/components/ElicitationCard.js';
 import { ProgressMeter } from '../src/components/ProgressMeter.js';
@@ -7,7 +7,9 @@ import { INITIAL_STATE, type PendingQuestion } from '../src/lib/transcript.js';
 
 const choice: PendingQuestion = {
   elicitationId: 'e1',
+  turnId: 't1',
   callId: 'c1',
+  tool: 'book_service',
   prompt: 'Who should I book for the water heater?',
   field: 'provider',
   kind: 'choice',
@@ -20,7 +22,9 @@ const choice: PendingQuestion = {
 
 const confirm: PendingQuestion = {
   elicitationId: 'e3',
+  turnId: 't1',
   callId: 'c1',
+  tool: 'book_service',
   prompt: 'Book Kettle Creek Water Heaters for Tuesday, September 15, 1 to 3 PM?',
   field: 'confirm',
   kind: 'confirm',
@@ -48,14 +52,46 @@ describe('ElicitationCard, choice', () => {
     render(<ElicitationCard question={choice} onAnswer={onAnswer} />);
     screen.getByRole('button', { name: 'Anode and Company' }).click();
     expect(onAnswer).toHaveBeenCalledTimes(1);
-    expect(onAnswer).toHaveBeenCalledWith('accept', { provider: 'prov_anode_and_co' });
+    expect(onAnswer).toHaveBeenCalledWith(choice, 'accept', { provider: 'prov_anode_and_co' });
   });
 
   it('offers a way out that is a decline, not a made-up answer', () => {
     const onAnswer = vi.fn();
     render(<ElicitationCard question={choice} onAnswer={onAnswer} />);
     screen.getByRole('button', { name: /not now/i }).click();
-    expect(onAnswer).toHaveBeenCalledWith('decline');
+    expect(onAnswer).toHaveBeenCalledWith(choice, 'decline', undefined);
+  });
+
+  it('answers once: a double click sends one answer, and every button is disabled after the first', () => {
+    // The final review's I2. A second click used to post the same question
+    // again, and the server's 409 for it came back as a failure notice.
+    const onAnswer = vi.fn();
+    render(<ElicitationCard question={choice} onAnswer={onAnswer} />);
+    // Each click inside `act`, so React has re-rendered before the next one:
+    // this is the path where the `disabled` attribute is what stops it. The
+    // test below takes the other path.
+    const anode = screen.getByRole('button', { name: 'Anode and Company' });
+    act(() => anode.click());
+    act(() => anode.click());
+    act(() => screen.getByRole('button', { name: 'Kettle Creek Water Heaters' }).click());
+    act(() => screen.getByRole('button', { name: /not now/i }).click());
+    expect(onAnswer).toHaveBeenCalledTimes(1);
+    expect(onAnswer).toHaveBeenCalledWith(choice, 'accept', { provider: 'prov_anode_and_co' });
+    for (const button of screen.getAllByRole('button')) expect((button as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('drops a second click that lands before the card has re-rendered', () => {
+    // A click event dispatched straight at the element, the way a fast double
+    // click can arrive before React has applied `disabled`: the ref, not the
+    // attribute, is what stops this one.
+    const onAnswer = vi.fn();
+    render(<ElicitationCard question={choice} onAnswer={onAnswer} />);
+    const anode = screen.getByRole('button', { name: 'Anode and Company' });
+    const click = () => anode.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    click();
+    anode.removeAttribute('disabled');
+    click();
+    expect(onAnswer).toHaveBeenCalledTimes(1);
   });
 
   it('renders exactly the options it is given, adding and removing nothing', () => {
@@ -89,7 +125,10 @@ describe('ElicitationCard, confirm', () => {
     const onAnswer = vi.fn();
     render(<ElicitationCard question={confirm} onAnswer={onAnswer} />);
     screen.getByRole('button', { name: /^yes/i }).click();
-    expect(onAnswer).toHaveBeenLastCalledWith('accept', { confirm: true });
+    expect(onAnswer).toHaveBeenLastCalledWith(confirm, 'accept', { confirm: true });
+    // A card answers once, so the other half is a fresh card.
+    cleanup();
+    render(<ElicitationCard question={confirm} onAnswer={onAnswer} />);
     // `/^no, don/i`, not `/^no/i`. In confirm mode the card renders three
     // buttons and two of them start with "No": "No, don't book it" and the
     // always-present "Not now". `getByRole` with the looser pattern matches
@@ -97,7 +136,7 @@ describe('ElicitationCard, confirm', () => {
     // so the test failed rather than passing vacuously - but it still could
     // not reach its own "Expected: PASS".
     screen.getByRole('button', { name: /^no, don/i }).click();
-    expect(onAnswer).toHaveBeenLastCalledWith('accept', { confirm: false });
+    expect(onAnswer).toHaveBeenLastCalledWith(confirm, 'accept', { confirm: false });
   });
 
   it('keeps "No, don’t book it" and "Not now" distinguishable, because they mean different things', () => {
@@ -111,7 +150,21 @@ describe('ElicitationCard, confirm', () => {
     const notNow = screen.getByRole('button', { name: /not now/i });
     expect(no).not.toBe(notNow);
     notNow.click();
-    expect(onAnswer).toHaveBeenLastCalledWith('decline');
+    expect(onAnswer).toHaveBeenLastCalledWith(confirm, 'decline', undefined);
+  });
+
+  it('says "book it" only when the question is book_service confirming a booking', () => {
+    // The deployed runtime also offers the model `echo_confirm`, a yes/no
+    // question that books nothing. Labelled "Yes, book it", the card would
+    // tell a person they were booking something when they were not.
+    render(<ElicitationCard question={{ ...confirm, tool: 'echo_confirm', prompt: 'Proceed?' }} onAnswer={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Yes' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'No' })).toBeDefined();
+    expect(screen.getByTestId('elicitation').textContent).not.toMatch(/book/i);
+    cleanup();
+    render(<ElicitationCard question={confirm} onAnswer={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Yes, book it' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'No, don’t book it' })).toBeDefined();
   });
 
   it('shows no option list at all', () => {

@@ -106,13 +106,27 @@ describe('reduceTurn', () => {
     const asked = run([opened]);
     expect(asked.pending).toEqual({
       elicitationId: 'e1',
+      turnId: '',
       callId: 'c1',
+      tool: '',
       prompt: 'Who should I book?',
       field: 'provider',
       kind: 'choice',
       options: [{ value: 'prov_a', label: 'Alpha' }]
     });
     expect(run([{ type: 'elicitation-closed', elicitationId: 'e1', action: 'accept' }], asked).pending).toBeNull();
+  });
+
+  it('carries the turn that asked and the tool that asked on the question itself', () => {
+    // The card answers from these, not from whatever the state holds when a
+    // click is sent (final review I2), and words its buttons from the tool.
+    const state = run([
+      { type: 'turn-started', turnId: 't7' },
+      { type: 'tool-started', callId: 'c9', tool: 'book_service', args: {} },
+      { type: 'tool-started', callId: 'c1', tool: 'echo_confirm', args: {} },
+      { type: 'elicitation-opened', callId: 'c9', elicitationId: 'e1', prompt: 'Book?', field: 'confirm', kind: 'confirm', options: [] }
+    ]);
+    expect(state.pending).toMatchObject({ elicitationId: 'e1', turnId: 't7', tool: 'book_service' });
   });
 
   it('ignores a close for a question it is not showing', () => {

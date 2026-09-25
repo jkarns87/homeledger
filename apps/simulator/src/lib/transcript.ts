@@ -20,7 +20,11 @@ export type Entry =
 
 export interface PendingQuestion {
   elicitationId: string;
+  /** The turn that asked. Carried on the question so an answer names the turn it belongs to, not whichever turn is current when it is sent. */
+  turnId: string;
   callId: string;
+  /** The tool that asked, from the call's own transcript row; '' when its start was never seen. Decides the card's wording. */
+  tool: string;
   prompt: string;
   field: string;
   kind: 'choice' | 'confirm';
@@ -52,6 +56,15 @@ function nextId(prefix: string): string {
 
 export function askedByUser(state: AgentState, text: string): AgentState {
   return { ...state, entries: [...state.entries, { kind: 'user', id: nextId('user'), text }], running: true };
+}
+
+/** The tool name of the most recent transcript row for this call, or '' when there is none. */
+function toolNameOf(entries: Entry[], callId: string): string {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index];
+    if (entry?.kind === 'tool' && entry.id === callId) return entry.tool;
+  }
+  return '';
 }
 
 /** Replaces the tool entry with this id, or appends one when the start was never seen. */
@@ -155,7 +168,9 @@ export function reduceTurn(state: AgentState, event: TurnEvent): AgentState {
         ...state,
         pending: {
           elicitationId: event.elicitationId,
+          turnId: state.turnId ?? '',
           callId: event.callId,
+          tool: toolNameOf(state.entries, event.callId),
           prompt: event.prompt,
           field: event.field,
           kind: event.kind,

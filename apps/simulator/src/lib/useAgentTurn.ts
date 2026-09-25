@@ -1,13 +1,18 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { createSseDecoder } from '../shared/events.js';
-import { INITIAL_STATE, askedByUser, reduceTurn, type AgentState } from './transcript.js';
+import { INITIAL_STATE, askedByUser, reduceTurn, type AgentState, type PendingQuestion } from './transcript.js';
 
 export interface AgentTurn {
   state: AgentState;
+  /** False until `reset()` has settled, either way. The composer waits on it, so a first question cannot race the reset and be aborted by it. */
+  ready: boolean;
   ask(text: string): Promise<void>;
-  answer(action: 'accept' | 'decline' | 'cancel', content?: Record<string, unknown>): Promise<void>;
+  /** Answers THIS question - the one on the card that was clicked - never whichever question the state holds by the time the request is built. */
+  answer(question: PendingQuestion, action: 'accept' | 'decline' | 'cancel', content?: Record<string, unknown>): Promise<void>;
+  /** Asks the server to start the conversation over. Called once when the page loads. */
+  reset(): Promise<void>;
 }
 
 async function failureMessage(response: Response): Promise<string> {
@@ -30,16 +35,13 @@ function connectionEndedMessage(cause: unknown): string {
 
 export function useAgentTurn(fetchImpl: typeof fetch = fetch): AgentTurn {
   const [state, setState] = useState<AgentState>(INITIAL_STATE);
-  // Held in a ref as well as in state so `answer` can read the turn id without
-  // being re-created on every event, which would restart the stream reader.
-  const latest = useRef<AgentState>(INITIAL_STATE);
-  const apply = useCallback((next: (previous: AgentState) => AgentState) => {
-    setState(previous => {
-      const value = next(previous);
-      latest.current = value;
-      return value;
-    });
-  }, []);
+  const [ready, setReady] = useState(false);
+  // No ref of the latest state any more. `answer` used to read the question id
+  // from one, so a second click on a card already answered - or a click that
+  // landed after the next question was folded in - posted whatever question
+  // the state held THEN (final review I2). The card now says which question
+  // it is answering.
+  const apply = useCallback((next: (previous: AgentState) => AgentState) => setState(next), []);
 
   const ask = useCallback(
     async (text: string) => {
@@ -101,15 +103,13 @@ export function useAgentTurn(fetchImpl: typeof fetch = fetch): AgentTurn {
   );
 
   const answer = useCallback(
-    async (action: 'accept' | 'decline' | 'cancel', content: Record<string, unknown> = {}) => {
-      const current = latest.current;
-      if (!current.pending || !current.turnId) return;
+    async (question: PendingQuestion, action: 'accept' | 'decline' | 'cancel', content: Record<string, unknown> = {}) => {
       let response: Response;
       try {
         response = await fetchImpl('/api/agent/answer', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ turnId: current.turnId, elicitationId: current.pending.elicitationId, action, content })
+          body: JSON.stringify({ turnId: question.turnId, elicitationId: question.elicitationId, action, content })
         });
       } catch (error) {
         // The turn's own SSE stream is still open and will end on its own -
@@ -133,5 +133,24 @@ export function useAgentTurn(fetchImpl: typeof fetch = fetch): AgentTurn {
     [apply, fetchImpl]
   );
 
-  return { state, ask, answer };
+  const reset = useCallback(async () => {
+    try {
+      const response = await fetchImpl('/api/agent/reset', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      if (!response.ok) {
+        const message = await failureMessage(response);
+        apply(previous => reduceTurn(previous, { type: 'turn-failed', message: `A fresh conversation could not be started. ${message}` }));
+      }
+    } catch (error) {
+      apply(previous =>
+        reduceTurn(previous, {
+          type: 'turn-failed',
+          message: `A fresh conversation could not be started. ${error instanceof Error ? error.message : String(error)}`
+        })
+      );
+    } finally {
+      setReady(true);
+    }
+  }, [apply, fetchImpl]);
+
+  return { state, ready, ask, answer, reset };
 }

@@ -26,7 +26,7 @@ function streamOf(events: TurnEvent[]): Response {
  * *while* a turn is still in flight (an open `pending` question, an
  * in-progress read loop) needs this instead.
  */
-function openStream(events: TurnEvent[]): { response: Response; finish(extra?: TurnEvent[]): void } {
+function openStream(events: TurnEvent[]): { response: Response; push(extra: TurnEvent[]): void; finish(extra?: TurnEvent[]): void } {
   const encoder = new TextEncoder();
   let controllerRef!: ReadableStreamDefaultController<Uint8Array>;
   const body = new ReadableStream<Uint8Array>({
@@ -38,6 +38,9 @@ function openStream(events: TurnEvent[]): { response: Response; finish(extra?: T
   const response = new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   return {
     response,
+    push(extra) {
+      for (const event of extra) controllerRef.enqueue(encoder.encode(encodeSse(event)));
+    },
     finish(extra = []) {
       for (const event of extra) controllerRef.enqueue(encoder.encode(encodeSse(event)));
       controllerRef.close();
@@ -111,7 +114,7 @@ describe('useAgentTurn', () => {
     });
     await waitFor(() => expect(result.current.state.pending).not.toBeNull());
     await act(async () => {
-      await result.current.answer('accept', { provider: 'prov_a' });
+      await result.current.answer(result.current.state.pending!, 'accept', { provider: 'prov_a' });
     });
     const answer = calls.find(([url]) => url === '/api/agent/answer');
     expect(answer).toBeDefined();
@@ -217,7 +220,7 @@ describe('useAgentTurn', () => {
     });
     await waitFor(() => expect(result.current.state.pending).not.toBeNull());
     await act(async () => {
-      await result.current.answer('accept', { provider: 'prov_a' });
+      await result.current.answer(result.current.state.pending!, 'accept', { provider: 'prov_a' });
     });
     const notice = result.current.state.entries.find(e => e.kind === 'notice');
     expect(notice).toMatchObject({ tone: 'failure' });
@@ -259,7 +262,7 @@ describe('useAgentTurn', () => {
     });
     await waitFor(() => expect(result.current.state.pending).not.toBeNull());
     await act(async () => {
-      await result.current.answer('accept', { provider: 'prov_a' });
+      await result.current.answer(result.current.state.pending!, 'accept', { provider: 'prov_a' });
     });
     const notice = result.current.state.entries.find(e => e.kind === 'notice');
     expect(notice).toMatchObject({ tone: 'failure' });
@@ -312,6 +315,109 @@ describe('useAgentTurn', () => {
       await askPromise;
     });
     expect(result.current.state.running).toBe(false);
+  });
+});
+
+describe('useAgentTurn, answers keyed to the card that was clicked (final review I2)', () => {
+  it('answers the question the card showed, even after the next question has arrived', async () => {
+    // A slow click: the card for question 1 is still under the pointer when
+    // question 2 is folded into state. The old hook read the id from state at
+    // send time and posted question 1's content against question 2's id.
+    const calls: Array<[string, RequestInit]> = [];
+    const stream = openStream([
+      { type: 'turn-started', turnId: 't7' },
+      { type: 'elicitation-opened', callId: 'c1', elicitationId: 'e1', prompt: 'Who?', field: 'provider', kind: 'choice', options: [] }
+    ]);
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push([url, init]);
+      if (url === '/api/agent/turn') return stream.response;
+      return new Response('{"ok":true}', { status: 202 });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = result.current.ask('book a plumber');
+    });
+    await waitFor(() => expect(result.current.state.pending?.elicitationId).toBe('e1'));
+    const first = result.current.state.pending!;
+    act(() => stream.push([{ type: 'elicitation-opened', callId: 'c1', elicitationId: 'e2', prompt: 'When?', field: 'window', kind: 'choice', options: [] }]));
+    await waitFor(() => expect(result.current.state.pending?.elicitationId).toBe('e2'));
+
+    await act(async () => {
+      await result.current.answer(first, 'accept', { provider: 'prov_a' });
+    });
+    const posted = calls.filter(([url]) => url === '/api/agent/answer').map(([, init]) => JSON.parse(String(init.body)) as Record<string, unknown>);
+    expect(posted).toEqual([{ turnId: 't7', elicitationId: 'e1', action: 'accept', content: { provider: 'prov_a' } }]);
+
+    await act(async () => {
+      stream.finish([{ type: 'turn-finished', turnId: 't7' }]);
+      await askPromise;
+    });
+  });
+
+  it("shows the answer-side 409 unknown-question in the server's own words", async () => {
+    const stream = openStream([
+      { type: 'turn-started', turnId: 't7' },
+      { type: 'elicitation-opened', callId: 'c1', elicitationId: 'e1', prompt: 'Who?', field: 'provider', kind: 'choice', options: [] }
+    ]);
+    const words = 'That answer was not delivered: the question it names has already been answered or has timed out. Nothing was changed by this click.';
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === '/api/agent/turn') return stream.response;
+      return new Response(JSON.stringify({ ok: false, reason: 'unknown-question', message: words }), { status: 409 });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = result.current.ask('book a plumber');
+    });
+    await waitFor(() => expect(result.current.state.pending).not.toBeNull());
+    await act(async () => {
+      await result.current.answer(result.current.state.pending!, 'accept', { provider: 'prov_a' });
+    });
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ kind: 'notice', tone: 'failure', text: words });
+
+    await act(async () => {
+      stream.finish([{ type: 'turn-finished', turnId: 't7' }]);
+      await askPromise;
+    });
+  });
+});
+
+describe('useAgentTurn, starting fresh (final review I3)', () => {
+  it('posts the reset as JSON, and is not ready until it has been answered', async () => {
+    let answer!: (response: Response) => void;
+    const fetchImpl = vi.fn(() => new Promise<Response>(resolve => (answer = resolve))) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    expect(result.current.ready).toBe(false);
+    let resetPromise!: Promise<void>;
+    act(() => {
+      resetPromise = result.current.reset();
+    });
+    const [url, init] = (fetchImpl as unknown as { mock: { calls: Array<[string, RequestInit]> } }).mock.calls[0]!;
+    expect(url).toBe('/api/agent/reset');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('content-type')).toBe('application/json');
+    expect(result.current.ready).toBe(false);
+    await act(async () => {
+      answer(new Response('{"ok":true}', { status: 200 }));
+      await resetPromise;
+    });
+    expect(result.current.ready).toBe(true);
+    expect(result.current.state.entries).toEqual([]);
+  });
+
+  it('says so when the fresh start failed, and still lets the person ask', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ message: 'ANTHROPIC_API_KEY is not set.' }), { status: 503 })) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    await act(async () => {
+      await result.current.reset();
+    });
+    expect(result.current.ready).toBe(true);
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ kind: 'notice', tone: 'failure', text: 'A fresh conversation could not be started. ANTHROPIC_API_KEY is not set.' });
   });
 });
 
