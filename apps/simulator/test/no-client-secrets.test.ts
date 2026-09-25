@@ -276,3 +276,18 @@ describe('use-client predicates', () => {
     expect(credentialNamesIn('nothing to see')).toEqual([]);
   });
 });
+
+describe('the end-to-end config', () => {
+  it('carries only the placeholder, never a key', async () => {
+    // The one place in this package where a credential NAME legitimately sits
+    // outside src/server/. Task 2's guard does not reach here and should not -
+    // Next never compiles this file - so the value is pinned instead: this
+    // asserts the string is the placeholder itself, which fails the moment
+    // somebody pastes a real key in to debug something and forgets to take it
+    // out again.
+    const text = await readFile(fileURLToPath(new URL('../playwright.config.ts', import.meta.url)), 'utf8');
+    expect(text).toContain("ANTHROPIC_API_KEY: 'not-used-by-the-scripted-model'");
+    expect(text).not.toMatch(/sk-ant-/);
+    expect(text).not.toMatch(/process\.env\.ANTHROPIC_API_KEY/);
+  });
+});

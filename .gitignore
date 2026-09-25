@@ -15,6 +15,11 @@ next-env.d.ts
 .terraform/
 infra/**/demo.tfvars
 coverage/
+# Playwright (apps/simulator's Step 5 end-to-end run): traces/screenshots on
+# failure and the HTML report, neither of which is source.
+test-results/
+playwright-report/
+blob-report/
 .DS_Store
 .claude/worktrees/
 .superpowers/

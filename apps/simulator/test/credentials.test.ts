@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ELICITATION_TIMEOUT_MS, DEFAULT_MAX_ROUNDS, DEFAULT_MODEL, SimulatorConfigError, readSimulatorEnv } from '../src/server/env.js';
+import { isUnauthenticatedLocal } from '../src/server/credentials.js';
+import { SCRIPTED_MODEL_FLAG, scriptedModelRequested } from '../src/server/session.js';
 
 /**
  * Builds a `NodeJS.ProcessEnv` fixture.
@@ -98,5 +100,44 @@ describe('readSimulatorEnv', () => {
       if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = saved;
     }
+  });
+});
+
+describe('local, unauthenticated mode', () => {
+  it('is on only when a whole URL is pinned and no token endpoint is configured', () => {
+    expect(isUnauthenticatedLocal(env({ HOMELEDGER_MCP_URL: 'http://127.0.0.1:8010/mcp' }))).toBe(true);
+    expect(isUnauthenticatedLocal(env({ HOMELEDGER_MCP_URL: 'http://127.0.0.1:8010/mcp', HOMELEDGER_COGNITO_TOKEN_URL: 'https://x/oauth2/token' }))).toBe(
+      false
+    );
+    expect(isUnauthenticatedLocal(env({ HOMELEDGER_COGNITO_TOKEN_URL: 'https://x/oauth2/token' }))).toBe(false);
+    expect(isUnauthenticatedLocal(env({}))).toBe(false);
+  });
+
+  it('refuses to skip authentication for anything that is not a loopback address', () => {
+    // The whole safety of this mode is that it cannot be pointed at the
+    // deployed runtime. A bearerless request to AgentCore would be refused
+    // anyway, but a mode that silently tries is a mode somebody will debug.
+    expect(isUnauthenticatedLocal(env({ HOMELEDGER_MCP_URL: 'https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/x/invocations' }))).toBe(false);
+    expect(isUnauthenticatedLocal(env({ HOMELEDGER_MCP_URL: 'http://localhost:8010/mcp' }))).toBe(true);
+    expect(isUnauthenticatedLocal(env({ HOMELEDGER_MCP_URL: 'not a url' }))).toBe(false);
+  });
+
+  it('accepts IPv6 loopback in the bracketed form the URL parser actually produces', () => {
+    // `new URL('http://[::1]:8010/').hostname` is '[::1]', WITH the brackets:
+    // the WHATWG parser keeps them, so a check for '::1' is a branch nothing
+    // can ever reach. That is the fourth shape Global Constraint 26 names -
+    // a branch made unreachable by a library's own preprocessing - and the
+    // draft of this plan prescribed it in the same document that warns about
+    // it. This case is the proof that the arm is live.
+    expect(isUnauthenticatedLocal(env({ HOMELEDGER_MCP_URL: 'http://[::1]:8010/mcp' }))).toBe(true);
+    expect(new URL('http://[::1]:8010/mcp').hostname).toBe('[::1]');
+  });
+});
+
+describe('the scripted model', () => {
+  it('is off unless the flag is exactly 1', () => {
+    expect(scriptedModelRequested(env({}))).toBe(false);
+    for (const value of ['', '0', 'true', 'yes', 'TRUE', ' 1']) expect(scriptedModelRequested(env({ [SCRIPTED_MODEL_FLAG]: value })), value).toBe(false);
+    expect(scriptedModelRequested(env({ [SCRIPTED_MODEL_FLAG]: '1' }))).toBe(true);
   });
 });

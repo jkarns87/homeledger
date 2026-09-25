@@ -99,6 +99,32 @@ async function scrubbed<T>(run: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Whether to talk to a local server with no bearer at all.
+ *
+ * This exists so the end-to-end suite and `pnpm dev` can run with no AWS
+ * account, which is the same promise `docs/RUNBOOK.md` section 4 already makes
+ * for the server itself. It is narrow by construction: a whole URL must be
+ * pinned, it must be loopback, and no Cognito token endpoint may be configured.
+ * Any one of those missing and the normal path runs — there is no way to reach
+ * the deployed runtime through this branch, which is the property that makes an
+ * unauthenticated mode safe to ship.
+ */
+export function isUnauthenticatedLocal(source: NodeJS.ProcessEnv): boolean {
+  const raw = source.HOMELEDGER_MCP_URL?.trim();
+  if (!raw || source.HOMELEDGER_COGNITO_TOKEN_URL?.trim()) return false;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  // '[::1]' WITH brackets. `new URL(...).hostname` keeps them for every IPv6
+  // host, so the bare '::1' this used to compare against is a value the parser
+  // never produces - an arm that reads as thorough and can never be true.
+  return url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]';
+}
+
+/**
  * Resolves which runtime to talk to and how to authenticate to it, reusing the
  * bridge's implementations rather than copying them.
  *
@@ -111,6 +137,14 @@ async function scrubbed<T>(run: () => Promise<T>): Promise<T> {
  * project two confidently wrong answers.
  */
 export async function resolveUpstream(source: NodeJS.ProcessEnv = process.env, log: (m: string) => void = () => {}): Promise<UpstreamCredentials> {
+  if (isUnauthenticatedLocal(source)) {
+    const url = source.HOMELEDGER_MCP_URL!.trim();
+    log(`talking to ${url} with no bearer token: a loopback URL is pinned and no Cognito token endpoint is configured`);
+    // `resolveUrl` yields the same pinned URL: there is no name to look up, so
+    // the client's heal-before-rebuild path is a no-op here rather than a
+    // branch this mode has to know about.
+    return { url, arn: undefined, origin: 'url', token: async () => 'local-no-auth', invalidateToken: () => {}, resolveUrl: async () => url };
+  }
   return scrubbed(async () => {
     const config = loadConfig(source);
     // Registered here, not where the secret is consumed, and the distance
