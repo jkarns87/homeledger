@@ -1,6 +1,6 @@
 import { acceptedContent, inputRequired, type McpServer, type RequestStateCodec, type ServerContext } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { VisitStatus, derivedId, providersForCategory } from '@homeledger/core';
+import { NOT_BOOKED, NotBooked, VisitStatus, derivedId, providersForCategory } from '@homeledger/core';
 import { booleanField, elicitOutcome, enumField, supportsFormElicitation } from '../elicit.js';
 import { runAvailabilityCheck } from '../progress.js';
 import type { ServerDeps } from '../server.js';
@@ -49,7 +49,62 @@ const ProviderAnswer = z.object({ provider: z.string() });
 const WindowAnswer = z.object({ window: z.string() });
 const ConfirmAnswer = z.object({ confirm: z.boolean() });
 
-const notBooked = () => ({ content: [{ type: 'text' as const, text: "Okay, I haven't booked anything." }], isError: true });
+const BookedVisit = z.object({
+  visitId: z.string(),
+  provider: z.string(),
+  windowStart: z.string(),
+  windowEnd: z.string(),
+  // The window as a person reads it, rendered server-side in the household's
+  // zone. Nullable-never, always present: the visit widget has no way of its
+  // own to know the household's zone, and letting it format `windowStart`
+  // itself would put the VIEWER's clock on a shared kitchen display - the one
+  // thing this must not do. One rendering, computed once, spoken and shown
+  // identically.
+  windowLabel: z.string(),
+  status: VisitStatus
+});
+
+/**
+ * What `book_service` advertises it can return.
+ *
+ * Named rather than inlined into the registration, because it is the tool's
+ * whole output contract and the union is the non-obvious half of it: the
+ * decline needs a shape at all only because `outputSchema` is declared. The SDK
+ * validates any result that is not flagged `isError`, and that flag is exactly
+ * what the decline stopped using. The success branch is left byte-identical, so
+ * the visit widget and every existing assertion about a completed booking are
+ * untouched; `NotBooked` comes from `@homeledger/core` so the simulator's
+ * reader is pinned to the same shape rather than to a hand-typed copy of it
+ * (FL-046).
+ *
+ * Unambiguous in both directions: a booking has no `booked` key and fails
+ * `NotBooked`'s literal, a decline has no `visitId` and fails `BookedVisit`, so
+ * no result can validate as the wrong one. Both members are `type: 'object'`,
+ * which is what keeps the 2025-era `{result: ...}` projection off a typeless
+ * union root.
+ */
+const BookServiceOutput = z.union([BookedVisit, NotBooked]);
+
+/**
+ * A person pressed "Not now", and that is a call that RAN and answered no.
+ *
+ * `isError` is MCP's "the tool did not execute" flag, and this used to carry
+ * it. Claude Code renders such a result as `Error: Okay, I haven't booked
+ * anything.`, and Plan 3's simulator would render a red failure card to
+ * somebody who simply changed their mind - the same papering-over this project
+ * keeps fighting, pointed the other way. Dropping the flag on its own is not
+ * enough: `validateToolOutput` skips validation only while `isError` is set,
+ * and throws `Output validation error: Tool book_service has an output schema
+ * but no structured content was provided` for an unflagged result that carries
+ * none. So the decline gets a structured shape of its own - see
+ * `BookServiceOutput` - and the payload is `NOT_BOOKED` from
+ * `@homeledger/core` rather than a literal written here, so the simulator's
+ * reader and this producer cannot drift apart silently.
+ */
+const notBooked = () => ({
+  content: [{ type: 'text' as const, text: "Okay, I haven't booked anything." }],
+  structuredContent: NOT_BOOKED
+});
 
 /**
  * What a person hears when their client cannot be asked anything.
@@ -74,20 +129,7 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       description:
         'Book a service visit for an appliance. Asks which provider to use, which arrival window to take, and for a final confirmation before anything is written. Providers come from a sample marketplace, not a real booking network.',
       inputSchema: z.object({ applianceId: z.string(), issue: z.string().min(3).max(300), preferredWindow: z.string().max(100).optional() }),
-      outputSchema: z.object({
-        visitId: z.string(),
-        provider: z.string(),
-        windowStart: z.string(),
-        windowEnd: z.string(),
-        // The window as a person reads it, rendered server-side in the
-        // household's zone. Nullable-never, always present: the visit widget
-        // has no way of its own to know the household's zone, and letting it
-        // format `windowStart` itself would put the VIEWER's clock on a shared
-        // kitchen display - the one thing this must not do. One rendering,
-        // computed once, spoken and shown identically.
-        windowLabel: z.string(),
-        status: VisitStatus
-      }),
+      outputSchema: BookServiceOutput,
       _meta: uiMeta(WIDGET_URIS.visit)
     },
     async ({ applianceId, issue }, ctx: ServerContext) => {

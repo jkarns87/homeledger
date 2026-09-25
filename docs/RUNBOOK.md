@@ -39,12 +39,12 @@ not work as documented, and what it cost).
 | Eight of the nine MCP tools | Yes | Yes | `list_appliances`, `get_appliance`, `maintenance_due`, `log_maintenance`, `recent_events`, `book_service`, `get_visit`, `echo_confirm`. Run 35478596365 invoked five of them against the live runtime; `get_appliance`, `log_maintenance` and `recent_events` are registered and listed there but are exercised in-process rather than by the smoke |
 | `ask_manual` | Yes, from an in-memory fixture set | **No** | Returns a spoken error. See [section 5](#5-what-is-blocked-bedrock-model-access) |
 | Elicitation (`book_service`, `echo_confirm`) | Yes | Yes | Both drive real `elicitation/create` round trips in smoke run 35478596365 against the live runtime |
-| MCP Apps widgets (four `ui://` resources) | Yes | Yes | The five widget-backed tools carry their `ui://` reference — asserted in-process by `apps/mcp-server/test/widgets.test.ts` and over the wire by the smoke. **Rendering** them needs an MCP Apps host and has not been exercised here |
+| MCP Apps widgets (four `ui://` resources) | Yes | Yes, wiring only | The five widget-backed tools carry their `ui://` reference — asserted in-process by `apps/mcp-server/test/widgets.test.ts` and over the wire by the smoke. **Rendering** them now has an MCP Apps host: `apps/simulator`'s `WidgetFrame` renders all four in a sandboxed iframe, exercised end to end by the Playwright suite against a local server. Rendering against the deployed server specifically has not been exercised — see §4.6 and §13 |
 | DynamoDB persistence | Yes, via DynamoDB Local | Yes | |
 | Bedrock Knowledge Base | n/a | Provisioned, unusable | Exists, addressable, cannot be ingested into or queried |
 | Ring events | No | No | No Ring integration exists in this repository. `recent_events` reads rows nothing writes |
 | Alexa+ | No | No | The Alexa+ MCP Toolkit is private preview; entrants cannot call Alexa+ (FL-001) |
-| Echo Show simulator | No | No | Planned as `apps/simulator`; not in this tree |
+| Echo Show simulator | Yes (against a local server) | Yes, wiring only — **not yet run with the real model** | `apps/simulator` exists and drives the deployed MCP server through an agent on the Anthropic API, not Bedrock (FL-019, FL-032; see §4.6 and `README.md`). Six Playwright specs verify it end to end against a local, scripted server. The run against the deployed runtime with the real model (§13) has not been executed by anyone yet |
 
 `recent_events` answers correctly and answers nothing. Verified locally against the shipped container:
 
@@ -94,12 +94,17 @@ git clone https://github.com/jkarns87/homeledger.git
 cd homeledger
 pnpm install
 pnpm --filter @homeledger/core build
+pnpm --filter @homeledger/mcp-bridge build    # only needed for the simulator (section 4.6)
 ```
 
 `pnpm --filter @homeledger/core build` is not optional and is the step a fresh checkout most often skips.
 `apps/mcp-server` consumes `@homeledger/core` through its published `dist/` entry point (`main`/`types` in
 `packages/core/package.json`), not through TypeScript source, so nothing downstream resolves until `core` has
 been built once. `ci.yml` carries the same step for the same reason.
+
+`apps/simulator` consumes `@homeledger/mcp-bridge` the same way — through its `dist/`, which is git-ignored — so
+the simulator fails its first request with `Cannot find package '@homeledger/mcp-bridge/config'` on any checkout
+that has not built the bridge. `print-setup` runs under `tsx` and does not build it either.
 
 ### 4.2 Start the server with in-memory data
 
@@ -166,6 +171,77 @@ the whole domain model, and — if your client can prompt, see §12 — the elic
 2025-era client path. Not proved: anything about AWS, AgentCore, Cognito, DynamoDB or Bedrock. §9 is where
 the deployed stack is exercised; §5 is what is broken there.
 
+### 4.6 Talk to it from the simulator
+
+Everything in section 4 gets you a server. This gets you a display in front of it, and it still needs no AWS account — only an Anthropic API key, because the agent runs on the Anthropic API rather than on Bedrock (section 5, and `FRICTION-LOG.md` FL-019). It needs both builds from section 4.1, `core` **and** `mcp-bridge`.
+
+```bash
+# terminal 1 - the server, in memory
+HOUSEHOLD_ID=hh_harlow MEMORY_REPO=1 HOMELEDGER_DEV_TOOLS=1 PORT=8010 pnpm --filter @homeledger/mcp-server run dev
+
+# terminal 2 - the display
+HOMELEDGER_MCP_URL=http://127.0.0.1:8010/mcp ANTHROPIC_API_KEY=sk-ant-... pnpm --filter @homeledger/simulator run dev
+```
+
+Open `http://127.0.0.1:3000`. Ask "what appliances do we have", then "book a plumber for the water heater". The booking asks three questions as cards; answering the third writes a visit and renders the visit widget.
+
+Reloading the page starts a fresh conversation: the page calls `POST /api/agent/reset` when it loads, which aborts any turn still running and empties the server-side history the model is handed, so a retake carries nothing from the previous take. One turn runs at a time; a second concurrent turn is refused with `409 turn-running`. Editing `apps/simulator/.env.local` still needs a dev-server restart — the conversation is built once per process.
+
+What this proves: the tool surface, the widget host, and the whole elicitation path, against a real MCP server over a real socket. What it does not: anything about AgentCore, Cognito, or the deployed runtime. For that, see the deployed instructions in the README's simulator section — and note that `ask_manual` fails there, deliberately and visibly, until Bedrock model access is restored.
+
+To run the end-to-end suite instead of driving it by hand, with no API key at all:
+
+```bash
+pnpm --filter @homeledger/simulator exec playwright install chromium
+pnpm --filter @homeledger/simulator run test:e2e
+```
+
+It starts both servers itself and answers from a fixed script rather than from the model, which is why it is deterministic and free. `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is what selects that, it is accepted only as the exact string `1`, and the process logs which mode it is in at startup.
+
+**Security defaults, if you open this to anything other than yourself.** With `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` unset — the default — every simulator route (`/api/agent/turn`, `/api/agent/answer`, `/api/agent/reset`, `/api/widget`, `/api/widget/tool`, `/api/debug`) accepts a request only when its `Host` header names a loopback address (`localhost`, `127.0.0.1`, or bracketed IPv6 `[::1]`) and, if the request carries an `Origin` header at all, that `Origin` matches `Host`. Every `POST` route additionally requires `content-type: application/json`, which forces a cross-site browser through a preflight this application never grants. Opening the simulator from another machine, or putting it behind a proxy, means setting `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` to the origin you expect requests from — the refusal message names the variable. An earlier version of this check let a cross-site request through and a reviewer's probe confirmed it could reach `/api/widget/tool` and run `log_maintenance`; `apps/simulator/src/server/http.ts`'s `checkOrigin` carries the full history of that fix in its own comment, including why `Host` alone was not enough and why comparing against Next's `request.url` was not either.
+
+**The scripted model is gated to the local, unauthenticated upstream and marks itself on screen.** `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is refused (`SimulatorConfigError`, `assertScriptedModeAllowed` in `session.ts`) unless `HOMELEDGER_MCP_URL` is also a loopback address with no Cognito token URL configured — it cannot be pointed at the deployed runtime. The check runs lazily, inside `build()`, the first time a request needs a conversation (`getConversation()`), not at process boot — so a misconfigured flag against the deployed runtime fails the very first request rather than starting cleanly and failing later, which is what matters for a demo even though it is not literally "at startup." When it is on, the on-screen disclosure gains a second line ("Scripted replies — no model is answering; this run follows a fixed script.") so scripted output is never mistaken for the real model.
+
+**The Playwright suite runs in that scripted mode, and its CI status.** `pnpm --filter @homeledger/simulator run test:e2e` is what Step 4's `pnpm test:e2e` above invokes. `.github/workflows/ci.yml` has an `e2e` job that runs the same suite headless on every pull request and push to `main`, whose browser-install step is exactly `pnpm --filter @homeledger/simulator exec playwright install --with-deps chromium` (the `--with-deps` apt-installs Chromium's OS-level libraries on the runner's fresh Ubuntu image) — it is **not** one of `main`'s required checks (§8.3 is the authoritative list) and it has **not yet run on a GitHub Actions runner**; it was validated by running the equivalent sequence locally instead (fresh `core`/`mcp-bridge` builds, `playwright install chromium` with no `--with-deps` — this machine already has the OS libraries — then `test:e2e`), which passed 6/6.
+
+**Verifying it against the deployed runtime, with the real model — not yet executed by anyone.** Everything above proves the wiring against a local, scripted server. This is the run the whole plan is building toward, and it has not happened: it needs a real `ANTHROPIC_API_KEY`, which has not been provisioned on any machine that has worked on this plan, and it makes live Cognito, AgentCore and Anthropic calls.
+
+**Merge and redeploy first.** The deployed runtime predates this branch's `book_service` change (a decline is now a normal result with `structuredContent: { booked: false }`, and `outputSchema` is a union). Against the old image a "Not now" still comes back `isError: true` and renders as a red `book_service failed` card. So: merge the branch, let the image deploy (section 8), pass the smoke (section 9), and only then run this.
+
+From the repository root, once a key exists:
+
+```bash
+pnpm --filter @homeledger/core build
+pnpm --filter @homeledger/mcp-bridge build
+aws login --profile homeledger-admin
+export AWS_PROFILE=homeledger-admin
+pnpm --filter @homeledger/mcp-bridge run print-setup    # prints the two Cognito values below
+
+cat > apps/simulator/.env.local <<'ENV'
+ANTHROPIC_API_KEY=sk-ant-...
+HOMELEDGER_COGNITO_TOKEN_URL=https://<domain>.auth.us-east-1.amazoncognito.com/oauth2/token
+HOMELEDGER_COGNITO_CLIENT_ID=<client id>
+AWS_REGION=us-east-1
+ENV
+
+pnpm --filter @homeledger/simulator run dev
+# open http://127.0.0.1:3000
+```
+
+Drive it and check, in order — recording what actually happens by updating `FRICTION-LOG.md` FL-055, whose status is currently **pending — not yet run**:
+
+1. **Connection drawer**: endpoint host, "resolved by name", session id, tool count. Expect **nine** tools (the deployed runtime sets `HOMELEDGER_DEV_TOOLS=1`).
+2. **"what appliances do we have"** — the appliances widget renders; the spoken line names at most five; the drawer shows the call under 3000 ms.
+3. **"when did we last change the furnace filter"** — the calendar widget renders; the spoken answer carries no ids.
+4. **"what does F21 mean on the washer"** — **must fail, visibly**: a failed `ask_manual` card titled "The manuals could not be searched," carrying the server's own sentence, and the assistant's reply saying it could not look it up. If it answers anyway, stop — that is FL-039 recurring and needs its own entry, not a tick on this list.
+5. **"book a plumber for the water heater Tuesday"** — three cards in order, progress 3 of 3, the visit widget, a `VISIT#` row.
+6. **Idle 35 minutes, then ask anything** — expect exactly one `session-rebuilt` notice and a correct answer.
+7. **Decline a booking** — ask to book again and press "Not now" on the first card. Expect an ordinary `book_service` row saying nothing was booked, **not** a red failure card. A red card here means the deployed image predates the decline fix: stop and redeploy.
+8. **Take more than 60 s over the three booking cards** — wait between one and two minutes before answering one of them (two minutes is the per-question limit, after which the question is abandoned and nothing is booked). Expect the booking to complete with no `session-rebuilt` notice, each question asked exactly once, and the debug drawer's rebuild count unchanged. A replayed provider question or a "connection … had expired" notice here is FL-056 recurring.
+9. **The startup log must not contain `answering from a fixed script`, and no element with `data-testid="scripted-marker"` may appear on the page.** Both are guaranteed by `assertScriptedModeAllowed` (`session.ts`) refusing to start at all if `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is ever left set against a non-loopback upstream — this is the one point where that refusal fires against the real thing rather than a unit fixture.
+
+Nothing above is a result — it is the checklist `FRICTION-LOG.md` FL-055 is waiting on. The entry there, once this runs, is the log of record; this document does not restate or anticipate an outcome.
+
 ---
 
 ## 5. What is blocked: Bedrock model access
@@ -231,21 +307,26 @@ documented local behaviour, and it is why §4 puts it in the demo list.
 
 ### 6.1 The workspace
 
-Five pnpm workspace packages (`pnpm-workspace.yaml`: `packages/*`, `apps/*`, `scripts`):
+Six pnpm workspace packages (`pnpm-workspace.yaml`: `packages/*`, `apps/*`, `scripts`):
 
 | Package | Path | What it is |
 | --- | --- | --- |
 | `@homeledger/core` | `packages/core` | Domain, DynamoDB and in-memory repositories, retrieval adapters, seed data |
 | `@homeledger/mcp-server` | `apps/mcp-server` | The MCP server. The only containerised package |
 | `@homeledger/mcp-bridge` | `apps/mcp-bridge` | stdio-to-AgentCore relay for Claude Code. Never containerised |
+| `@homeledger/simulator` | `apps/simulator` | The web client (§4.6). Never containerised |
 | `@homeledger/scripts` | `scripts` | `smoke`, `seed:remote`, `seed:manual`, `manuals` |
 | (root) | `.` | `build`, `typecheck`, `test`, `format`, `smoke`, `manuals` |
 
-The workspace graph is three edges and is acyclic: `mcp-server -> core` (production),
-`mcp-bridge -> mcp-server` (dev only), `scripts -> core`. No edge crosses out of the two directories the
-container build context holds. Adding a `workspace:*` edge to `apps/mcp-server` or `packages/core` that
-points anywhere else breaks the image build — that is FL-036, and `ci.yml`'s `image` job exists to catch it
-on the pull request rather than after the merge.
+The workspace graph is six edges and is acyclic: `mcp-server -> core` (production),
+`mcp-bridge -> mcp-server` (dev only), `scripts -> core` (production), `simulator -> core` (production),
+`simulator -> mcp-bridge` (production), `simulator -> mcp-server` (dev only — read from `apps/simulator/package.json`'s
+own `dependencies`/`devDependencies` split). No edge crosses out of the two directories the container build
+context holds. Adding a `workspace:*` edge to `apps/mcp-server` or `packages/core` that points anywhere else
+breaks the image build — that is FL-036, and `ci.yml`'s `image` job exists to catch it on the pull request
+rather than after the merge. `apps/simulator`'s edges reach neither of those two files, so none of its
+dependencies are reachable from that check — it is a separate, later addition to the graph, not a change to
+the two packages the container actually copies.
 
 ### 6.2 The checks CI runs, in the order CI runs them
 
@@ -1496,6 +1577,15 @@ behaviour was read from `hashicorp/aws` `internal/service/bedrockagentcore/agent
 ARN pattern and the absence of any alias or custom-domain command from the installed AWS CLI's own
 `bedrock-agentcore-control` model (`aws-cli/2.36.48`).
 
+Added for Plan 3 (`apps/simulator`): `pnpm --filter @homeledger/simulator run test:e2e` — the six-spec
+Playwright suite (§4.6), run against a local `mcp-server` (`MEMORY_REPO=1`) and the simulator itself in
+scripted-model mode, 6/6 passing, no AWS call and no Anthropic call · `pnpm --filter @homeledger/simulator
+run build` (`next build`) with no `ANTHROPIC_API_KEY` or AWS credential of any kind set · `pnpm -r test` and
+`pnpm -r typecheck` across all five workspace packages including `apps/simulator` · the sequence the new
+`e2e` job in `.github/workflows/ci.yml` runs (`playwright install --with-deps chromium` is that job's own
+step; fresh `core`/`mcp-bridge` builds, `playwright install chromium` with no `--with-deps`, then `test:e2e`),
+run locally rather than on a GitHub Actions runner — see "Not executed" below for what that does not prove.
+
 Also re-read on 2026-09-21: `gh api repos/jkarns87/homeledger/branches/main/protection`, returning
 `["test","terraform","image"]` — which corrected §8.3's four-check figure, stale since `plan` was dropped
 from the required set. Run by a token holding admin on the repository; the token used for the run-log reads
@@ -1547,15 +1637,29 @@ above does not, and gets a `404` on that endpoint.
 - **`claude mcp add --transport http ...` (§4.3, §10.1).** The flags are verified against
   `claude mcp add --help` and the server was driven over the same URL with a real MCP client handshake, but
   the entry was not added to this machine's Claude Code configuration.
+- **The simulator against the deployed runtime, with the real model (§4.6, README "The simulator").** Needs a
+  real `ANTHROPIC_API_KEY` — not on the implementer's machine — and makes a live Cognito call, a live
+  AgentCore call, and a live Anthropic call, none of which an implementer may make. `FRICTION-LOG.md` FL-055
+  and `task-15-report.md`'s "Step 7 — owner checklist" carry the exact sequence and the seven checks a run has
+  to satisfy; nothing in this document states or implies a result for it. Everything upstream — the six
+  Playwright specs above — is real coverage of the wiring against a local, scripted server, not a substitute
+  for this.
+- **The new `e2e` job in `.github/workflows/ci.yml`, on an actual GitHub Actions runner.** The YAML was
+  validated to parse and the job graph checked (`[test, e2e, image, terraform]`); the equivalent command
+  sequence was run locally and passed 6/6 (see "Executed" above). `--with-deps`'s apt-based browser install
+  and a genuinely from-scratch `pnpm install --frozen-lockfile` on a hosted runner were not exercised from
+  here. The job is not one of `main`'s required checks (§8.3) — adding it there is a repository setting, the
+  owner's call.
 
 ### Corrections to things stated elsewhere
 
 - **Prettier does not cover Markdown in this repository.** `.prettierignore` lists both `docs/` and `*.md`.
   Verified by putting a deliberately misformatted Markdown file at the repository root and under `docs/` and
   watching `prettier --check` pass both. `pnpm format` will never flag a Markdown file here.
-- **`README.md` says `apps/` contains `mcp-server` only** (in the "Echo Show simulator" bullet under "Not yet
-  built"). It contains `mcp-server` and `mcp-bridge`. The point being made — that `apps/simulator` does not
-  exist — is still correct.
+- ~~**`README.md` says `apps/` contains `mcp-server` only**~~ **No longer applicable.** That bullet (under
+  "Not yet built," about the Echo Show simulator) is gone: `apps/simulator` now exists, so the claim it made
+  — that `apps/` held `mcp-server` only — is moot rather than corrected. `apps/` holds `mcp-server`,
+  `mcp-bridge` and `simulator`.
 - **§8.3 recorded four required checks until 2026-09-21, and that was stale rather than wrong-when-written.**
   `plan` was required when the paragraph was authored and was removed later the same week, for the reason
   §8.3 had itself predicted: it is path-filtered, so a docs-only pull request could never satisfy it. The

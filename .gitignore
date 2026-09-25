@@ -1,11 +1,25 @@
 node_modules/
 dist/
+.next/
+next-env.d.ts
+*.tsbuildinfo
 .env
+# The whole `.local` family, not just `.env.local`. Next loads
+# `.env.$(NODE_ENV).local` at higher precedence than `.env.local`, so
+# `.env.development.local` is an equally standard place to put the real key and
+# was not ignored when only the bare spelling was listed. This is what
+# create-next-app ships.
+.env*.local
 *.tfstate
 *.tfstate.backup
 .terraform/
 infra/**/demo.tfvars
 coverage/
+# Playwright (apps/simulator's Step 5 end-to-end run): traces/screenshots on
+# failure and the HTML report, neither of which is source.
+test-results/
+playwright-report/
+blob-report/
 .DS_Store
 .claude/worktrees/
 .superpowers/

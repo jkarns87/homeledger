@@ -26,11 +26,64 @@ jobs:
       # a fresh checkout must build it before typecheck/test of mcp-server can
       # resolve the module.
       - run: pnpm --filter @homeledger/core build
+      # Same reasoning, one package along. @homeledger/simulator consumes
+      # @homeledger/mcp-bridge through the subpath `exports` map added in Plan 3
+      # Task 2, and every entry in it points at `./dist/*`, which is gitignored.
+      # Without this line a clean checkout fails `pnpm typecheck` with seven
+      # TS2307s and `pnpm test` with "Cannot find package
+      # '@homeledger/mcp-bridge/config'" — verified by moving `dist/` aside.
+      - run: pnpm --filter @homeledger/mcp-bridge build
+      # And once more for @homeledger/mcp-server: the simulator's agent, mcp and
+      # routes tests import `@homeledger/mcp-server/app` to run a real local
+      # server, and that subpath resolves to `./dist/app.js`. A clean checkout
+      # without this line fails `pnpm typecheck` with three TS2307s — PR #16's
+      # first CI run, reproduced locally by moving `dist/` aside.
+      - run: pnpm --filter @homeledger/mcp-server build
       - run: pnpm format
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @homeledger/core test:dynamo
       - run: pnpm build
+
+  # Plan 3 Task 15's browser run, wired in because the plan that added it never
+  # wires Playwright into CI on its own — without this job the suite is
+  # decorative, run by hand and easy to let drift. It is safe to add here and
+  # `test` above is not: the local MCP server this suite starts sets
+  # `MEMORY_REPO=1` (`apps/mcp-server/src/deps.ts`), which is a plain in-memory
+  # `Repository` with no DynamoDB and no AWS SDK call anywhere in its path — the
+  # opposite of `test`'s own `dynamodb` service container, which exists only
+  # because `pnpm test:dynamo` talks to a real (local) DynamoDB. Nothing here
+  # needs a credential, a service container, or network access beyond
+  # 127.0.0.1. `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` (playwright.config.ts's
+  # own webServer env) is what keeps it that way on the simulator's side: the
+  # scripted model in `src/server/scripted-model.ts` never constructs an
+  # Anthropic client, so `ANTHROPIC_API_KEY` is a placeholder string, never a
+  # real key, and no live Anthropic call is possible from this job either.
+  #
+  # A separate job, not a step folded into `test`: `test` is the required
+  # check on every pull request and `pnpm build`/`pnpm test` there are already
+  # the fast path; two dev servers plus a Chromium download adds a minute or
+  # more that a merge should not have to wait on for a check nobody there
+  # requires. Named `e2e`, distinct from the three checks `main` requires
+  # today (`test`, `terraform`, `image`) — making it required is a repository
+  # setting, and is Joey's call, not this workflow's.
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # Same two builds `test` above needs and for the same reason: the
+      # simulator's dev server imports @homeledger/core and @homeledger/mcp-bridge
+      # through their built dist/, and playwright.config.ts's webServer entries
+      # boot both apps from a clean checkout with no prior `pnpm build`.
+      - run: pnpm --filter @homeledger/core build
+      - run: pnpm --filter @homeledger/mcp-bridge build
+      - run: pnpm --filter @homeledger/simulator exec playwright install --with-deps chromium
+      - run: pnpm --filter @homeledger/simulator run test:e2e
 
   # The gap FL-036 records: `test` above installs the whole workspace, while the
   # image copies only `packages/core` and `apps/mcp-server` into its build

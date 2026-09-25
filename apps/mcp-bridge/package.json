@@ -3,6 +3,38 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config.d.ts",
+      "import": "./dist/config.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./secret": {
+      "types": "./dist/secret.d.ts",
+      "import": "./dist/secret.js"
+    },
+    "./token": {
+      "types": "./dist/token.d.ts",
+      "import": "./dist/token.js"
+    },
+    "./redact": {
+      "types": "./dist/redact.d.ts",
+      "import": "./dist/redact.js"
+    },
+    "./aws-errors": {
+      "types": "./dist/aws-errors.d.ts",
+      "import": "./dist/aws-errors.js"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

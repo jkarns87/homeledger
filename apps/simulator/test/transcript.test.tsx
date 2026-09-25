@@ -1,0 +1,519 @@
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { Transcript } from '../src/components/Transcript.js';
+import { INITIAL_STATE, reduceTurn } from '../src/lib/transcript.js';
+import { useAgentTurn } from '../src/lib/useAgentTurn.js';
+import { UNKNOWN_TURN_MESSAGE } from '../src/server/http.js';
+import { encodeSse, type TurnEvent } from '../src/shared/events.js';
+
+function streamOf(events: TurnEvent[]): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      for (const event of events) controller.enqueue(encoder.encode(encodeSse(event)));
+      controller.close();
+    }
+  });
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+/**
+ * A stream that stays open after its initial events, the way the real server
+ * does for as long as a turn holds an open elicitation (FL-033) - closing it
+ * is a separate step the test takes once it is done watching the open state.
+ * `streamOf` above is only ever safe to `await ask()` all the way through
+ * because it closes itself immediately; anything that needs to observe state
+ * *while* a turn is still in flight (an open `pending` question, an
+ * in-progress read loop) needs this instead.
+ */
+function openStream(events: TurnEvent[]): { response: Response; push(extra: TurnEvent[]): void; finish(extra?: TurnEvent[]): void } {
+  const encoder = new TextEncoder();
+  let controllerRef!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller;
+      for (const event of events) controller.enqueue(encoder.encode(encodeSse(event)));
+    }
+  });
+  const response = new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  return {
+    response,
+    push(extra) {
+      for (const event of extra) controllerRef.enqueue(encoder.encode(encodeSse(event)));
+    },
+    finish(extra = []) {
+      for (const event of extra) controllerRef.enqueue(encoder.encode(encodeSse(event)));
+      controllerRef.close();
+    }
+  };
+}
+
+/** A stream whose body errors instead of closing cleanly - the network-drop half of ruling 2. */
+function erroringStream(events: TurnEvent[], error: Error): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encoder = new TextEncoder();
+      for (const event of events) controller.enqueue(encoder.encode(encodeSse(event)));
+      controller.error(error);
+    }
+  });
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+describe('useAgentTurn', () => {
+  it('posts the question and folds every streamed event into the state', async () => {
+    const fetchImpl = vi.fn(async () =>
+      streamOf([
+        { type: 'turn-started', turnId: 't1' },
+        { type: 'assistant-text', text: 'Six appliances.' },
+        { type: 'turn-finished', turnId: 't1' }
+      ])
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    await act(async () => {
+      await result.current.ask('what appliances do we have');
+    });
+
+    await waitFor(() => expect(result.current.state.running).toBe(false));
+    expect(result.current.state.entries.map(e => e.kind)).toEqual(['user', 'assistant']);
+    const [url, init] = (fetchImpl as unknown as { mock: { calls: Array<[string, RequestInit]> } }).mock.calls[0]!;
+    expect(url).toBe('/api/agent/turn');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ text: 'what appliances do we have' });
+  });
+
+  it('reports a non-200 as a visible failure instead of an empty answer', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ message: 'Your AWS SSO session expired.' }), { status: 503 })) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    await act(async () => {
+      await result.current.ask('hello');
+    });
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ tone: 'failure' });
+    expect(notice && notice.kind === 'notice' && notice.text).toContain('Your AWS SSO session expired.');
+    expect(result.current.state.running).toBe(false);
+  });
+
+  it('posts an answer against the turn that asked', async () => {
+    const calls: Array<[string, RequestInit]> = [];
+    const stream = openStream([
+      { type: 'turn-started', turnId: 't7' },
+      { type: 'elicitation-opened', callId: 'c1', elicitationId: 'e1', prompt: 'Who?', field: 'provider', kind: 'choice', options: [] }
+    ]);
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push([url, init]);
+      if (url === '/api/agent/turn') return stream.response;
+      return new Response('{"ok":true}', { status: 202 });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = result.current.ask('book a plumber');
+    });
+    await waitFor(() => expect(result.current.state.pending).not.toBeNull());
+    await act(async () => {
+      await result.current.answer(result.current.state.pending!, 'accept', { provider: 'prov_a' });
+    });
+    const answer = calls.find(([url]) => url === '/api/agent/answer');
+    expect(answer).toBeDefined();
+    expect(JSON.parse(String(answer![1].body))).toEqual({ turnId: 't7', elicitationId: 'e1', action: 'accept', content: { provider: 'prov_a' } });
+
+    // Close out the still-open stream so the ask() call this test started resolves before the test ends.
+    await act(async () => {
+      stream.finish([{ type: 'turn-finished', turnId: 't7' }]);
+      await askPromise;
+    });
+  });
+
+  // RULING 1, pinned in the hook (fix round 1): the reducer-level pin
+  // (transcript.test.ts) is not enough on its own - the read loop itself
+  // must keep reading after `finished` flips to `true`, because the server
+  // can send `turn-finished` and THEN `turn-failed` on a turn that threw
+  // after its own `finally` already ran (task-11-brief's "Context the brief
+  // cannot know"). Stopping the loop early the moment `finished` is set
+  // (`if (finished) break`) would drop that exact failure - the review's own
+  // mutation, confirmed to survive the fix-round-0 suite 10/10 before this
+  // test existed.
+  it('keeps reading after turn-finished so a failure that arrives after it still renders', async () => {
+    const message = 'The model connection reset while finishing this turn.';
+    const fetchImpl = vi.fn(async () =>
+      streamOf([
+        { type: 'turn-started', turnId: 't1' },
+        { type: 'turn-finished', turnId: 't1' },
+        { type: 'turn-failed', message }
+      ])
+    ) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    await act(async () => {
+      await result.current.ask('what appliances do we have');
+    });
+    await waitFor(() => expect(result.current.state.running).toBe(false));
+    const notices = result.current.state.entries.filter(e => e.kind === 'notice');
+    // Exactly one: the real failure from the wire. If the loop stopped
+    // reading at `turn-finished`, this would be zero. If ruling 2's
+    // backstop fired on top of the real failure (it must not, because this
+    // turn DID receive `turn-finished`), this would be two.
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ tone: 'failure', text: message });
+  });
+
+  // RULING 2(a) (STREAM-END, task-11 brief): the stream can end (`done`) without
+  // ever sending `turn-finished` - a network intermediary closing the
+  // connection, or a server process dying mid-turn. Left unhandled, `running`
+  // stays `true` forever with nothing on the transcript explaining why.
+  it('shows a failure and stops running when the stream ends without a turn-finished', async () => {
+    const fetchImpl = vi.fn(async () =>
+      streamOf([
+        { type: 'turn-started', turnId: 't1' },
+        { type: 'assistant-text', text: 'Partway there.' }
+      ])
+    ) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    await act(async () => {
+      await result.current.ask('what appliances do we have');
+    });
+    await waitFor(() => expect(result.current.state.running).toBe(false));
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ tone: 'failure' });
+    expect(notice && notice.kind === 'notice' && notice.text).toContain('connection ended before the turn finished');
+  });
+
+  // RULING 2(b) (READ-REJECT, task-11 brief): `reader.read()` itself can
+  // reject - a socket reset, not merely a clean close. An uncaught rejection
+  // here has the identical symptom as 2(a): `running` never returns to `false`
+  // and nothing renders, except this time it is an unhandled promise
+  // rejection rather than a quiet `done`.
+  it('shows a failure and stops running when the read itself rejects', async () => {
+    const fetchImpl = vi.fn(async () => erroringStream([{ type: 'turn-started', turnId: 't1' }], new Error('socket hang up'))) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    await act(async () => {
+      await result.current.ask('what appliances do we have');
+    });
+    await waitFor(() => expect(result.current.state.running).toBe(false));
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ tone: 'failure' });
+    expect(notice && notice.kind === 'notice' && notice.text).toContain('connection ended before the turn finished');
+    expect(notice && notice.kind === 'notice' && notice.text).toContain('socket hang up');
+  });
+
+  // RULING 3 (ANSWER-REJECT, controller follow-up): `answer()`'s own fetch can
+  // reject the same way `ask()`'s can - Task 12 fires it as `void
+  // turn.answer(...)` from a card click, so an uncaught rejection here leaves
+  // the card sitting there having done nothing, with no failure on screen and
+  // no way to tell the click even registered.
+  it('shows a failure when the answer request itself rejects, rather than leaving a dead card', async () => {
+    const stream = openStream([
+      { type: 'turn-started', turnId: 't7' },
+      { type: 'elicitation-opened', callId: 'c1', elicitationId: 'e1', prompt: 'Who?', field: 'provider', kind: 'choice', options: [] }
+    ]);
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === '/api/agent/turn') return stream.response;
+      throw new Error('network down');
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = result.current.ask('book a plumber');
+    });
+    await waitFor(() => expect(result.current.state.pending).not.toBeNull());
+    await act(async () => {
+      await result.current.answer(result.current.state.pending!, 'accept', { provider: 'prov_a' });
+    });
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ tone: 'failure' });
+    // The ruling's own sentence, not only the underlying error text: without
+    // it, a network drop on the answer path would read identically to any
+    // other failure, and there would be nothing distinguishing "the answer
+    // itself never reached the server" from every other kind of failure
+    // notice on the transcript.
+    expect(notice && notice.kind === 'notice' && notice.text).toContain('answer could not be sent');
+    expect(notice && notice.kind === 'notice' && notice.text).toContain('network down');
+    // The turn's own stream is still open - only the sibling answer request
+    // failed - so `turn-finished` must NOT have been applied on its behalf.
+    expect(result.current.state.running).toBe(true);
+
+    await act(async () => {
+      stream.finish([{ type: 'turn-finished', turnId: 't7' }]);
+      await askPromise;
+    });
+  });
+
+  // MUTATION 9 (task-11 brief, Step 8): the answer-side 409 path
+  // (`unknown-turn`) has no test in the brief's own Step 2 file. A batched
+  // read of every streamed event does not exercise `answer()`'s error path at
+  // all, so this is added specifically to prove it.
+  it('shows the answer-side 409 as a failure rather than leaving a dead card', async () => {
+    const stream = openStream([
+      { type: 'turn-started', turnId: 't7' },
+      { type: 'elicitation-opened', callId: 'c1', elicitationId: 'e1', prompt: 'Who?', field: 'provider', kind: 'choice', options: [] }
+    ]);
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === '/api/agent/turn') return stream.response;
+      return new Response(JSON.stringify({ message: UNKNOWN_TURN_MESSAGE }), { status: 409 });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = result.current.ask('book a plumber');
+    });
+    await waitFor(() => expect(result.current.state.pending).not.toBeNull());
+    await act(async () => {
+      await result.current.answer(result.current.state.pending!, 'accept', { provider: 'prov_a' });
+    });
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ tone: 'failure' });
+    expect(notice && notice.kind === 'notice' && notice.text).toBe(UNKNOWN_TURN_MESSAGE);
+
+    await act(async () => {
+      stream.finish([{ type: 'turn-finished', turnId: 't7' }]);
+      await askPromise;
+    });
+  });
+
+  // MUTATION 7 (task-11 brief, Step 8): the browser-side twin of the
+  // deadlock `apps/mcp-bridge/src/proxy.ts` already paid for. If `ask()`
+  // collected every decoded event and applied them only after the read loop
+  // ends, `pending` would never become non-null until the whole stream
+  // closes - and this stream is deliberately held open by the test until
+  // `pending` is observed, so a batching implementation cannot ever satisfy
+  // the `waitFor` below; it can only time out.
+  it('applies each event to state as it streams, not batched until the loop ends', async () => {
+    let close: (() => void) | undefined;
+    const fetchImpl = vi.fn(async () => {
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              encodeSse({ type: 'elicitation-opened', callId: 'c1', elicitationId: 'e1', prompt: 'Who?', field: 'provider', kind: 'choice', options: [] })
+            )
+          );
+          close = () => {
+            controller.enqueue(encoder.encode(encodeSse({ type: 'turn-finished', turnId: 't9' })));
+            controller.close();
+          };
+        }
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = result.current.ask('book a plumber');
+    });
+    // If this never resolves, the code under test is batching rather than
+    // streaming - see the mutation note above for why `close()` is withheld
+    // until this passes.
+    await waitFor(() => expect(result.current.state.pending).not.toBeNull());
+    close?.();
+    await act(async () => {
+      await askPromise;
+    });
+    expect(result.current.state.running).toBe(false);
+  });
+});
+
+describe('useAgentTurn, answers keyed to the card that was clicked (final review I2)', () => {
+  it('answers the question the card showed, even after the next question has arrived', async () => {
+    // A slow click: the card for question 1 is still under the pointer when
+    // question 2 is folded into state. The old hook read the id from state at
+    // send time and posted question 1's content against question 2's id.
+    const calls: Array<[string, RequestInit]> = [];
+    const stream = openStream([
+      { type: 'turn-started', turnId: 't7' },
+      { type: 'elicitation-opened', callId: 'c1', elicitationId: 'e1', prompt: 'Who?', field: 'provider', kind: 'choice', options: [] }
+    ]);
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      calls.push([url, init]);
+      if (url === '/api/agent/turn') return stream.response;
+      return new Response('{"ok":true}', { status: 202 });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = result.current.ask('book a plumber');
+    });
+    await waitFor(() => expect(result.current.state.pending?.elicitationId).toBe('e1'));
+    const first = result.current.state.pending!;
+    act(() => stream.push([{ type: 'elicitation-opened', callId: 'c1', elicitationId: 'e2', prompt: 'When?', field: 'window', kind: 'choice', options: [] }]));
+    await waitFor(() => expect(result.current.state.pending?.elicitationId).toBe('e2'));
+
+    await act(async () => {
+      await result.current.answer(first, 'accept', { provider: 'prov_a' });
+    });
+    const posted = calls.filter(([url]) => url === '/api/agent/answer').map(([, init]) => JSON.parse(String(init.body)) as Record<string, unknown>);
+    expect(posted).toEqual([{ turnId: 't7', elicitationId: 'e1', action: 'accept', content: { provider: 'prov_a' } }]);
+
+    await act(async () => {
+      stream.finish([{ type: 'turn-finished', turnId: 't7' }]);
+      await askPromise;
+    });
+  });
+
+  it("shows the answer-side 409 unknown-question in the server's own words", async () => {
+    const stream = openStream([
+      { type: 'turn-started', turnId: 't7' },
+      { type: 'elicitation-opened', callId: 'c1', elicitationId: 'e1', prompt: 'Who?', field: 'provider', kind: 'choice', options: [] }
+    ]);
+    const words = 'That answer was not delivered: the question it names has already been answered or has timed out. Nothing was changed by this click.';
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === '/api/agent/turn') return stream.response;
+      return new Response(JSON.stringify({ ok: false, reason: 'unknown-question', message: words }), { status: 409 });
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    let askPromise!: Promise<void>;
+    act(() => {
+      askPromise = result.current.ask('book a plumber');
+    });
+    await waitFor(() => expect(result.current.state.pending).not.toBeNull());
+    await act(async () => {
+      await result.current.answer(result.current.state.pending!, 'accept', { provider: 'prov_a' });
+    });
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ kind: 'notice', tone: 'failure', text: words });
+
+    await act(async () => {
+      stream.finish([{ type: 'turn-finished', turnId: 't7' }]);
+      await askPromise;
+    });
+  });
+});
+
+describe('useAgentTurn, starting fresh (final review I3)', () => {
+  it('posts the reset as JSON, and is not ready until it has been answered', async () => {
+    let answer!: (response: Response) => void;
+    const fetchImpl = vi.fn(() => new Promise<Response>(resolve => (answer = resolve))) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    expect(result.current.ready).toBe(false);
+    let resetPromise!: Promise<void>;
+    act(() => {
+      resetPromise = result.current.reset();
+    });
+    const [url, init] = (fetchImpl as unknown as { mock: { calls: Array<[string, RequestInit]> } }).mock.calls[0]!;
+    expect(url).toBe('/api/agent/reset');
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('content-type')).toBe('application/json');
+    expect(result.current.ready).toBe(false);
+    await act(async () => {
+      answer(new Response('{"ok":true}', { status: 200 }));
+      await resetPromise;
+    });
+    expect(result.current.ready).toBe(true);
+    expect(result.current.state.entries).toEqual([]);
+  });
+
+  it('says so when the fresh start failed, and still lets the person ask', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ message: 'ANTHROPIC_API_KEY is not set.' }), { status: 503 })) as unknown as typeof fetch;
+    const { result } = renderHook(() => useAgentTurn(fetchImpl));
+    await act(async () => {
+      await result.current.reset();
+    });
+    expect(result.current.ready).toBe(true);
+    const notice = result.current.state.entries.find(e => e.kind === 'notice');
+    expect(notice).toMatchObject({ kind: 'notice', tone: 'failure', text: 'A fresh conversation could not be started. ANTHROPIC_API_KEY is not set.' });
+  });
+});
+
+describe('Transcript', () => {
+  it('renders the spoken line of a successful call and no raw JSON', () => {
+    const state = [
+      { type: 'tool-started', callId: 'c1', tool: 'maintenance_due', args: {} },
+      {
+        type: 'tool-succeeded',
+        callId: 'c1',
+        tool: 'maintenance_due',
+        spoken: 'Two tasks are due.',
+        content: [{ type: 'text', text: 'Two tasks are due.' }],
+        structured: { items: [{ id: 1 }] },
+        widgetUri: null,
+        ms: 900
+      }
+    ].reduce(reduceTurn, INITIAL_STATE);
+    render(<Transcript state={state} theme="dark" />);
+    expect(screen.getByText('Two tasks are due.')).toBeDefined();
+    expect(document.body.textContent).not.toContain('"items"');
+  });
+
+  it('renders a failed call as a failure naming the tool and the reason', () => {
+    const state = [
+      { type: 'tool-started', callId: 'c1', tool: 'ask_manual', args: {} },
+      { type: 'tool-failed', callId: 'c1', tool: 'ask_manual', message: 'Model access is blocked on this account.', ms: 1130 }
+    ].reduce(reduceTurn, INITIAL_STATE);
+    render(<Transcript state={state} theme="dark" />);
+    const failure = screen.getByTestId('tool-c1');
+    expect(failure.dataset.status).toBe('failed');
+    expect(failure.textContent).toContain('ask_manual');
+    expect(failure.textContent).toContain('Model access is blocked on this account.');
+  });
+
+  // Fix round 1, Ruling (was Minor 1): the Task 14 report claimed this was
+  // untestable in jsdom because the widget's own script never runs there.
+  // True, and beside the point — the claim under test is that `Transcript`
+  // hands `WidgetFrame` the entry's REAL content array rather than a literal
+  // `null` (Step 5 of the Task 14 brief), and that is a fact about the HOST
+  // side, which jsdom runs in full: `attachWidgetHost` is plain application
+  // code, `postMessage` is a real jsdom API, and a `srcdoc` iframe really does
+  // get a `contentWindow`. Only the widget's OWN reaction to that message is
+  // out of reach here, and nothing here claims to prove that.
+  it("hands the widget host the entry's real content, not a literal null", async () => {
+    const entryContent = [{ type: 'text', text: 'Two tasks are due.' }];
+    const state = [
+      { type: 'tool-started', callId: 'c1', tool: 'maintenance_due', args: {} },
+      {
+        type: 'tool-succeeded',
+        callId: 'c1',
+        tool: 'maintenance_due',
+        spoken: 'Two tasks are due.',
+        content: entryContent,
+        structured: { items: [{ applianceId: 'appl_x' }] },
+        widgetUri: 'ui://homeledger/calendar',
+        ms: 900
+      }
+    ].reduce(reduceTurn, INITIAL_STATE);
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('<!doctype html><html><body></body></html>', { status: 200, headers: { 'content-type': 'text/html' } }));
+    try {
+      render(<Transcript state={state} theme="dark" />);
+      const iframe = (await screen.findByTestId('widget-ui://homeledger/calendar')) as HTMLIFrameElement;
+
+      // Poll for the srcdoc navigation to settle rather than listening for a
+      // one-shot 'load' event: jsdom may fire that event before this test
+      // gets a listener attached (the exact race the review's own probe hit
+      // on its first attempt), while polling `readyState` cannot miss it.
+      await waitFor(() => expect(iframe.contentDocument?.readyState).toBe('complete'));
+
+      // Spied AFTER the navigation settles - jsdom replaces the frame's own
+      // window/document across a navigation, so a spy installed earlier is
+      // clobbered and silently stops recording calls made after this point.
+      const postMessageSpy = vi.spyOn(iframe.contentWindow!, 'postMessage');
+
+      // The widget bridge's own handshake, from the widget's side: it posts
+      // `ui/notifications/initialized` once `ui/initialize` resolves. Faked
+      // here directly, the same way widget-host.test.tsx's `fakeFrame().send`
+      // does, since no script actually runs inside this srcdoc in jsdom.
+      const event = new Event('message');
+      Object.assign(event, {
+        data: { jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} },
+        source: iframe.contentWindow
+      });
+      window.dispatchEvent(event);
+
+      await waitFor(() => expect(postMessageSpy).toHaveBeenCalled());
+      const toolResultCall = postMessageSpy.mock.calls.find(([message]) => (message as { method?: string }).method === 'ui/notifications/tool-result');
+      expect(toolResultCall).toBeDefined();
+      const [message] = toolResultCall!;
+      expect((message as { params: { content: unknown } }).params.content).toEqual(entryContent);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});

@@ -1,0 +1,942 @@
+import type { Server } from 'node:http';
+import type Anthropic from '@anthropic-ai/sdk';
+import { SEED_TIMEZONE } from '@homeledger/core';
+import { createApp } from '@homeledger/mcp-server/app';
+import { seededDeps } from '@homeledger/mcp-server/test-harness';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createElicitRouter } from '../src/server/agent.js';
+import { ElicitationRegistry } from '../src/server/elicitation.js';
+import { createSseDecoder, type TurnEvent } from '../src/shared/events.js';
+import { checkOrigin, handleAnswer, handleReset, handleTurn, UNKNOWN_TURN_MESSAGE } from '../src/server/http.js';
+import { HomeLedgerMcp } from '../src/server/mcp.js';
+import type { ModelPort } from '../src/server/model.js';
+import { householdTimeZone, type Conversation } from '../src/server/session.js';
+
+let server: Server | undefined;
+let closeApp: () => Promise<void> = async () => {};
+let closeClient: () => Promise<void> = async () => {};
+
+afterEach(async () => {
+  await closeClient();
+  await closeApp();
+  await new Promise<void>(resolve => (server ? server.close(() => resolve()) : resolve()));
+  server = undefined;
+});
+
+function toolUse(id: string, name: string, input: Record<string, unknown>): Anthropic.ContentBlock {
+  return { type: 'tool_use', id, name, input } as unknown as Anthropic.ContentBlock;
+}
+
+function scriptedModel(script: Array<(messages: Anthropic.MessageParam[]) => Anthropic.ContentBlock[]>): ModelPort {
+  let round = 0;
+  return {
+    async respond(request, onText) {
+      const content = script[round++]?.(request.messages) ?? [{ type: 'text', text: 'Done.' } as Anthropic.ContentBlock];
+      for (const block of content) if (block.type === 'text') onText(block.text);
+      return {
+        id: 'm',
+        type: 'message',
+        role: 'assistant',
+        model: 'fake',
+        content,
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: {}
+      } as unknown as Anthropic.Message;
+    }
+  };
+}
+
+async function conversation(model: ModelPort): Promise<Conversation> {
+  const deps = await seededDeps();
+  const app = createApp(deps);
+  closeApp = app.close;
+  server = app.app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server!.once('listening', resolve));
+  const url = `http://127.0.0.1:${(server!.address() as { port: number }).port}/mcp`;
+  const router = createElicitRouter();
+  const mcp = new HomeLedgerMcp({ url, token: async () => 'unused-locally', onElicit: prompt => router.dispatch(prompt) });
+  closeClient = () => mcp.close();
+  await mcp.connect();
+  return {
+    mcp,
+    registry: new ElicitationRegistry(),
+    router,
+    model,
+    tools: await mcp.listTools(),
+    env: { anthropicApiKey: 'unused', model: 'fake', maxRounds: 6, elicitationTimeoutMs: 3000, allowOrigin: undefined },
+    endpoint: { arn: undefined, origin: 'url' },
+    timeZone: await householdTimeZone(mcp),
+    now: () => Date.now(),
+    history: [],
+    scripted: false
+  };
+}
+
+function post(body: unknown, headers: Record<string, string> = {}): Request {
+  return new Request('http://127.0.0.1:3000/api/agent/turn', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', ...headers }
+  });
+}
+
+function debugRequest(headers: Record<string, string> = {}): Request {
+  return new Request('http://127.0.0.1:3000/api/debug', { headers });
+}
+
+/**
+ * Same shape as `post()`, above, at the widget/tool route's own origin.
+ *
+ * Fix round 1: every existing call site here built a raw `new Request(...,
+ * {body: JSON.stringify(...)})` with no explicit `content-type`. The Fetch
+ * spec then set one FOR them — `text/plain;charset=UTF-8`, its default for a
+ * string body — which is precisely the value `requireJsonContentType` now
+ * refuses. That was invisible before this round because nothing checked
+ * content-type at all; it would have made every existing widget/tool test
+ * fail with 415 the moment the guard landed, for reasons that had nothing to
+ * do with what each test was proving.
+ *
+ * Fix round 2: the base URL is a loopback address (`127.0.0.1`, Task 15's own
+ * Playwright port so the fixture reads as a real one) rather than the
+ * arbitrary `http://x` this used before. `checkOrigin` with `allowOrigin`
+ * unset now refuses any request whose `Host` (or, lacking one, whose
+ * `request.url`) is not a loopback name — `x` never was one, so every test
+ * built on it started failing at the origin check before reaching whatever it
+ * actually meant to prove.
+ */
+function widgetToolPost(body: unknown, headers: Record<string, string> = {}): Request {
+  return new Request('http://127.0.0.1:3100/api/widget/tool', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', ...headers }
+  });
+}
+
+/** Reads the stream and calls `onEvent` for each event AS IT ARRIVES, never after. */
+async function drain(response: Response, onEvent: (event: TurnEvent) => void): Promise<TurnEvent[]> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const decode = createSseDecoder();
+  const all: TurnEvent[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const event of decode(decoder.decode(value, { stream: true }))) {
+      all.push(event);
+      onEvent(event);
+    }
+  }
+  return all;
+}
+
+describe('POST /api/agent/turn', () => {
+  it('streams the turn and tells every proxy not to buffer it', async () => {
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'Hello.' } as Anthropic.ContentBlock]]));
+    const response = await handleTurn(convo, post({ text: 'hello' }));
+    expect(response.headers.get('content-type')).toBe('text/event-stream; charset=utf-8');
+    expect(response.headers.get('cache-control')).toBe('no-cache, no-transform');
+    expect(response.headers.get('x-accel-buffering')).toBe('no');
+    const events = await drain(response, () => {});
+    expect(events.map(e => e.type)).toEqual(['turn-started', 'assistant-text', 'turn-finished']);
+  });
+
+  it(
+    'completes a three-question booking with each answer POSTed while the turn stream is still open',
+    async () => {
+      // THE deadlock guard. If handleTurn buffered the response, `drain` would
+      // yield nothing until the turn ended, the turn would wait for answers
+      // that can only be sent from inside `drain`, and this test would time
+      // out rather than fail — which is exactly how FL-033's naive proxy
+      // failed. The timeout below is the assertion that it does not.
+      const convo = await conversation(
+        scriptedModel([
+          () => [toolUse('c1', 'list_appliances', { category: 'water_heater' })],
+          messages => [
+            toolUse('c2', 'book_service', { applianceId: /appl_[a-z0-9]{16}/.exec(JSON.stringify(messages))?.[0] ?? 'appl_missing', issue: 'leak' })
+          ],
+          () => [{ type: 'text', text: 'Booked.' } as Anthropic.ContentBlock]
+        ])
+      );
+      const response = await handleTurn(convo, post({ text: 'book a plumber for the water heater' }));
+      let turnId = '';
+      const answers: Array<Promise<Response>> = [];
+      const events = await drain(response, event => {
+        if (event.type === 'turn-started') turnId = event.turnId;
+        if (event.type !== 'elicitation-opened') return;
+        const content = event.field === 'provider' ? { provider: 'prov_kettle_water' } : event.field === 'window' ? { window: 'win_1' } : { confirm: true };
+        answers.push(handleAnswer(convo, post({ turnId, elicitationId: event.elicitationId, action: 'accept', content })));
+      });
+
+      expect(events.filter(e => e.type === 'elicitation-opened').map(e => (e.type === 'elicitation-opened' ? e.field : ''))).toEqual([
+        'provider',
+        'window',
+        'confirm'
+      ]);
+      for (const answer of answers) expect((await answer).status).toBe(202);
+      const booked = events.find(e => e.type === 'tool-succeeded' && e.tool === 'book_service');
+      expect(booked && booked.type === 'tool-succeeded' && (booked.structured as { status: string }).status).toBe('scheduled');
+      expect(events.filter(e => e.type === 'progress').map(e => (e.type === 'progress' ? e.progress : -1))).toEqual([0, 1, 2, 3]);
+    },
+    { timeout: 15000 }
+  );
+
+  it('keeps the history so a second turn sees the first', async () => {
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'One.' } as Anthropic.ContentBlock]]));
+    await drain(await handleTurn(convo, post({ text: 'first question' })), () => {});
+    expect(convo.history.map(m => m.role)).toEqual(['user', 'assistant']);
+    expect(JSON.stringify(convo.history)).toContain('first question');
+  });
+
+  it('refuses a body with no text, without opening a stream', async () => {
+    const convo = await conversation(scriptedModel([]));
+    for (const body of [{}, { text: '' }, { text: '   ' }, { text: 42 }]) {
+      const response = await handleTurn(convo, post(body));
+      expect(response.status, JSON.stringify(body)).toBe(400);
+      expect(response.headers.get('content-type')).toContain('application/json');
+    }
+  });
+
+  it("tells the model the household's day, which at this instant is not the UTC one", async () => {
+    // 02:00Z on the 14th is still the 13th in Chicago, and the assistant SAYS
+    // this date out loud. `new Date().toISOString().slice(0, 10)` - the
+    // construct spec section 4.2 names as wrong, and the one that flipped
+    // maintenance items to overdue at 7 PM Central three days before this plan
+    // was written - yields 2026-09-14 here. The expected value is written by
+    // hand rather than computed with todayInZone, so the test cannot agree
+    // with the code by construction (FL-028).
+    const systems: string[] = [];
+    const convo = await conversation({
+      async respond(request) {
+        systems.push(request.system);
+        return {
+          id: 'm',
+          type: 'message',
+          role: 'assistant',
+          model: 'fake',
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: {}
+        } as unknown as Anthropic.Message;
+      }
+    });
+    convo.timeZone = 'America/Chicago';
+    convo.now = () => Date.parse('2026-09-14T02:00:00.000Z');
+    await drain(await handleTurn(convo, post({ text: 'what is due' })), () => {});
+    expect(systems[0]).toContain('Today is 2026-09-13.');
+    expect(systems[0]).not.toContain('2026-09-14');
+  });
+
+  it('reports a thrown model as a failure on the stream, closes it, and leaves the history and registry clean', async () => {
+    // The honest-failure global constraint, pointed at the route itself rather
+    // than at a tool call: `runTurn` rejects when the model throws, and
+    // `handleTurn`'s `.catch` is the only thing standing between that
+    // rejection and a stream that just quietly ends. `runTurn`'s own `finally`
+    // emits `turn-finished` before it rethrows (see the module doc on event
+    // order), so the honest ['turn-started', 'turn-finished', 'turn-failed']
+    // order is itself part of what this pins, not incidental.
+    const convo = await conversation({
+      async respond() {
+        throw new Error('boom-from-fake-model');
+      }
+    });
+    const response = await handleTurn(convo, post({ text: 'hello' }));
+    const events = await drain(response, () => {});
+    expect(events.map(e => e.type)).toEqual(['turn-started', 'turn-finished', 'turn-failed']);
+    const failed = events.find(e => e.type === 'turn-failed');
+    expect(failed && failed.type === 'turn-failed' && failed.message).toBe('boom-from-fake-model');
+    expect(convo.history).toEqual([]);
+    expect(convo.registry.size).toBe(0);
+  });
+
+  it(
+    'closes the registry entry when the browser cancels the stream, well under the elicitation timeout',
+    async () => {
+      // The controller ruling: `cancel() -> registry.close(turnId)` is the
+      // ONLY external close in production, and it exists so a disconnected
+      // browser does not leave an open question waiting out the full
+      // elicitation timeout. Waiting the full timeout would let this pass
+      // even with `cancel()` gutted, because the question's own timeout
+      // would eventually remove the entry anyway - so this polls for well
+      // under it (200 ms against a 3000 ms elicitationTimeoutMs) and fails
+      // rather than waits if the entry is still there.
+      const convo = await conversation(
+        scriptedModel([
+          () => [toolUse('c1', 'list_appliances', { category: 'water_heater' })],
+          messages => [
+            toolUse('c2', 'book_service', { applianceId: /appl_[a-z0-9]{16}/.exec(JSON.stringify(messages))?.[0] ?? 'appl_missing', issue: 'leak' })
+          ],
+          () => [{ type: 'text', text: 'Booked.' } as Anthropic.ContentBlock]
+        ])
+      );
+      const response = await handleTurn(convo, post({ text: 'book a plumber for the water heater' }));
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      const decode = createSseDecoder();
+      let turnId = '';
+      readLoop: for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const event of decode(decoder.decode(value, { stream: true }))) {
+          if (event.type === 'turn-started') turnId = event.turnId;
+          if (event.type === 'elicitation-opened') break readLoop;
+        }
+      }
+      expect(turnId).not.toBe('');
+      expect(convo.registry.has(turnId)).toBe(true);
+
+      await reader.cancel();
+
+      const deadline = Date.now() + 200;
+      while (convo.registry.has(turnId) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(convo.registry.has(turnId)).toBe(false);
+    },
+    { timeout: 15000 }
+  );
+});
+
+describe('POST /api/agent/answer', () => {
+  it('reports an answer for a turn this process is not running, and says what that means', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const response = await handleAnswer(convo, post({ turnId: 'not-a-turn', elicitationId: 'x', action: 'accept', content: {} }));
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as { reason: string; message: string };
+    expect(body.reason).toBe('unknown-turn');
+    expect(body.message).toBe(UNKNOWN_TURN_MESSAGE);
+    expect(UNKNOWN_TURN_MESSAGE).toContain('was not delivered');
+  });
+
+  it('rejects an action it does not know rather than guessing one', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const response = await handleAnswer(convo, post({ turnId: 't', elicitationId: 'e', action: 'maybe', content: {} }));
+    expect(response.status).toBe(400);
+  });
+
+  it('requires an object for content when the action is accept', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const response = await handleAnswer(convo, post({ turnId: 't', elicitationId: 'e', action: 'accept', content: 'prov_kettle_water' }));
+    expect(response.status).toBe(400);
+  });
+
+  it('refuses a foreign origin when allowOrigin is unset, and never delivers the answer', async () => {
+    // Fix round 1, Critical (plan-mandated): the same default-open posture
+    // Critical 1 found on the widget/tool route reaches this route too — a
+    // cross-site page could confirm or decline someone else's open
+    // `book_service` question. `post()` here points at
+    // `http://127.0.0.1:3000/...`, so the request's own origin is
+    // `http://127.0.0.1:3000`; `https://elsewhere.invalid` is foreign to that,
+    // and `allowOrigin` is left unset (the default), so the new same-origin
+    // default in `checkOrigin` must refuse it without ever touching the
+    // registry.
+    const convo = await conversation(scriptedModel([]));
+    convo.registry.open('t-foreign');
+    const { elicitationId } = convo.registry.ask('t-foreign', 5000);
+    const response = await handleAnswer(
+      convo,
+      post({ turnId: 't-foreign', elicitationId, action: 'accept', content: {} }, { origin: 'https://elsewhere.invalid' })
+    );
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+    // No side effect: the slot the foreign request tried to answer is still
+    // open. A legitimate, same-origin delivery straight through the registry
+    // still finds it waiting and reports 'delivered' — proof the cross-site
+    // attempt never reached `registry.answer` at all.
+    expect(convo.registry.answer('t-foreign', elicitationId, { action: 'decline' })).toBe('delivered');
+  });
+
+  it('refuses a non-JSON body even with no Origin header at all, forcing a preflight', async () => {
+    // The other half of the same Critical fix: a cross-site `no-cors` POST
+    // never carries a useful `Origin` for `checkOrigin` to compare (or may
+    // carry none, depending on the sender), so the content-type gate is what
+    // stops it — a real browser cross-site request needing `application/json`
+    // must preflight, and this application grants no CORS headers to let that
+    // preflight succeed.
+    const convo = await conversation(scriptedModel([]));
+    const response = await handleAnswer(
+      convo,
+      new Request('http://127.0.0.1:3000/api/agent/answer', {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: JSON.stringify({ turnId: 't', elicitationId: 'e', action: 'accept', content: {} })
+      })
+    );
+    expect(response.status).toBe(415);
+  });
+});
+
+describe('checkOrigin', () => {
+  it('refuses a foreign origin even when allowOrigin is unset, the same-origin default', async () => {
+    // Fix round 1, Critical (plan-mandated). This used to assert 200 under
+    // the title "lets everything through when no origin is configured" — that
+    // WAS the vulnerability the reviewer's probe found: `allowOrigin` unset
+    // compared the incoming Origin against nothing, so any cross-site Origin
+    // passed. `post()` targets `http://127.0.0.1:3000/...`, so that is this
+    // request's own origin; `https://elsewhere.invalid` is foreign to it.
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
+    const response = await handleTurn(convo, post({ text: 'hi' }, { origin: 'https://elsewhere.invalid' }));
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+    // No side effect: no turn ran, so no history was written.
+    expect(convo.history).toEqual([]);
+  });
+
+  it('accepts a same-origin Origin header even when allowOrigin is unset', async () => {
+    // The positive case for the same fix: a real same-origin browser request
+    // sends `Origin: http://127.0.0.1:3000` on a POST to
+    // `http://127.0.0.1:3000/...` whether or not anyone configured
+    // `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` — the demo must not need that
+    // variable set just to talk to itself.
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
+    const response = await handleTurn(convo, post({ text: 'hi' }, { origin: 'http://127.0.0.1:3000' }));
+    expect(response.status).toBe(200);
+    await drain(response, () => {});
+    expect(convo.history).toHaveLength(2);
+  });
+
+  it('refuses a non-JSON body even with no Origin header, forcing a preflight', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const response = await handleTurn(
+      convo,
+      new Request('http://127.0.0.1:3000/api/agent/turn', { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify({ text: 'hi' }) })
+    );
+    expect(response.status).toBe(415);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('unsupported-media-type');
+  });
+
+  it('refuses a foreign origin when one is configured', async () => {
+    const convo = await conversation(scriptedModel([]));
+    convo.env = { ...convo.env, allowOrigin: 'http://127.0.0.1:3000' };
+    const response = await handleTurn(convo, post({ text: 'hi' }, { origin: 'https://elsewhere.invalid' }));
+    expect(response.status).toBe(403);
+  });
+
+  it('accepts the configured origin', async () => {
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
+    convo.env = { ...convo.env, allowOrigin: 'http://127.0.0.1:3000' };
+    await drain(await handleTurn(convo, post({ text: 'hi' }, { origin: 'http://127.0.0.1:3000' })), () => {});
+    expect(convo.history).toHaveLength(2);
+  });
+
+  it('accepts a request that sends no Origin header at all', async () => {
+    // Its own test, because this is a different branch and the version that
+    // promised both cases in one title ran only the first: every test in this
+    // file that set an allow-origin also sent an explicit Origin, so
+    // `origin === null` was never once evaluated and the mutation that refuses
+    // it survived the whole suite. curl, the runbook's own diagnostics, and
+    // these tests send none; a browser always sends one, which is exactly why
+    // a missing Origin is not the cross-site case this check exists for.
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
+    convo.env = { ...convo.env, allowOrigin: 'http://127.0.0.1:3000' };
+    const response = await handleTurn(convo, post({ text: 'hi' }));
+    expect(response.status).toBe(200);
+    await drain(response, () => {});
+    expect(convo.history).toHaveLength(2);
+  });
+});
+
+describe('checkOrigin, the Host-derived default (fix round 2)', () => {
+  // A second review caught that fix round 1's own repair was itself broken:
+  // it compared `Origin` against `new URL(request.url).origin`, and Next
+  // 15.5 synthesises `request.url` as `http://localhost:<port>` from its own
+  // listen options - NEVER from the `Host` header a real browser sent -
+  // unless `experimental.trustHostHeader` is on, which it is not anywhere in
+  // this application. A live probe (`next dev`) confirmed a request that
+  // arrived with `Host: 127.0.0.1:<port>` still reported `request.url` as
+  // `http://localhost:<port>/...`, so fix round 1 refused every POST from a
+  // browser at `127.0.0.1` - including Task 15's own Playwright `baseURL`.
+  //
+  // Every case below builds its `Request` with `url` fixed at
+  // `http://localhost:3000/...` (what Next actually hands a route handler)
+  // while `Host` varies - the exact mismatch fix round 1 could not survive,
+  // so a regression back to comparing `request.url` alone shows up here
+  // rather than only against a real browser.
+  const cases: Array<{ label: string; host: string; origin: string; allowed: boolean }> = [
+    { label: 'loopback IP Host, matching Origin', host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000', allowed: true },
+    { label: 'loopback name Host, matching Origin', host: 'localhost:3000', origin: 'http://localhost:3000', allowed: true },
+    // Fix round 3: `new URL('http://[::1]:3000').hostname` is the STRING
+    // `"[::1]"`, brackets included - it does not strip them, whatever a
+    // round-2 comment claimed. `LOOPBACK_HOSTNAMES` held only the unbracketed
+    // `'::1'`, so this exact case 403'd in production against a real IPv6
+    // loopback request.
+    { label: 'IPv6 loopback Host, matching Origin', host: '[::1]:3000', origin: 'http://[::1]:3000', allowed: true },
+    { label: 'DNS-rebinding Host, Origin matching the SAME lie', host: 'evil.example:3000', origin: 'http://evil.example:3000', allowed: false },
+    { label: 'loopback Host, foreign Origin', host: '127.0.0.1:3000', origin: 'https://elsewhere.invalid', allowed: false },
+    // A look-alike hostname: `localhost.evil.example` CONTAINS `localhost` as
+    // a label prefix but its own hostname is `localhost.evil.example`, which
+    // is not in `LOOPBACK_HOSTNAMES` (an exact-membership Set, not a prefix or
+    // substring test) - included so a future rewrite of the loopback check
+    // into something string-prefix-shaped is caught here rather than only in
+    // production.
+    {
+      label: 'look-alike Host (localhost.evil.example), matching Origin',
+      host: 'localhost.evil.example:3000',
+      origin: 'http://localhost.evil.example:3000',
+      allowed: false
+    }
+  ];
+
+  it.each(cases)('$label -> allowed=$allowed', ({ host, origin, allowed }) => {
+    const request = new Request('http://localhost:3000/api/agent/turn', {
+      method: 'POST',
+      headers: { host, origin, 'content-type': 'application/json' }
+    });
+    const forbidden = checkOrigin(request, undefined);
+    if (allowed) expect(forbidden).toBeUndefined();
+    else {
+      expect(forbidden).toBeDefined();
+      expect(forbidden!.status).toBe(403);
+    }
+  });
+
+  it('an IPv6 loopback Host with no Origin header at all is still allowed (curl, tests)', () => {
+    const request = new Request('http://localhost:3000/api/agent/turn', {
+      method: 'POST',
+      headers: { host: '[::1]:3000', 'content-type': 'application/json' }
+    });
+    expect(checkOrigin(request, undefined)).toBeUndefined();
+  });
+
+  it(
+    "a real route (handleTurn) accepts a browser at 127.0.0.1 even though Next's request.url says localhost",
+    async () => {
+      // Mutation (a): revert to `allowOrigin ?? new URL(request.url).origin`
+      // and this must fail - `request.url`'s origin is `http://localhost:3000`,
+      // which never equals the browser's real `Origin: http://127.0.0.1:3000`.
+      const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
+      const request = new Request('http://localhost:3000/api/agent/turn', {
+        method: 'POST',
+        headers: { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000', 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hi' })
+      });
+      const response = await handleTurn(convo, request);
+      expect(response.status).toBe(200);
+      await drain(response, () => {});
+      expect(convo.history).toHaveLength(2);
+    },
+    { timeout: 15000 }
+  );
+
+  it('a real route (handleTurn) refuses a DNS-rebinding Host even though its Origin agrees with the same lie', async () => {
+    // Mutation (b): drop the loopback-Host requirement (derive `expected`
+    // from `Host` alone, with no membership check) and this must fail -
+    // `Host` and `Origin` here both name `evil.example`, which is exactly the
+    // rebinding shape a Host-alone comparison cannot distinguish from a
+    // legitimate request.
+    const convo = await conversation(scriptedModel([]));
+    const request = new Request('http://localhost:3000/api/agent/turn', {
+      method: 'POST',
+      headers: { host: 'evil.example:3000', origin: 'http://evil.example:3000', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' })
+    });
+    const response = await handleTurn(convo, request);
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+    expect(convo.history).toEqual([]);
+  });
+});
+
+describe('householdTimeZone', () => {
+  it('reads the zone the household record names', async () => {
+    const convo = await conversation(scriptedModel([]));
+    // The seeded household is in America/Chicago, and it is read off
+    // `homeledger://household` rather than assumed: the server renders every
+    // human-facing time in this zone and the simulator speaks the date, so the
+    // two have to be reading the same record.
+    expect(await householdTimeZone(convo.mcp)).toBe('America/Chicago');
+    expect(await householdTimeZone(convo.mcp)).toBe(SEED_TIMEZONE);
+  });
+
+  it('falls back to the seeded zone, and says so, when the record cannot be read', async () => {
+    const said: string[] = [];
+    const zone = await householdTimeZone(
+      {
+        readResource: async () => {
+          throw new Error('resource homeledger://household carries no text content');
+        }
+      },
+      message => said.push(message)
+    );
+    expect(zone).toBe(SEED_TIMEZONE);
+    expect(said.join(' ')).toContain(SEED_TIMEZONE);
+    // Not UTC. A fallback to UTC would put the simulator back on exactly the
+    // day boundary this whole mechanism exists to move off.
+    expect(zone).not.toBe('UTC');
+  });
+
+  it('falls back when the record names no zone, rather than speaking an empty one', async () => {
+    const zone = await householdTimeZone({ readResource: async () => JSON.stringify({ id: 'hh_test', name: 'The Harlow household' }) });
+    expect(zone).toBe(SEED_TIMEZONE);
+  });
+});
+
+describe('GET /api/debug', () => {
+  it('describes the connection without carrying a credential', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const body = (await (await import('../src/server/http.js')).handleDebug(convo, debugRequest()).json()) as Record<string, unknown>;
+    expect(body.addressing).toBe('url');
+    expect(typeof body.sessionId).toBe('string');
+    expect(body.rebuilds).toBe(0);
+    expect(Array.isArray(body.tools)).toBe(true);
+    const serialised = JSON.stringify(body).toLowerCase();
+    for (const forbidden of ['bearer', 'authorization', 'secret', 'anthropic', 'password', 'token']) {
+      expect(serialised, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('carries the scripted flag, the server-side half of the on-screen marker', async () => {
+    // The page reads this field (via useDebugSnapshot) to decide whether to
+    // show "Scripted replies" in Disclosure. If handleDebug ever stopped
+    // forwarding it, the marker would silently disappear even though
+    // `Conversation.scripted` were still true — this is the assertion that
+    // the wire actually carries what session.ts sets.
+    const unscripted = await conversation(scriptedModel([]));
+    const unscriptedBody = (await (await import('../src/server/http.js')).handleDebug(unscripted, debugRequest()).json()) as { scripted: unknown };
+    expect(unscriptedBody.scripted).toBe(false);
+
+    const scripted = { ...(await conversation(scriptedModel([]))), scripted: true };
+    const scriptedBody = (await (await import('../src/server/http.js')).handleDebug(scripted, debugRequest()).json()) as { scripted: unknown };
+    expect(scriptedBody.scripted).toBe(true);
+  });
+
+  it('carries the two spec section 7 fields the drawer cannot get anywhere else', async () => {
+    const convo = await conversation(scriptedModel([]));
+    await convo.mcp.callTool('list_appliances', {});
+    const body = (await (await import('../src/server/http.js')).handleDebug(convo, debugRequest()).json()) as {
+      protocolVersion: unknown;
+      log: Array<{ method: string }>;
+    };
+    expect(body.protocolVersion).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(body.log.map(entry => entry.method)).toContain('tools/call');
+    // `token` is on the forbidden list above and `progressToken` is on every
+    // progress notification this server sends, so the log has to be methods
+    // and timings rather than payloads. This asserts that the credential test
+    // above is passing because the log holds no bodies, not because this
+    // particular call happened to send nothing interesting.
+    expect(JSON.stringify(body.log)).not.toContain('appliances');
+  });
+
+  it(
+    'reports the protocol as not negotiated rather than a stale one, when the transport has none to give',
+    async () => {
+      // Fix round 1, Important 1: the report claimed this was covered by
+      // Task 6's `mcp.test.ts`, which asserts `HomeLedgerMcp.protocolVersion`
+      // directly and never imports `http.ts` - so a `handleDebug` that hard-
+      // codes the literal `conversation.mcp.protocolVersion` reads from
+      // passed every test in this file too. This fixture overrides just the
+      // one getter, on an object whose prototype is the real, connected
+      // `HomeLedgerMcp` (so `endpointUrl`, `sessionId`, `rebuilds` and
+      // `jsonRpcLog` still resolve normally through it) - a JS-level
+      // substitution, not a mock of the whole class, so nothing here can be
+      // satisfied by a value `handleDebug` invents on its own.
+      const convo = await conversation(scriptedModel([]));
+      const unnegotiated = { ...convo, mcp: Object.create(convo.mcp, { protocolVersion: { get: () => undefined } }) };
+      const body = (await (await import('../src/server/http.js')).handleDebug(unnegotiated, debugRequest()).json()) as { protocolVersion: unknown };
+      expect(body.protocolVersion).toBeNull();
+    },
+    { timeout: 15000 }
+  );
+
+  it('refuses a foreign origin, the same as turn and answer', async () => {
+    // Fix round 1, ruling on Minor 4: `handleDebug` took no `Request` and so
+    // could not honour `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` at all - a cross-
+    // site GET reached `getConversation()` (a token mint and a connect) and
+    // read back the runtime ARN (which carries the AWS account id) and the
+    // MCP session id. This is the plan's own guard, extended to cover the
+    // route it was missing from.
+    const convo = await conversation(scriptedModel([]));
+    convo.env = { ...convo.env, allowOrigin: 'http://127.0.0.1:3000' };
+    const response = (await import('../src/server/http.js')).handleDebug(convo, debugRequest({ origin: 'https://elsewhere.invalid' }));
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+  });
+
+  it('still answers a request that sends no Origin header at all, even with one configured', async () => {
+    const convo = await conversation(scriptedModel([]));
+    convo.env = { ...convo.env, allowOrigin: 'http://127.0.0.1:3000' };
+    const response = (await import('../src/server/http.js')).handleDebug(convo, debugRequest());
+    expect(response.status).toBe(200);
+  });
+});
+
+describe('the widget routes', () => {
+  it('serves a ui:// resource as HTML and refuses anything else', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidget } = await import('../src/server/http.js');
+    const ok = await handleWidget(convo, new Request('http://127.0.0.1:3100/api/widget?uri=ui%3A%2F%2Fhomeledger%2Fappliances'));
+    expect(ok.status).toBe(200);
+    expect((await ok.text()).startsWith('<!doctype html>')).toBe(true);
+    for (const uri of ['homeledger://appliances', 'ui://elsewhere/x', 'file:///etc/passwd', '']) {
+      const refused = await handleWidget(convo, new Request(`http://127.0.0.1:3100/api/widget?uri=${encodeURIComponent(uri)}`));
+      expect(refused.status, uri).toBe(400);
+    }
+  });
+
+  it('runs only the tools a widget is allowed to run', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const { WIDGET_TOOLS, handleWidgetTool } = await import('../src/server/http.js');
+
+    // Two properties, neither of them `expect(WIDGET_TOOLS).toEqual(['log_maintenance'])`
+    // - that line restated the producer's own literal from the same package
+    //   with no independent party, and proved only that a constant equals
+    //   itself. What matters is (1) the allowlist names tools that exist, so a
+    //   typo cannot silently allow nothing, and (2) every OTHER tool the
+    //   server offers is refused, which is the boundary this endpoint is.
+    const offered = convo.tools.map(tool => tool.name);
+    for (const allowed of WIDGET_TOOLS) expect(offered, allowed).toContain(allowed);
+    for (const name of offered.filter(candidate => !WIDGET_TOOLS.includes(candidate))) {
+      const refused = await handleWidgetTool(convo, widgetToolPost({ name, arguments: {} }));
+      expect(refused.status, name).toBe(403);
+    }
+
+    const list = (await convo.mcp.callTool('maintenance_due', {})) as { structuredContent: { items: Array<{ applianceId: string; taskType: string }> } };
+    const item = list.structuredContent.items[0]!;
+    const allowed = await handleWidgetTool(convo, widgetToolPost({ name: 'log_maintenance', arguments: item }));
+    expect(allowed.status).toBe(200);
+    // Fix round 1, Important 2: 200 alone does not prove the write happened -
+    // that was exactly the bug. Pin the success shape too, so a regression
+    // that reintroduces an unnoticed `isError` fails here as well as on the
+    // dedicated isError test below.
+    const allowedBody = (await allowed.json()) as { isError?: boolean; structuredContent?: { logged?: boolean } };
+    expect(allowedBody.isError).toBeUndefined();
+    expect(allowedBody.structuredContent?.logged).toBe(true);
+    const refused = await handleWidgetTool(convo, widgetToolPost({ name: 'book_service', arguments: {} }));
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).message).toContain('book_service');
+  });
+
+  it('reports an isError tool result as a failure, not as a 200 success', async () => {
+    // Fix round 1, Important (plan-mandated, FL-039): `log_maintenance`
+    // returns `{isError: true}` without throwing when the appliance id is
+    // unknown (apps/mcp-server/src/tools/maintenance.ts). The old code sent
+    // that back as HTTP 200; `WidgetFrame.callTool` only throws on
+    // `!response.ok`, and the widget's own bridge resolves a JSON-RPC
+    // `result` either way, so the calendar widget would have shown "Logged"
+    // for a write that never happened.
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidgetTool } = await import('../src/server/http.js');
+    const response = await handleWidgetTool(
+      convo,
+      widgetToolPost({ name: 'log_maintenance', arguments: { applianceId: 'appl_missing', taskType: 'filter_change' } })
+    );
+    expect(response.status).not.toBe(200);
+    const body = (await response.json()) as { reason: string; message: string };
+    expect(body.reason).toBe('tool-failed');
+    expect(body.message).toContain("couldn't find that appliance");
+  });
+
+  it('refuses a foreign origin when allowOrigin is unset, and never calls the tool', async () => {
+    // Fix round 1, Critical (plan-mandated). Verified live by the reviewer's
+    // probe against this exact route: a cross-site `Origin` with no
+    // `allowOrigin` configured used to reach `conversation.mcp.callTool` and
+    // run `log_maintenance`. Spying on the real, connected `HomeLedgerMcp`'s
+    // own method (rather than asserting on a side effect further away) pins
+    // the call never happens at all, not merely that its result is discarded.
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidgetTool } = await import('../src/server/http.js');
+    const spy = vi.spyOn(convo.mcp, 'callTool');
+    const response = await handleWidgetTool(convo, widgetToolPost({ name: 'log_maintenance', arguments: {} }, { origin: 'https://evil.example' }));
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-origin');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('accepts a same-origin JSON request even when allowOrigin is unset', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidgetTool } = await import('../src/server/http.js');
+    const response = await handleWidgetTool(convo, widgetToolPost({ name: 'book_service', arguments: {} }, { origin: 'http://127.0.0.1:3100' }));
+    // Same-origin, so it passes both guards and reaches the allowlist check -
+    // 403 for a tool this route refuses, not 415 or 403-for-origin.
+    expect(response.status).toBe(403);
+    const body = (await response.json()) as { reason: string };
+    expect(body.reason).toBe('forbidden-tool');
+  });
+
+  it('refuses a non-JSON body even with no Origin header, forcing a preflight', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const { handleWidgetTool } = await import('../src/server/http.js');
+    const response = await handleWidgetTool(
+      convo,
+      new Request('http://127.0.0.1:3100/api/widget/tool', {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: JSON.stringify({ name: 'log_maintenance', arguments: {} })
+      })
+    );
+    expect(response.status).toBe(415);
+  });
+});
+
+/** A promise the test settles by hand. */
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(res => (resolve = res));
+  return { promise, resolve };
+}
+
+/** A model that waits for `release` and then says `words`, ignoring any abort - the worst case a reset or a cancel has to survive. */
+function heldModel(release: Promise<void>, words = 'Done.'): ModelPort {
+  return {
+    async respond(_request, onText) {
+      await release;
+      onText(words);
+      return {
+        id: 'm',
+        type: 'message',
+        role: 'assistant',
+        model: 'fake',
+        content: [{ type: 'text', text: words }],
+        stop_reason: 'end_turn',
+        usage: {}
+      } as unknown as Anthropic.Message;
+    }
+  };
+}
+
+/** Reads until the turn has started, then hands the reader back still open. */
+async function startedTurn(response: Response): Promise<{ reader: ReadableStreamDefaultReader<Uint8Array>; turnId: string }> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const decode = createSseDecoder();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) throw new Error('the stream ended before the turn started');
+    for (const event of decode(decoder.decode(value, { stream: true }))) if (event.type === 'turn-started') return { reader, turnId: event.turnId };
+  }
+}
+
+async function until(condition: () => boolean, withinMs: number): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+}
+
+function resetRequest(headers: Record<string, string> = {}, contentType = 'application/json'): Request {
+  return new Request('http://127.0.0.1:3000/api/agent/reset', { method: 'POST', body: '{}', headers: { 'content-type': contentType, ...headers } });
+}
+
+describe('one turn at a time (final review I3)', () => {
+  it('refuses a second turn while one is running, and admits the next once it has finished', async () => {
+    const release = deferred();
+    const convo = await conversation(heldModel(release.promise));
+    const first = await handleTurn(convo, post({ text: 'first' }));
+    expect(first.status).toBe(200);
+
+    const second = await handleTurn(convo, post({ text: 'second' }));
+    expect(second.status).toBe(409);
+    const body = (await second.json()) as { reason: string; message: string };
+    expect(body.reason).toBe('turn-running');
+    expect(body.message).toContain('Another turn is still running in this conversation');
+
+    release.resolve();
+    await drain(first, () => {});
+    const third = await handleTurn(convo, post({ text: 'third' }));
+    expect(third.status).toBe(200);
+    await drain(third, () => {});
+    // The refused turn left no trace: only the first and third are in history.
+    expect(convo.history.filter(m => m.role === 'user').map(m => m.content)).toEqual(['first', 'third']);
+  });
+
+  it('aborts the model call when the browser cancels the stream, well before the model would have answered', async () => {
+    let aborted = false;
+    const convo = await conversation({
+      respond(_request, _onText, signal) {
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            aborted = true;
+            reject(signal.reason);
+          });
+        });
+      }
+    });
+    const { reader } = await startedTurn(await handleTurn(convo, post({ text: 'hello' })));
+    await reader.cancel();
+    await until(() => aborted && convo.activeTurn === undefined, 200);
+    expect(aborted).toBe(true);
+    expect(convo.activeTurn).toBeUndefined();
+  });
+
+  it('writes no history for a turn the browser abandoned, even when the model finishes anyway', async () => {
+    const release = deferred();
+    const convo = await conversation(heldModel(release.promise, 'Too late.'));
+    const { reader } = await startedTurn(await handleTurn(convo, post({ text: 'hello' })));
+    await reader.cancel();
+    release.resolve();
+    await until(() => convo.activeTurn === undefined, 1000);
+    expect(convo.activeTurn).toBeUndefined();
+    expect(convo.history).toEqual([]);
+  });
+});
+
+describe('POST /api/agent/reset (final review I3)', () => {
+  it('empties the history the model is handed', async () => {
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'One.' } as Anthropic.ContentBlock]]));
+    await drain(await handleTurn(convo, post({ text: 'first question' })), () => {});
+    expect(convo.history).toHaveLength(2);
+    const response = await handleReset(convo, resetRequest());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, abortedTurn: false });
+    expect(convo.history).toEqual([]);
+  });
+
+  it('aborts a running turn and waits for it to unwind before answering, so the next turn is admitted at once', async () => {
+    const release = deferred();
+    const convo = await conversation(heldModel(release.promise));
+    const turn = await handleTurn(convo, post({ text: 'hello' }));
+    const { reader } = await startedTurn(turn);
+
+    let answered = false;
+    const reset = handleReset(convo, resetRequest()).then(response => {
+      answered = true;
+      return response;
+    });
+    // The held model ignores the abort, so the turn cannot have unwound yet
+    // and the reset must still be waiting for it.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(answered).toBe(false);
+
+    release.resolve();
+    const response = await reset;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, abortedTurn: true });
+    expect(convo.activeTurn).toBeUndefined();
+    expect(convo.history).toEqual([]);
+    await reader.cancel();
+  });
+
+  it('refuses a foreign origin and a non-JSON body, and clears nothing either time', async () => {
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'One.' } as Anthropic.ContentBlock]]));
+    await drain(await handleTurn(convo, post({ text: 'first question' })), () => {});
+    const foreign = await handleReset(convo, resetRequest({ origin: 'https://elsewhere.invalid' }));
+    expect(foreign.status).toBe(403);
+    const plain = await handleReset(convo, resetRequest({}, 'text/plain'));
+    expect(plain.status).toBe(415);
+    expect(convo.history).toHaveLength(2);
+  });
+});
+
+describe('POST /api/agent/answer, a question already answered', () => {
+  it('reports the second answer to one question as undelivered, and says why, without touching the first', async () => {
+    // The Task 9 branch that had no test, and the server half of the
+    // double-click the elicitation card now prevents.
+    const convo = await conversation(scriptedModel([]));
+    convo.registry.open('t-twice');
+    const { elicitationId, answer } = convo.registry.ask('t-twice', 5000);
+    const first = await handleAnswer(convo, post({ turnId: 't-twice', elicitationId, action: 'accept', content: { provider: 'prov_a' } }));
+    expect(first.status).toBe(202);
+    const second = await handleAnswer(convo, post({ turnId: 't-twice', elicitationId, action: 'accept', content: { provider: 'prov_b' } }));
+    expect(second.status).toBe(409);
+    const body = (await second.json()) as { reason: string; message: string };
+    expect(body.reason).toBe('unknown-question');
+    expect(body.message).toContain('has already been answered or has timed out');
+    await expect(answer).resolves.toEqual({ action: 'accept', content: { provider: 'prov_a' } });
+    convo.registry.close('t-twice', 'test over');
+  });
+});

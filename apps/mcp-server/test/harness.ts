@@ -1,41 +1,13 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createMcpHandler } from '@modelcontextprotocol/server';
-import { SAMPLE_MANUAL_PASSAGES, SEED_TIMEZONE, createFixtureRetriever, createMemoryRepository, seedRepository } from '@homeledger/core';
 import { buildServer, type ServerDeps } from '../src/server.js';
-import { resolveHouseholdTimeZone } from '../src/deps.js';
+import { seededDeps } from './seeded-deps.js';
 
-export const TODAY = '2026-09-13';
-
-/**
- * Pinned, never read from the runner's clock. A test that took the machine's
- * zone would assert "1:00 PM" and pass in UTC CI while failing on a laptop in
- * Chicago - and, worse, would pass here while the rendering ignored the
- * household zone entirely. Every expected string in this suite is the
- * America/Chicago rendering of a UTC instant, which is a DIFFERENT string from
- * the UTC one; that difference is what proves the zone is honoured.
- */
-export const TEST_TIMEZONE = SEED_TIMEZONE;
-
-/** 39 bytes, comfortably over createRequestStateCodec's 32-byte floor. */
-export const TEST_REQUEST_STATE_KEY = 'test-request-state-key-0123456789abcdef';
-
-export async function seededDeps(): Promise<ServerDeps> {
-  const repo = createMemoryRepository('hh_test');
-  await seedRepository(repo, 'hh_test', TODAY);
-  return {
-    repo,
-    now: () => `${TODAY}T12:00:00.000Z`,
-    // Read from the seeded household record through the same resolver the
-    // deployed server uses, rather than hard-coded here: a test that injected
-    // the zone directly would still pass if `seedRepository` stopped writing
-    // one, which is half of what this feature is.
-    householdTimeZone: () => resolveHouseholdTimeZone(repo),
-    devTools: true,
-    retriever: createFixtureRetriever(SAMPLE_MANUAL_PASSAGES),
-    requestStateKey: TEST_REQUEST_STATE_KEY,
-    availabilityDelayMs: 0
-  };
-}
+// Re-exported, not moved away: every test in this suite imports these four from
+// `./harness.js` and none of them has to know that the fixture now lives in its
+// own module so another package can import it. See `seeded-deps.ts` for why the
+// split exists.
+export { TODAY, TEST_TIMEZONE, TEST_REQUEST_STATE_KEY, seededDeps } from './seeded-deps.js';
 
 export async function modernClient(over: Partial<ServerDeps> = {}) {
   const deps = { ...(await seededDeps()), ...over };
