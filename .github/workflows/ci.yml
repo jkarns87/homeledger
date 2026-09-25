@@ -33,6 +33,12 @@ jobs:
       # TS2307s and `pnpm test` with "Cannot find package
       # '@homeledger/mcp-bridge/config'" — verified by moving `dist/` aside.
       - run: pnpm --filter @homeledger/mcp-bridge build
+      # And once more for @homeledger/mcp-server: the simulator's agent, mcp and
+      # routes tests import `@homeledger/mcp-server/app` to run a real local
+      # server, and that subpath resolves to `./dist/app.js`. A clean checkout
+      # without this line fails `pnpm typecheck` with three TS2307s — PR #16's
+      # first CI run, reproduced locally by moving `dist/` aside.
+      - run: pnpm --filter @homeledger/mcp-server build
       - run: pnpm format
       - run: pnpm typecheck
       - run: pnpm test
