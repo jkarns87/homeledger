@@ -1,9 +1,9 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import { SEED_TIMEZONE } from '@homeledger/core';
 import { createElicitRouter, type ElicitRouter } from './agent.js';
-import { resolveUpstream } from './credentials.js';
+import { isUnauthenticatedLocal, resolveUpstream } from './credentials.js';
 import { ElicitationRegistry } from './elicitation.js';
-import { readSimulatorEnv, type SimulatorEnv } from './env.js';
+import { readSimulatorEnv, SimulatorConfigError, type SimulatorEnv } from './env.js';
 import { HomeLedgerMcp } from './mcp.js';
 import { createAnthropicClient, createModelPort, type ModelPort } from './model.js';
 import { createScriptedModel } from './scripted-model.js';
@@ -24,6 +24,14 @@ export interface Conversation {
   /** The one clock this conversation reads, for tool timings and for the calendar date alike. */
   now: () => number;
   history: Anthropic.MessageParam[];
+  /**
+   * True when `model` is the scripted stand-in, never the real Anthropic
+   * client. Carried on the conversation, not just logged, so `handleDebug`
+   * can expose it and the UI can show a visible marker — a judged demo must
+   * never pass scripted text off as a model's, and a startup log line nobody
+   * is watching is not that guarantee.
+   */
+  scripted: boolean;
 }
 
 /**
@@ -79,6 +87,33 @@ export function scriptedModelRequested(source: NodeJS.ProcessEnv = process.env):
 }
 
 /**
+ * Refuses scripted mode against anything but a local, unauthenticated
+ * upstream — the same gate `resolveUpstream` uses to decide whether to skip
+ * Cognito, reused here so the two can never disagree.
+ *
+ * The flag alone is not a safety property: it works exactly as well pointed
+ * at the deployed runtime as at a local one, and `.env.local` is exactly the
+ * kind of file a person edits for one run and does not always edit back.
+ * Left ungated, a leftover `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` would let
+ * a judged, recorded demo against the real AgentCore runtime answer every
+ * question from `scripted-model.ts`'s fixed script, with nothing on screen
+ * saying so — the single console line in `build()` is not a guarantee,
+ * because nobody watches server logs during a recorded demo. Throwing here
+ * turns that into the same readable 503 a missing `ANTHROPIC_API_KEY`
+ * already produces (every route already catches `getConversation()`'s
+ * rejection and passes the message through — see `src/app/api/*\/route.ts`),
+ * rather than a silent wrong answer.
+ */
+export function assertScriptedModeAllowed(source: NodeJS.ProcessEnv = process.env): void {
+  if (!scriptedModelRequested(source) || isUnauthenticatedLocal(source)) return;
+  throw new SimulatorConfigError(
+    `${SCRIPTED_MODEL_FLAG}=1 answers every turn from a fixed script, never from a model, and must never run against the deployed runtime. ` +
+      'It only runs when HOMELEDGER_MCP_URL is a loopback address (127.0.0.1, localhost or [::1]) with no HOMELEDGER_COGNITO_TOKEN_URL configured ' +
+      `(see isUnauthenticatedLocal in credentials.ts). Unset ${SCRIPTED_MODEL_FLAG}, or point HOMELEDGER_MCP_URL at a local server, to continue.`
+  );
+}
+
+/**
  * Where the singleton actually lives.
  *
  * A plain module-scope `let` is not one process-wide slot under `next dev`:
@@ -125,6 +160,10 @@ export async function getConversation(): Promise<Conversation> {
 
 async function build(): Promise<Conversation> {
   const say = (message: string): void => console.log(JSON.stringify({ msg: 'simulator', detail: message }));
+  // Checked before anything else touches the network: a misconfigured
+  // scripted flag must refuse before minting a Cognito token or connecting
+  // to a real runtime, not after.
+  assertScriptedModeAllowed();
   const env = readSimulatorEnv();
   const upstream = await resolveUpstream(process.env, say);
   const router = createElicitRouter();
@@ -155,6 +194,7 @@ async function build(): Promise<Conversation> {
     endpoint: { arn: upstream.arn, origin: upstream.origin },
     timeZone: await householdTimeZone(mcp, say),
     now: () => Date.now(),
-    history: []
+    history: [],
+    scripted
   };
 }

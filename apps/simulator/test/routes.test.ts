@@ -68,7 +68,8 @@ async function conversation(model: ModelPort): Promise<Conversation> {
     endpoint: { arn: undefined, origin: 'url' },
     timeZone: await householdTimeZone(mcp),
     now: () => Date.now(),
-    history: []
+    history: [],
+    scripted: false
   };
 }
 
@@ -587,6 +588,21 @@ describe('GET /api/debug', () => {
     for (const forbidden of ['bearer', 'authorization', 'secret', 'anthropic', 'password', 'token']) {
       expect(serialised, forbidden).not.toContain(forbidden);
     }
+  });
+
+  it('carries the scripted flag, the server-side half of the on-screen marker', async () => {
+    // The page reads this field (via useDebugSnapshot) to decide whether to
+    // show "Scripted replies" in Disclosure. If handleDebug ever stopped
+    // forwarding it, the marker would silently disappear even though
+    // `Conversation.scripted` were still true — this is the assertion that
+    // the wire actually carries what session.ts sets.
+    const unscripted = await conversation(scriptedModel([]));
+    const unscriptedBody = (await (await import('../src/server/http.js')).handleDebug(unscripted, debugRequest()).json()) as { scripted: unknown };
+    expect(unscriptedBody.scripted).toBe(false);
+
+    const scripted = { ...(await conversation(scriptedModel([]))), scripted: true };
+    const scriptedBody = (await (await import('../src/server/http.js')).handleDebug(scripted, debugRequest()).json()) as { scripted: unknown };
+    expect(scriptedBody.scripted).toBe(true);
   });
 
   it('carries the two spec section 7 fields the drawer cannot get anywhere else', async () => {

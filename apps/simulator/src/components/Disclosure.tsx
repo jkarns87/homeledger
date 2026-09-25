@@ -13,10 +13,27 @@
 export const DISCLOSURE_TEXT =
   'Simulation — a smart-display surface built from published design guidance. It drives HomeLedger’s own MCP server for real; the service-provider marketplace is sample data and no booking leaves this system.';
 
-export function Disclosure() {
+/**
+ * What a person reads when `scripted` is true, printed alongside — never in
+ * place of — `DISCLOSURE_TEXT`, which still claims "for real" about the MCP
+ * server itself (still true: the tool calls are real, only the model's own
+ * replies are not). Named for what it is rather than what it is not, the
+ * same rule `DISCLOSURE_TEXT`'s own comment states, so this carries no
+ * product name either.
+ */
+export const SCRIPTED_MARKER_TEXT = 'Scripted replies — no model is answering; this run follows a fixed script.';
+
+export function Disclosure({ scripted = false }: { scripted?: boolean }) {
   return (
-    <p className="disclosure" data-testid="disclosure">
-      {DISCLOSURE_TEXT}
-    </p>
+    <>
+      <p className="disclosure" data-testid="disclosure">
+        {DISCLOSURE_TEXT}
+      </p>
+      {scripted ? (
+        <p className="disclosure scripted" data-testid="scripted-marker">
+          {SCRIPTED_MARKER_TEXT}
+        </p>
+      ) : null}
+    </>
   );
 }

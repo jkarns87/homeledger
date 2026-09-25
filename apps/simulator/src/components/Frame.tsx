@@ -6,7 +6,18 @@ import { Disclosure } from './Disclosure.js';
 
 export type Theme = 'dark' | 'light';
 
-export function Frame({ theme, onToggleTheme, children }: { theme: Theme; onToggleTheme: () => void; children: ReactNode }) {
+export function Frame({
+  theme,
+  onToggleTheme,
+  scripted = false,
+  children
+}: {
+  theme: Theme;
+  onToggleTheme: () => void;
+  /** Passed straight through to `Disclosure` — see its own doc comment. */
+  scripted?: boolean;
+  children: ReactNode;
+}) {
   const next: Theme = theme === 'dark' ? 'light' : 'dark';
   return (
     <div className="device" data-testid="device" data-theme={theme} style={{ width: DEVICE.width, height: DEVICE.height }}>
@@ -20,7 +31,7 @@ export function Frame({ theme, onToggleTheme, children }: { theme: Theme; onTogg
         style={{ width: BASE_CANVAS.width, height: BASE_CANVAS.height, transform: `scale(${CANVAS_SCALE})`, transformOrigin: 'top left' }}
       >
         <div className="surface">{children}</div>
-        <Disclosure />
+        <Disclosure scripted={scripted} />
       </div>
       <button type="button" className="theme-toggle" onClick={onToggleTheme} aria-label={`Switch to the ${next} theme`}>
         {next === 'light' ? 'Light' : 'Dark'}

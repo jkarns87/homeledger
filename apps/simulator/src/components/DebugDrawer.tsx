@@ -22,6 +22,8 @@ export interface DebugSnapshot {
   tools: string[];
   /** Methods and timings, oldest first. No payloads ever reach this — see `HomeLedgerMcp.record`. */
   log: JsonRpcLine[];
+  /** True when the conversation is answering from `scripted-model.ts`, never a real model. Drives the on-screen marker in `Disclosure`. */
+  scripted: boolean;
 }
 
 const ADDRESSING: Record<DebugSnapshot['addressing'], string> = {

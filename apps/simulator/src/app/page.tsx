@@ -18,7 +18,7 @@ export default function Home() {
   // they explain rather than stale until it ends (spec section 7).
   const snapshot = useDebugSnapshot(turn.state.running || turn.state.pending !== null);
   return (
-    <Frame theme={theme} onToggleTheme={() => setTheme(current => (current === 'dark' ? 'light' : 'dark'))}>
+    <Frame theme={theme} onToggleTheme={() => setTheme(current => (current === 'dark' ? 'light' : 'dark'))} scripted={snapshot?.scripted ?? false}>
       <Transcript state={turn.state} theme={theme} />
       {turn.state.progress ? <ProgressMeter progress={turn.state.progress} /> : null}
       {turn.state.pending ? <ElicitationCard question={turn.state.pending} onAnswer={(action, content) => void turn.answer(action, content)} /> : null}

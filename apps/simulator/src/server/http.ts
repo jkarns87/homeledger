@@ -392,6 +392,11 @@ export function handleDebug(conversation: Conversation, request: Request): Respo
       sessionId: conversation.mcp.sessionId ?? null,
       rebuilds: conversation.mcp.rebuilds,
       tools: conversation.tools.map(tool => tool.name),
+      // The visible-marker half of the scripted-mode gate in session.ts:
+      // `assertScriptedModeAllowed` keeps this from ever being true against
+      // the deployed runtime, and this field is what lets the page say so
+      // rather than only logging it where nobody watching a demo would see.
+      scripted: conversation.scripted,
       // Methods and timings. `HomeLedgerMcp.record` keeps payloads out at the
       // source; this endpoint spreads the entries it is given and adds
       // nothing, so there is one place to read to know what can appear here.

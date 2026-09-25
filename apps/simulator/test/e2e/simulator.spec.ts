@@ -10,6 +10,12 @@ test('the display is the base canvas at its published scale, and discloses itsel
   await expect(device).toHaveCSS('width', '1280px');
   await expect(device).toHaveCSS('height', '800px');
   await expect(page.getByTestId('disclosure')).toContainText('sample data');
+  // This whole suite runs against HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1
+  // (playwright.config.ts), so the on-screen marker session.ts/Disclosure.tsx
+  // add for exactly this mode must be visible from the first paint — the
+  // one place this plan proves the marker isn't only a unit-test fixture.
+  await expect(page.getByTestId('scripted-marker')).toBeVisible();
+  await expect(page.getByTestId('scripted-marker')).toContainText('no model is answering');
 });
 
 test('asking about appliances renders the widget, with its own script running inside the frame', async ({ page }) => {

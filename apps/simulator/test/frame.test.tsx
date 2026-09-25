@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { Frame } from '../src/components/Frame.js';
-import { DISCLOSURE_TEXT } from '../src/components/Disclosure.js';
+import { DISCLOSURE_TEXT, SCRIPTED_MARKER_TEXT } from '../src/components/Disclosure.js';
 import { BASE_CANVAS, CANVAS_SCALE, DEVICE } from '../src/shared/canvas.js';
 import { FORBIDDEN_WORDMARKS } from '../src/server/prompt.js';
 
@@ -38,6 +38,28 @@ describe('Frame', () => {
     const disclosure = screen.getByTestId('disclosure');
     expect(disclosure.textContent).toBe(DISCLOSURE_TEXT);
     expect(disclosure.hidden).toBe(false);
+  });
+
+  it('shows no scripted marker by default, and shows one when told the model is scripted', () => {
+    // The ruling this test proves: the flag alone is not a safety property
+    // and the console line nobody watches during a demo is not a
+    // guarantee either — the marker on screen is. Default (no `scripted`
+    // prop, matching page.tsx before the debug snapshot's first response)
+    // must show nothing at all, not a false negative that happens to read
+    // the same as "not scripted".
+    const { rerender } = render(
+      <Frame theme="dark" onToggleTheme={() => {}}>
+        <p>content</p>
+      </Frame>
+    );
+    expect(screen.queryByTestId('scripted-marker')).toBeNull();
+
+    rerender(
+      <Frame theme="dark" onToggleTheme={() => {}} scripted>
+        <p>content</p>
+      </Frame>
+    );
+    expect(screen.getByTestId('scripted-marker').textContent).toBe(SCRIPTED_MARKER_TEXT);
   });
 
   it('says both of the things that have to be said', () => {

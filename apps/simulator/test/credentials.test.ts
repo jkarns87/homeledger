@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_ELICITATION_TIMEOUT_MS, DEFAULT_MAX_ROUNDS, DEFAULT_MODEL, SimulatorConfigError, readSimulatorEnv } from '../src/server/env.js';
 import { isUnauthenticatedLocal } from '../src/server/credentials.js';
-import { SCRIPTED_MODEL_FLAG, scriptedModelRequested } from '../src/server/session.js';
+import { assertScriptedModeAllowed, SCRIPTED_MODEL_FLAG, scriptedModelRequested } from '../src/server/session.js';
 
 /**
  * Builds a `NodeJS.ProcessEnv` fixture.
@@ -139,5 +139,46 @@ describe('the scripted model', () => {
     expect(scriptedModelRequested(env({}))).toBe(false);
     for (const value of ['', '0', 'true', 'yes', 'TRUE', ' 1']) expect(scriptedModelRequested(env({ [SCRIPTED_MODEL_FLAG]: value })), value).toBe(false);
     expect(scriptedModelRequested(env({ [SCRIPTED_MODEL_FLAG]: '1' }))).toBe(true);
+  });
+
+  it('names the exact environment variable, not merely a symbol that happens to equal it', () => {
+    // A test that only compares SCRIPTED_MODEL_FLAG against itself
+    // (`scriptedModelRequested(env({ [SCRIPTED_MODEL_FLAG]: ... }))`, as the
+    // case above does) cannot tell the real flag name from a renamed
+    // constant that is still internally self-consistent — confirmed by
+    // renaming SCRIPTED_MODEL_FLAG to 'HOMELEDGER_SCRIPTED' and re-running:
+    // every case above still passed 11/11, because both the flag being set
+    // and the flag being read moved together. `playwright.config.ts` and
+    // `.env.example` spell out the literal string on their own, with no
+    // access to this constant, so a silent rename would orphan them with
+    // nothing here to notice.
+    expect(SCRIPTED_MODEL_FLAG).toBe('HOMELEDGER_SIMULATOR_SCRIPTED_MODEL');
+  });
+});
+
+describe('the scripted-mode gate', () => {
+  it('refuses scripted mode against anything that is not a loopback, unauthenticated upstream', () => {
+    // The exact shape a leftover .env.local would produce: the flag left on
+    // from an end-to-end run, HOMELEDGER_MCP_URL unset (or pointed at the
+    // deployed runtime), so the normal Cognito path resolves the real
+    // AgentCore endpoint by name.
+    expect(() => assertScriptedModeAllowed(env({ [SCRIPTED_MODEL_FLAG]: '1' }))).toThrow(SimulatorConfigError);
+    expect(() => assertScriptedModeAllowed(env({ [SCRIPTED_MODEL_FLAG]: '1' }))).toThrow(new RegExp(SCRIPTED_MODEL_FLAG));
+    expect(() =>
+      assertScriptedModeAllowed(
+        env({ [SCRIPTED_MODEL_FLAG]: '1', HOMELEDGER_MCP_URL: 'https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/x/invocations' })
+      )
+    ).toThrow(SimulatorConfigError);
+  });
+
+  it('allows scripted mode only against a loopback upstream with no Cognito token endpoint configured', () => {
+    expect(() => assertScriptedModeAllowed(env({ [SCRIPTED_MODEL_FLAG]: '1', HOMELEDGER_MCP_URL: 'http://127.0.0.1:8010/mcp' }))).not.toThrow();
+  });
+
+  it('never refuses when scripted mode was not requested at all, whatever the upstream is', () => {
+    expect(() => assertScriptedModeAllowed(env({}))).not.toThrow();
+    expect(() =>
+      assertScriptedModeAllowed(env({ HOMELEDGER_MCP_URL: 'https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/x/invocations' }))
+    ).not.toThrow();
   });
 });
