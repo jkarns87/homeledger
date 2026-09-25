@@ -458,8 +458,26 @@ describe('checkOrigin, the Host-derived default (fix round 2)', () => {
   const cases: Array<{ label: string; host: string; origin: string; allowed: boolean }> = [
     { label: 'loopback IP Host, matching Origin', host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000', allowed: true },
     { label: 'loopback name Host, matching Origin', host: 'localhost:3000', origin: 'http://localhost:3000', allowed: true },
+    // Fix round 3: `new URL('http://[::1]:3000').hostname` is the STRING
+    // `"[::1]"`, brackets included - it does not strip them, whatever a
+    // round-2 comment claimed. `LOOPBACK_HOSTNAMES` held only the unbracketed
+    // `'::1'`, so this exact case 403'd in production against a real IPv6
+    // loopback request.
+    { label: 'IPv6 loopback Host, matching Origin', host: '[::1]:3000', origin: 'http://[::1]:3000', allowed: true },
     { label: 'DNS-rebinding Host, Origin matching the SAME lie', host: 'evil.example:3000', origin: 'http://evil.example:3000', allowed: false },
-    { label: 'loopback Host, foreign Origin', host: '127.0.0.1:3000', origin: 'https://elsewhere.invalid', allowed: false }
+    { label: 'loopback Host, foreign Origin', host: '127.0.0.1:3000', origin: 'https://elsewhere.invalid', allowed: false },
+    // A look-alike hostname: `localhost.evil.example` CONTAINS `localhost` as
+    // a label prefix but its own hostname is `localhost.evil.example`, which
+    // is not in `LOOPBACK_HOSTNAMES` (an exact-membership Set, not a prefix or
+    // substring test) - included so a future rewrite of the loopback check
+    // into something string-prefix-shaped is caught here rather than only in
+    // production.
+    {
+      label: 'look-alike Host (localhost.evil.example), matching Origin',
+      host: 'localhost.evil.example:3000',
+      origin: 'http://localhost.evil.example:3000',
+      allowed: false
+    }
   ];
 
   it.each(cases)('$label -> allowed=$allowed', ({ host, origin, allowed }) => {
@@ -473,6 +491,14 @@ describe('checkOrigin, the Host-derived default (fix round 2)', () => {
       expect(forbidden).toBeDefined();
       expect(forbidden!.status).toBe(403);
     }
+  });
+
+  it('an IPv6 loopback Host with no Origin header at all is still allowed (curl, tests)', () => {
+    const request = new Request('http://localhost:3000/api/agent/turn', {
+      method: 'POST',
+      headers: { host: '[::1]:3000', 'content-type': 'application/json' }
+    });
+    expect(checkOrigin(request, undefined)).toBeUndefined();
   });
 
   it(

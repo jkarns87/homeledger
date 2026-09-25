@@ -17,13 +17,22 @@ function json(body: unknown, status: number): Response {
 
 /**
  * Loopback hostnames this server treats as "the demo's own machine" when no
- * explicit allowlist is configured. `new URL('http://' + host).hostname`
- * always strips brackets from an IPv6 literal, so `[::1]` never appears here
- * literally — it normalises to `::1`, which is what this set holds instead.
+ * explicit allowlist is configured.
+ *
+ * Fix round 3: `new URL('http://' + host).hostname` does NOT strip brackets
+ * from an IPv6 literal — `new URL('http://[::1]:3000').hostname` is the
+ * string `"[::1]"`, brackets included. A round-2 version of this comment and
+ * this set claimed otherwise (`'::1'`, unbracketed) and every `Host:
+ * [::1]:<port>` request was refused as a result, confirmed by a second
+ * review's mutation. Both forms are kept here rather than only the correct
+ * one: `[::1]` is what `.hostname` actually returns for every path through
+ * this file (`loopbackHostnameOf` below and the `request.url` fallback
+ * alike), and the bare `::1` costs nothing to also accept in case a future
+ * caller normalises it before this set ever sees it.
  */
-const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1']);
+const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
-/** The bare hostname a `Host` header names, with its port (and, for IPv6, its brackets) stripped. `undefined` if the header cannot be parsed as one. */
+/** The hostname a `Host` header names, with its port stripped and its IPv6 brackets — if it had any — left exactly as `.hostname` returns them. `undefined` if the header cannot be parsed as one. */
 function loopbackHostnameOf(hostHeader: string): string | undefined {
   try {
     return new URL(`http://${hostHeader}`).hostname;
