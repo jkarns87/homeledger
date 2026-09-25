@@ -193,9 +193,9 @@ It starts both servers itself and answers from a fixed script rather than from t
 
 **Security defaults, if you open this to anything other than yourself.** With `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` unset — the default — every simulator route (`/api/agent/turn`, `/api/agent/answer`, `/api/widget`, `/api/widget/tool`, `/api/debug`) accepts a request only when its `Host` header names a loopback address (`localhost`, `127.0.0.1`, or bracketed IPv6 `[::1]`) and, if the request carries an `Origin` header at all, that `Origin` matches `Host`. Every `POST` route additionally requires `content-type: application/json`, which forces a cross-site browser through a preflight this application never grants. Opening the simulator from another machine, or putting it behind a proxy, means setting `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` to the origin you expect requests from — the refusal message names the variable. An earlier version of this check let a cross-site request through and a reviewer's probe confirmed it could reach `/api/widget/tool` and run `log_maintenance`; `apps/simulator/src/server/http.ts`'s `checkOrigin` carries the full history of that fix in its own comment, including why `Host` alone was not enough and why comparing against Next's `request.url` was not either.
 
-**The scripted model is gated to the local, unauthenticated upstream and marks itself on screen.** `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is refused at startup (`SimulatorConfigError`, `assertScriptedModeAllowed` in `session.ts`) unless `HOMELEDGER_MCP_URL` is also a loopback address with no Cognito token URL configured — it cannot be pointed at the deployed runtime. When it is on, the on-screen disclosure gains a second line ("Scripted replies — no model is answering; this run follows a fixed script.") so scripted output is never mistaken for the real model.
+**The scripted model is gated to the local, unauthenticated upstream and marks itself on screen.** `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is refused (`SimulatorConfigError`, `assertScriptedModeAllowed` in `session.ts`) unless `HOMELEDGER_MCP_URL` is also a loopback address with no Cognito token URL configured — it cannot be pointed at the deployed runtime. The check runs lazily, inside `build()`, the first time a request needs a conversation (`getConversation()`), not at process boot — so a misconfigured flag against the deployed runtime fails the very first request rather than starting cleanly and failing later, which is what matters for a demo even though it is not literally "at startup." When it is on, the on-screen disclosure gains a second line ("Scripted replies — no model is answering; this run follows a fixed script.") so scripted output is never mistaken for the real model.
 
-**The Playwright suite runs in that scripted mode, and its CI status.** `pnpm --filter @homeledger/simulator run test:e2e` is what Step 4's `pnpm test:e2e` above invokes. `.github/workflows/ci.yml` has an `e2e` job that runs the same suite headless on every pull request and push to `main` — it is **not** one of `main`'s required checks (§8.3 is the authoritative list) and it has **not yet run on a GitHub Actions runner**; it was validated by running the equivalent command sequence locally (fresh `core`/`mcp-bridge` builds, `playwright install chromium`, `test:e2e`), which passed 6/6.
+**The Playwright suite runs in that scripted mode, and its CI status.** `pnpm --filter @homeledger/simulator run test:e2e` is what Step 4's `pnpm test:e2e` above invokes. `.github/workflows/ci.yml` has an `e2e` job that runs the same suite headless on every pull request and push to `main`, whose browser-install step is exactly `pnpm --filter @homeledger/simulator exec playwright install --with-deps chromium` (the `--with-deps` apt-installs Chromium's OS-level libraries on the runner's fresh Ubuntu image) — it is **not** one of `main`'s required checks (§8.3 is the authoritative list) and it has **not yet run on a GitHub Actions runner**; it was validated by running the equivalent sequence locally instead (fresh `core`/`mcp-bridge` builds, `playwright install chromium` with no `--with-deps` — this machine already has the OS libraries — then `test:e2e`), which passed 6/6.
 
 **Verifying it against the deployed runtime, with the real model — not yet executed by anyone.** Everything above proves the wiring against a local, scripted server. This is the run the whole plan is building toward, and it has not happened: it needs a real `ANTHROPIC_API_KEY`, which has not been provisioned on any machine that has worked on this plan, and it makes live Cognito, AgentCore and Anthropic calls. From `apps/simulator`, once a key exists:
 
@@ -292,21 +292,26 @@ documented local behaviour, and it is why §4 puts it in the demo list.
 
 ### 6.1 The workspace
 
-Five pnpm workspace packages (`pnpm-workspace.yaml`: `packages/*`, `apps/*`, `scripts`):
+Six pnpm workspace packages (`pnpm-workspace.yaml`: `packages/*`, `apps/*`, `scripts`):
 
 | Package | Path | What it is |
 | --- | --- | --- |
 | `@homeledger/core` | `packages/core` | Domain, DynamoDB and in-memory repositories, retrieval adapters, seed data |
 | `@homeledger/mcp-server` | `apps/mcp-server` | The MCP server. The only containerised package |
 | `@homeledger/mcp-bridge` | `apps/mcp-bridge` | stdio-to-AgentCore relay for Claude Code. Never containerised |
+| `@homeledger/simulator` | `apps/simulator` | The web client (§4.6). Never containerised |
 | `@homeledger/scripts` | `scripts` | `smoke`, `seed:remote`, `seed:manual`, `manuals` |
 | (root) | `.` | `build`, `typecheck`, `test`, `format`, `smoke`, `manuals` |
 
-The workspace graph is three edges and is acyclic: `mcp-server -> core` (production),
-`mcp-bridge -> mcp-server` (dev only), `scripts -> core`. No edge crosses out of the two directories the
-container build context holds. Adding a `workspace:*` edge to `apps/mcp-server` or `packages/core` that
-points anywhere else breaks the image build — that is FL-036, and `ci.yml`'s `image` job exists to catch it
-on the pull request rather than after the merge.
+The workspace graph is six edges and is acyclic: `mcp-server -> core` (production),
+`mcp-bridge -> mcp-server` (dev only), `scripts -> core` (production), `simulator -> core` (production),
+`simulator -> mcp-bridge` (production), `simulator -> mcp-server` (dev only — read from `apps/simulator/package.json`'s
+own `dependencies`/`devDependencies` split). No edge crosses out of the two directories the container build
+context holds. Adding a `workspace:*` edge to `apps/mcp-server` or `packages/core` that points anywhere else
+breaks the image build — that is FL-036, and `ci.yml`'s `image` job exists to catch it on the pull request
+rather than after the merge. `apps/simulator`'s edges reach neither of those two files, so none of its
+dependencies are reachable from that check — it is a separate, later addition to the graph, not a change to
+the two packages the container actually copies.
 
 ### 6.2 The checks CI runs, in the order CI runs them
 
@@ -1561,10 +1566,10 @@ Added for Plan 3 (`apps/simulator`): `pnpm --filter @homeledger/simulator run te
 Playwright suite (§4.6), run against a local `mcp-server` (`MEMORY_REPO=1`) and the simulator itself in
 scripted-model mode, 6/6 passing, no AWS call and no Anthropic call · `pnpm --filter @homeledger/simulator
 run build` (`next build`) with no `ANTHROPIC_API_KEY` or AWS credential of any kind set · `pnpm -r test` and
-`pnpm -r typecheck` across all five workspace packages including `apps/simulator` · the equivalent of the new
-`e2e` job in `.github/workflows/ci.yml` (fresh `core`/`mcp-bridge` builds, `playwright install chromium`,
-`test:e2e`), run locally rather than on a GitHub Actions runner — see "Not executed" below for what that
-does not prove.
+`pnpm -r typecheck` across all five workspace packages including `apps/simulator` · the sequence the new
+`e2e` job in `.github/workflows/ci.yml` runs (`playwright install --with-deps chromium` is that job's own
+step; fresh `core`/`mcp-bridge` builds, `playwright install chromium` with no `--with-deps`, then `test:e2e`),
+run locally rather than on a GitHub Actions runner — see "Not executed" below for what that does not prove.
 
 Also re-read on 2026-09-21: `gh api repos/jkarns87/homeledger/branches/main/protection`, returning
 `["test","terraform","image"]` — which corrected §8.3's four-check figure, stale since `plan` was dropped
