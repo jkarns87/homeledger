@@ -28,7 +28,11 @@ export interface SimulatorEnv {
   model: string;
   maxRounds: number;
   elicitationTimeoutMs: number;
-  /** When set, the agent routes accept only this Origin. Undefined leaves the check off, which is correct for a localhost demo. */
+  /**
+   * When set, every route accepts only this Origin. Undefined is NOT "off": it
+   * is the strict default in `checkOrigin` (`http.ts`) — the `Host` header must
+   * name a loopback address, and an `Origin`, when one is sent, must match it.
+   */
   allowOrigin: string | undefined;
 }
 

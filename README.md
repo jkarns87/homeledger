@@ -204,13 +204,20 @@ What the bridge does **not** do is translate between protocol revisions. Claude 
 
 Elicitation is the interesting part. `book_service`'s `tools/call` answers with an event stream that stays open across all three questions, and each answer is a separate request sent while it is open. The simulator has the same shape end to end: `POST /api/agent/turn` returns an SSE stream for the whole turn, and `POST /api/agent/answer` delivers one answer on a sibling request. Buffering either response, or serialising the requests, deadlocks silently rather than failing — FL-033 is the entry that cost.
 
-The questions never appear in the transcript as text. An `elicitation-opened` event puts a card between the transcript and the composer, the composer is disabled while it is up, the buttons carry the `enumNames` labels, and the value posted back is the enum value the server will accept.
+The questions never appear in the transcript as text. An `elicitation-opened` event puts a card between the transcript and the composer, the composer is disabled while it is up, the buttons carry the `enumNames` labels, and the value posted back is the enum value the server will accept. A card answers once — the first click disables it — and the answer names the question that card showed.
+
+One conversation runs one turn at a time (a second concurrent turn is refused with `409 turn-running`), and loading the page starts a fresh conversation: the page calls `POST /api/agent/reset`, which aborts any turn still running and empties the history the model is handed. A person may take as long as the per-question timeout allows over each booking card (two minutes by default); a slow answer is never mistaken for a lost session (FL-056).
+
+The model defaults to `claude-sonnet-5`; `HOMELEDGER_SIMULATOR_MODEL` overrides it.
 
 **"Not now" is an answer, not an error.** `book_service` returns a normal result with `structuredContent: { booked: false }` when somebody declines, and the transcript shows it as a call that worked and booked nothing. It used to set `isError: true`, which is MCP's flag for *the call did not execute* — so a clean decline reached Claude Code as `Error: Okay, I haven't booked anything` and would have reached this transcript as "book_service failed — Nothing was retrieved". A real failure still renders as a failure, loudly, with the server's own sentence quoted; the two are different things and the wire now says which is which.
 
-Run it against the deployed server:
+Run it against the deployed server. The deployed server must include this branch's `book_service` decline fix, so merge and redeploy it first (RUNBOOK §4.6) — an older image still reports "Not now" as a failure:
 
 ```bash
+pnpm install
+pnpm --filter @homeledger/core build                    # the simulator and the bridge read core's dist/
+pnpm --filter @homeledger/mcp-bridge build              # the simulator reads the bridge's dist/
 aws login --profile homeledger-admin
 export AWS_PROFILE=homeledger-admin
 pnpm --filter @homeledger/mcp-bridge run print-setup    # prints the two Cognito values below
@@ -219,7 +226,7 @@ printf 'ANTHROPIC_API_KEY=%s\nHOMELEDGER_COGNITO_TOKEN_URL=%s\nHOMELEDGER_COGNIT
 pnpm --filter @homeledger/simulator run dev             # http://127.0.0.1:3000
 ```
 
-Or against a local server, with no AWS account and no Cognito at all:
+Or against a local server, with no AWS account and no Cognito at all (after the same two builds):
 
 ```bash
 HOUSEHOLD_ID=hh_harlow MEMORY_REPO=1 HOMELEDGER_DEV_TOOLS=1 PORT=8010 pnpm --filter @homeledger/mcp-server run dev
@@ -228,7 +235,7 @@ HOMELEDGER_MCP_URL=http://127.0.0.1:8010/mcp ANTHROPIC_API_KEY=sk-ant-... pnpm -
 
 A loopback `HOMELEDGER_MCP_URL` with no `HOMELEDGER_COGNITO_TOKEN_URL` is the one configuration that sends no bearer token. It cannot be pointed at the deployed runtime: the check requires a loopback host.
 
-**Where the secrets are.** `ANTHROPIC_API_KEY` is read inside a request handler in `apps/simulator/src/server/`, never at import time and never under a `NEXT_PUBLIC_` name; the Cognito client secret comes from Secrets Manager through the same code path the bridge uses; the AgentCore bearer is minted per HTTP request and never leaves the server. The browser talks only to `/api/agent/*`, `/api/widget*` and `/api/debug`, and `apps/simulator/test/no-client-secrets.test.ts` fails the build if any credential name appears outside `src/server/` or if a `'use client'` module imports from it.
+**Where the secrets are.** `ANTHROPIC_API_KEY` is read inside a request handler in `apps/simulator/src/server/`, never at import time and never under a `NEXT_PUBLIC_` name; the Cognito client secret comes from Secrets Manager through the same code path the bridge uses; the AgentCore bearer is minted per HTTP request and never leaves the server. The browser talks only to `/api/agent/*` (`turn`, `answer`, `reset`), `/api/widget*` and `/api/debug`, and `apps/simulator/test/no-client-secrets.test.ts` fails `pnpm test` (CI's `test` job, not `next build`) if any credential name appears outside `src/server/` or if a `'use client'` module imports from it.
 
 `ask_manual` fails against the deployed server and the simulator shows that as a failure: a card titled "The manuals could not be searched", the server's own sentence quoted underneath, and an explanation that model access is blocked on the account. It never renders a blocked retrieval as an empty one.
 

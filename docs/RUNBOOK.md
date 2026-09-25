@@ -94,12 +94,17 @@ git clone https://github.com/jkarns87/homeledger.git
 cd homeledger
 pnpm install
 pnpm --filter @homeledger/core build
+pnpm --filter @homeledger/mcp-bridge build    # only needed for the simulator (section 4.6)
 ```
 
 `pnpm --filter @homeledger/core build` is not optional and is the step a fresh checkout most often skips.
 `apps/mcp-server` consumes `@homeledger/core` through its published `dist/` entry point (`main`/`types` in
 `packages/core/package.json`), not through TypeScript source, so nothing downstream resolves until `core` has
 been built once. `ci.yml` carries the same step for the same reason.
+
+`apps/simulator` consumes `@homeledger/mcp-bridge` the same way — through its `dist/`, which is git-ignored — so
+the simulator fails its first request with `Cannot find package '@homeledger/mcp-bridge/config'` on any checkout
+that has not built the bridge. `print-setup` runs under `tsx` and does not build it either.
 
 ### 4.2 Start the server with in-memory data
 
@@ -168,7 +173,7 @@ the deployed stack is exercised; §5 is what is broken there.
 
 ### 4.6 Talk to it from the simulator
 
-Everything in section 4 gets you a server. This gets you a display in front of it, and it still needs no AWS account — only an Anthropic API key, because the agent runs on the Anthropic API rather than on Bedrock (section 5, and `FRICTION-LOG.md` FL-019).
+Everything in section 4 gets you a server. This gets you a display in front of it, and it still needs no AWS account — only an Anthropic API key, because the agent runs on the Anthropic API rather than on Bedrock (section 5, and `FRICTION-LOG.md` FL-019). It needs both builds from section 4.1, `core` **and** `mcp-bridge`.
 
 ```bash
 # terminal 1 - the server, in memory
@@ -179,6 +184,8 @@ HOMELEDGER_MCP_URL=http://127.0.0.1:8010/mcp ANTHROPIC_API_KEY=sk-ant-... pnpm -
 ```
 
 Open `http://127.0.0.1:3000`. Ask "what appliances do we have", then "book a plumber for the water heater". The booking asks three questions as cards; answering the third writes a visit and renders the visit widget.
+
+Reloading the page starts a fresh conversation: the page calls `POST /api/agent/reset` when it loads, which aborts any turn still running and empties the server-side history the model is handed, so a retake carries nothing from the previous take. One turn runs at a time; a second concurrent turn is refused with `409 turn-running`. Editing `apps/simulator/.env.local` still needs a dev-server restart — the conversation is built once per process.
 
 What this proves: the tool surface, the widget host, and the whole elicitation path, against a real MCP server over a real socket. What it does not: anything about AgentCore, Cognito, or the deployed runtime. For that, see the deployed instructions in the README's simulator section — and note that `ask_manual` fails there, deliberately and visibly, until Bedrock model access is restored.
 
@@ -191,15 +198,21 @@ pnpm --filter @homeledger/simulator run test:e2e
 
 It starts both servers itself and answers from a fixed script rather than from the model, which is why it is deterministic and free. `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is what selects that, it is accepted only as the exact string `1`, and the process logs which mode it is in at startup.
 
-**Security defaults, if you open this to anything other than yourself.** With `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` unset — the default — every simulator route (`/api/agent/turn`, `/api/agent/answer`, `/api/widget`, `/api/widget/tool`, `/api/debug`) accepts a request only when its `Host` header names a loopback address (`localhost`, `127.0.0.1`, or bracketed IPv6 `[::1]`) and, if the request carries an `Origin` header at all, that `Origin` matches `Host`. Every `POST` route additionally requires `content-type: application/json`, which forces a cross-site browser through a preflight this application never grants. Opening the simulator from another machine, or putting it behind a proxy, means setting `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` to the origin you expect requests from — the refusal message names the variable. An earlier version of this check let a cross-site request through and a reviewer's probe confirmed it could reach `/api/widget/tool` and run `log_maintenance`; `apps/simulator/src/server/http.ts`'s `checkOrigin` carries the full history of that fix in its own comment, including why `Host` alone was not enough and why comparing against Next's `request.url` was not either.
+**Security defaults, if you open this to anything other than yourself.** With `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` unset — the default — every simulator route (`/api/agent/turn`, `/api/agent/answer`, `/api/agent/reset`, `/api/widget`, `/api/widget/tool`, `/api/debug`) accepts a request only when its `Host` header names a loopback address (`localhost`, `127.0.0.1`, or bracketed IPv6 `[::1]`) and, if the request carries an `Origin` header at all, that `Origin` matches `Host`. Every `POST` route additionally requires `content-type: application/json`, which forces a cross-site browser through a preflight this application never grants. Opening the simulator from another machine, or putting it behind a proxy, means setting `HOMELEDGER_SIMULATOR_ALLOW_ORIGIN` to the origin you expect requests from — the refusal message names the variable. An earlier version of this check let a cross-site request through and a reviewer's probe confirmed it could reach `/api/widget/tool` and run `log_maintenance`; `apps/simulator/src/server/http.ts`'s `checkOrigin` carries the full history of that fix in its own comment, including why `Host` alone was not enough and why comparing against Next's `request.url` was not either.
 
 **The scripted model is gated to the local, unauthenticated upstream and marks itself on screen.** `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is refused (`SimulatorConfigError`, `assertScriptedModeAllowed` in `session.ts`) unless `HOMELEDGER_MCP_URL` is also a loopback address with no Cognito token URL configured — it cannot be pointed at the deployed runtime. The check runs lazily, inside `build()`, the first time a request needs a conversation (`getConversation()`), not at process boot — so a misconfigured flag against the deployed runtime fails the very first request rather than starting cleanly and failing later, which is what matters for a demo even though it is not literally "at startup." When it is on, the on-screen disclosure gains a second line ("Scripted replies — no model is answering; this run follows a fixed script.") so scripted output is never mistaken for the real model.
 
 **The Playwright suite runs in that scripted mode, and its CI status.** `pnpm --filter @homeledger/simulator run test:e2e` is what Step 4's `pnpm test:e2e` above invokes. `.github/workflows/ci.yml` has an `e2e` job that runs the same suite headless on every pull request and push to `main`, whose browser-install step is exactly `pnpm --filter @homeledger/simulator exec playwright install --with-deps chromium` (the `--with-deps` apt-installs Chromium's OS-level libraries on the runner's fresh Ubuntu image) — it is **not** one of `main`'s required checks (§8.3 is the authoritative list) and it has **not yet run on a GitHub Actions runner**; it was validated by running the equivalent sequence locally instead (fresh `core`/`mcp-bridge` builds, `playwright install chromium` with no `--with-deps` — this machine already has the OS libraries — then `test:e2e`), which passed 6/6.
 
-**Verifying it against the deployed runtime, with the real model — not yet executed by anyone.** Everything above proves the wiring against a local, scripted server. This is the run the whole plan is building toward, and it has not happened: it needs a real `ANTHROPIC_API_KEY`, which has not been provisioned on any machine that has worked on this plan, and it makes live Cognito, AgentCore and Anthropic calls. From `apps/simulator`, once a key exists:
+**Verifying it against the deployed runtime, with the real model — not yet executed by anyone.** Everything above proves the wiring against a local, scripted server. This is the run the whole plan is building toward, and it has not happened: it needs a real `ANTHROPIC_API_KEY`, which has not been provisioned on any machine that has worked on this plan, and it makes live Cognito, AgentCore and Anthropic calls.
+
+**Merge and redeploy first.** The deployed runtime predates this branch's `book_service` change (a decline is now a normal result with `structuredContent: { booked: false }`, and `outputSchema` is a union). Against the old image a "Not now" still comes back `isError: true` and renders as a red `book_service failed` card. So: merge the branch, let the image deploy (section 8), pass the smoke (section 9), and only then run this.
+
+From the repository root, once a key exists:
 
 ```bash
+pnpm --filter @homeledger/core build
+pnpm --filter @homeledger/mcp-bridge build
 aws login --profile homeledger-admin
 export AWS_PROFILE=homeledger-admin
 pnpm --filter @homeledger/mcp-bridge run print-setup    # prints the two Cognito values below
@@ -223,7 +236,9 @@ Drive it and check, in order — recording what actually happens by updating `FR
 4. **"what does F21 mean on the washer"** — **must fail, visibly**: a failed `ask_manual` card titled "The manuals could not be searched," carrying the server's own sentence, and the assistant's reply saying it could not look it up. If it answers anyway, stop — that is FL-039 recurring and needs its own entry, not a tick on this list.
 5. **"book a plumber for the water heater Tuesday"** — three cards in order, progress 3 of 3, the visit widget, a `VISIT#` row.
 6. **Idle 35 minutes, then ask anything** — expect exactly one `session-rebuilt` notice and a correct answer.
-7. **The startup log must not contain `answering from a fixed script`, and no element with `data-testid="scripted-marker"` may appear on the page.** Both are guaranteed by `assertScriptedModeAllowed` (`session.ts`) refusing to start at all if `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is ever left set against a non-loopback upstream — this is the one point where that refusal fires against the real thing rather than a unit fixture.
+7. **Decline a booking** — ask to book again and press "Not now" on the first card. Expect an ordinary `book_service` row saying nothing was booked, **not** a red failure card. A red card here means the deployed image predates the decline fix: stop and redeploy.
+8. **Take more than 60 s over the three booking cards** — wait between one and two minutes before answering one of them (two minutes is the per-question limit, after which the question is abandoned and nothing is booked). Expect the booking to complete with no `session-rebuilt` notice, each question asked exactly once, and the debug drawer's rebuild count unchanged. A replayed provider question or a "connection … had expired" notice here is FL-056 recurring.
+9. **The startup log must not contain `answering from a fixed script`, and no element with `data-testid="scripted-marker"` may appear on the page.** Both are guaranteed by `assertScriptedModeAllowed` (`session.ts`) refusing to start at all if `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is ever left set against a non-loopback upstream — this is the one point where that refusal fires against the real thing rather than a unit fixture.
 
 Nothing above is a result — it is the checklist `FRICTION-LOG.md` FL-055 is waiting on. The entry there, once this runs, is the log of record; this document does not restate or anticipate an outcome.
 
