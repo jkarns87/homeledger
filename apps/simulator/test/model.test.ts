@@ -15,9 +15,11 @@ const finished = {
 
 function fakeMessages(deltas: string[]) {
   const seen: unknown[] = [];
+  const options: unknown[] = [];
   const messages: MessagesLike = {
-    stream(params) {
+    stream(params, requestOptions) {
       seen.push(params);
+      options.push(requestOptions);
       let listener: ((delta: string) => void) | undefined;
       return {
         on(_event, handler) {
@@ -31,7 +33,7 @@ function fakeMessages(deltas: string[]) {
       };
     }
   };
-  return { messages, seen };
+  return { messages, seen, options };
 }
 
 describe('createModelPort', () => {
@@ -67,5 +69,12 @@ describe('createModelPort', () => {
     const { messages, seen } = fakeMessages([]);
     await createModelPort({ messages, model: 'claude-opus-5', maxTokens: 1024 }).respond({ system: 's', messages: [], tools: [] }, () => {});
     expect((seen[0] as { max_tokens: number }).max_tokens).toBe(1024);
+  });
+
+  it('hands the abort signal to the SDK as a request option, so aborting a turn cancels the reply in flight', async () => {
+    const { messages, options } = fakeMessages([]);
+    const controller = new AbortController();
+    await createModelPort({ messages, model: 'claude-opus-5' }).respond({ system: 's', messages: [], tools: [] }, () => {}, controller.signal);
+    expect(options).toEqual([{ signal: controller.signal }]);
   });
 });

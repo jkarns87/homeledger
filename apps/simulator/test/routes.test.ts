@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElicitRouter } from '../src/server/agent.js';
 import { ElicitationRegistry } from '../src/server/elicitation.js';
 import { createSseDecoder, type TurnEvent } from '../src/shared/events.js';
-import { checkOrigin, handleAnswer, handleTurn, UNKNOWN_TURN_MESSAGE } from '../src/server/http.js';
+import { checkOrigin, handleAnswer, handleReset, handleTurn, UNKNOWN_TURN_MESSAGE } from '../src/server/http.js';
 import { HomeLedgerMcp } from '../src/server/mcp.js';
 import type { ModelPort } from '../src/server/model.js';
 import { householdTimeZone, type Conversation } from '../src/server/session.js';
@@ -772,5 +772,171 @@ describe('the widget routes', () => {
       })
     );
     expect(response.status).toBe(415);
+  });
+});
+
+/** A promise the test settles by hand. */
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(res => (resolve = res));
+  return { promise, resolve };
+}
+
+/** A model that waits for `release` and then says `words`, ignoring any abort - the worst case a reset or a cancel has to survive. */
+function heldModel(release: Promise<void>, words = 'Done.'): ModelPort {
+  return {
+    async respond(_request, onText) {
+      await release;
+      onText(words);
+      return {
+        id: 'm',
+        type: 'message',
+        role: 'assistant',
+        model: 'fake',
+        content: [{ type: 'text', text: words }],
+        stop_reason: 'end_turn',
+        usage: {}
+      } as unknown as Anthropic.Message;
+    }
+  };
+}
+
+/** Reads until the turn has started, then hands the reader back still open. */
+async function startedTurn(response: Response): Promise<{ reader: ReadableStreamDefaultReader<Uint8Array>; turnId: string }> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const decode = createSseDecoder();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) throw new Error('the stream ended before the turn started');
+    for (const event of decode(decoder.decode(value, { stream: true }))) if (event.type === 'turn-started') return { reader, turnId: event.turnId };
+  }
+}
+
+async function until(condition: () => boolean, withinMs: number): Promise<void> {
+  const deadline = Date.now() + withinMs;
+  while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5));
+}
+
+function resetRequest(headers: Record<string, string> = {}, contentType = 'application/json'): Request {
+  return new Request('http://127.0.0.1:3000/api/agent/reset', { method: 'POST', body: '{}', headers: { 'content-type': contentType, ...headers } });
+}
+
+describe('one turn at a time (final review I3)', () => {
+  it('refuses a second turn while one is running, and admits the next once it has finished', async () => {
+    const release = deferred();
+    const convo = await conversation(heldModel(release.promise));
+    const first = await handleTurn(convo, post({ text: 'first' }));
+    expect(first.status).toBe(200);
+
+    const second = await handleTurn(convo, post({ text: 'second' }));
+    expect(second.status).toBe(409);
+    const body = (await second.json()) as { reason: string; message: string };
+    expect(body.reason).toBe('turn-running');
+    expect(body.message).toContain('Another turn is still running in this conversation');
+
+    release.resolve();
+    await drain(first, () => {});
+    const third = await handleTurn(convo, post({ text: 'third' }));
+    expect(third.status).toBe(200);
+    await drain(third, () => {});
+    // The refused turn left no trace: only the first and third are in history.
+    expect(convo.history.filter(m => m.role === 'user').map(m => m.content)).toEqual(['first', 'third']);
+  });
+
+  it('aborts the model call when the browser cancels the stream, well before the model would have answered', async () => {
+    let aborted = false;
+    const convo = await conversation({
+      respond(_request, _onText, signal) {
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            aborted = true;
+            reject(signal.reason);
+          });
+        });
+      }
+    });
+    const { reader } = await startedTurn(await handleTurn(convo, post({ text: 'hello' })));
+    await reader.cancel();
+    await until(() => aborted && convo.activeTurn === undefined, 200);
+    expect(aborted).toBe(true);
+    expect(convo.activeTurn).toBeUndefined();
+  });
+
+  it('writes no history for a turn the browser abandoned, even when the model finishes anyway', async () => {
+    const release = deferred();
+    const convo = await conversation(heldModel(release.promise, 'Too late.'));
+    const { reader } = await startedTurn(await handleTurn(convo, post({ text: 'hello' })));
+    await reader.cancel();
+    release.resolve();
+    await until(() => convo.activeTurn === undefined, 1000);
+    expect(convo.activeTurn).toBeUndefined();
+    expect(convo.history).toEqual([]);
+  });
+});
+
+describe('POST /api/agent/reset (final review I3)', () => {
+  it('empties the history the model is handed', async () => {
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'One.' } as Anthropic.ContentBlock]]));
+    await drain(await handleTurn(convo, post({ text: 'first question' })), () => {});
+    expect(convo.history).toHaveLength(2);
+    const response = await handleReset(convo, resetRequest());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, abortedTurn: false });
+    expect(convo.history).toEqual([]);
+  });
+
+  it('aborts a running turn and waits for it to unwind before answering, so the next turn is admitted at once', async () => {
+    const release = deferred();
+    const convo = await conversation(heldModel(release.promise));
+    const turn = await handleTurn(convo, post({ text: 'hello' }));
+    const { reader } = await startedTurn(turn);
+
+    let answered = false;
+    const reset = handleReset(convo, resetRequest()).then(response => {
+      answered = true;
+      return response;
+    });
+    // The held model ignores the abort, so the turn cannot have unwound yet
+    // and the reset must still be waiting for it.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(answered).toBe(false);
+
+    release.resolve();
+    const response = await reset;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, abortedTurn: true });
+    expect(convo.activeTurn).toBeUndefined();
+    expect(convo.history).toEqual([]);
+    await reader.cancel();
+  });
+
+  it('refuses a foreign origin and a non-JSON body, and clears nothing either time', async () => {
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'One.' } as Anthropic.ContentBlock]]));
+    await drain(await handleTurn(convo, post({ text: 'first question' })), () => {});
+    const foreign = await handleReset(convo, resetRequest({ origin: 'https://elsewhere.invalid' }));
+    expect(foreign.status).toBe(403);
+    const plain = await handleReset(convo, resetRequest({}, 'text/plain'));
+    expect(plain.status).toBe(415);
+    expect(convo.history).toHaveLength(2);
+  });
+});
+
+describe('POST /api/agent/answer, a question already answered', () => {
+  it('reports the second answer to one question as undelivered, and says why, without touching the first', async () => {
+    // The Task 9 branch that had no test, and the server half of the
+    // double-click the elicitation card now prevents.
+    const convo = await conversation(scriptedModel([]));
+    convo.registry.open('t-twice');
+    const { elicitationId, answer } = convo.registry.ask('t-twice', 5000);
+    const first = await handleAnswer(convo, post({ turnId: 't-twice', elicitationId, action: 'accept', content: { provider: 'prov_a' } }));
+    expect(first.status).toBe(202);
+    const second = await handleAnswer(convo, post({ turnId: 't-twice', elicitationId, action: 'accept', content: { provider: 'prov_b' } }));
+    expect(second.status).toBe(409);
+    const body = (await second.json()) as { reason: string; message: string };
+    expect(body.reason).toBe('unknown-question');
+    expect(body.message).toContain('has already been answered or has timed out');
+    await expect(answer).resolves.toEqual({ action: 'accept', content: { provider: 'prov_a' } });
+    convo.registry.close('t-twice', 'test over');
   });
 });

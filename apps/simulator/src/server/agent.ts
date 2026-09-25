@@ -48,7 +48,25 @@ export interface TurnDeps {
   today: string;
   maxRounds: number;
   elicitationTimeoutMs: number;
+  /**
+   * Aborted when the turn must stop: the browser closed its stream, or the
+   * conversation was reset. Handed to the model call and to every tool call,
+   * and checked before each round and each call, so a turn nobody is watching
+   * stops spending model rounds (final review I3).
+   */
+  signal?: AbortSignal;
 }
+
+/**
+ * The stop reasons that end a turn without an answer, and the sentence each
+ * one gets. Without these a refusal or a truncated reply with no text left
+ * nothing on screen at all — no answer and no failure (final review I4).
+ */
+const STOPPED_WITHOUT_AN_ANSWER: Partial<Record<string, string>> = {
+  refusal: 'The model declined to answer this request (stop reason: refusal), so the turn was stopped. Nothing further was done.',
+  max_tokens:
+    'The model ran out of room for its reply before it finished (stop reason: max_tokens), so the turn was stopped. Anything it was about to do was not done.'
+};
 
 function isToolUse(block: Anthropic.ContentBlock): block is Anthropic.ToolUseBlock {
   return block.type === 'tool_use';
@@ -100,24 +118,31 @@ async function runOneCall(deps: TurnDeps, turnId: string, call: Anthropic.ToolUs
   deps.emit({ type: 'tool-started', callId: call.id, tool: call.name, args });
   const started = deps.now();
   const rebuildsBefore = deps.mcp.rebuilds;
-  deps.router.handler = prompt => askThePerson(deps, turnId, call.id, prompt);
+  const handler = (prompt: ElicitPrompt) => askThePerson(deps, turnId, call.id, prompt);
+  deps.router.handler = handler;
 
   let outcome: ReturnType<typeof readToolResult>;
   try {
-    const raw = await deps.mcp.callTool(call.name, args, progress =>
-      deps.emit({
-        type: 'progress',
-        callId: call.id,
-        progress: progress.progress,
-        total: progress.total ?? PROGRESS_TOTAL,
-        message: progress.message ?? ''
-      })
+    const raw = await deps.mcp.callTool(
+      call.name,
+      args,
+      progress =>
+        deps.emit({
+          type: 'progress',
+          callId: call.id,
+          progress: progress.progress,
+          total: progress.total ?? PROGRESS_TOTAL,
+          message: progress.message ?? ''
+        }),
+      { signal: deps.signal }
     );
     outcome = readToolResult(raw);
   } catch (error) {
     outcome = { ok: false, message: reasonOf(error) };
   } finally {
-    deps.router.handler = undefined;
+    // Only its own. A turn that outlived its welcome must not clear the slot
+    // a later turn has since filled.
+    if (deps.router.handler === handler) deps.router.handler = undefined;
   }
 
   // Checked outside the try so a rebuild that happened on the way to a failure
@@ -189,15 +214,30 @@ export async function runTurn(deps: TurnDeps, turnId: string, history: Anthropic
     deps.emit({ type: 'turn-started', turnId });
     announced = true;
     for (let round = 0; round < deps.maxRounds; round++) {
-      const reply = await deps.model.respond({ system, messages, tools }, text => deps.emit({ type: 'assistant-text', text }));
+      deps.signal?.throwIfAborted();
+      const reply = await deps.model.respond({ system, messages, tools }, text => deps.emit({ type: 'assistant-text', text }), deps.signal);
+      const calls = reply.content.filter(isToolUse);
+      const stopped = STOPPED_WITHOUT_AN_ANSWER[reply.stop_reason ?? ''];
+      if (stopped) {
+        // Kept only when it is a complete message the API will accept back: a
+        // truncated tool call has no result to pair with, and an empty
+        // assistant message is rejected on every later turn.
+        if (reply.content.length > 0 && calls.length === 0) messages.push({ role: 'assistant', content: reply.content });
+        deps.emit({ type: 'turn-failed', message: stopped });
+        return messages;
+      }
       // The whole content array, unedited — thinking blocks included. They are
       // bound to the model that produced them and have to be echoed back
-      // unchanged for the next round to continue the same reasoning.
-      messages.push({ role: 'assistant', content: reply.content });
-      const calls = reply.content.filter(isToolUse);
+      // unchanged for the next round to continue the same reasoning. Never an
+      // EMPTY one: the Messages API refuses an empty non-final assistant
+      // message, so storing one would fail every turn after this.
+      if (reply.content.length > 0) messages.push({ role: 'assistant', content: reply.content });
       if (calls.length === 0) return messages;
       const results: Anthropic.ToolResultBlockParam[] = [];
-      for (const call of calls) results.push(await runOneCall(deps, turnId, call));
+      for (const call of calls) {
+        deps.signal?.throwIfAborted();
+        results.push(await runOneCall(deps, turnId, call));
+      }
       messages.push({ role: 'user', content: results });
     }
     deps.emit({ type: 'turn-failed', message: `The assistant used its ${deps.maxRounds} tool rounds without finishing, so the turn was stopped.` });

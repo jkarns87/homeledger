@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { ElicitationAnswer } from './elicitation.js';
+import { DEFAULT_ELICITATION_TIMEOUT_MS } from './env.js';
 import type { McpToolDescriptor } from './tools.js';
 
 export interface ElicitPrompt {
@@ -32,8 +33,42 @@ export interface HomeLedgerMcpOptions {
   invalidateToken?: () => void;
   /** Re-resolves the runtime by name. Called before every rebuild; absent in tests that pin a URL. */
   resolveUrl?: () => Promise<string>;
+  /**
+   * How long one `tools/call` may go without hearing from the server before it
+   * is given up as timed out. Reset by every progress notification. Defaults to
+   * `toolCallBudgetMs(DEFAULT_ELICITATION_TIMEOUT_MS)`; `session.ts` passes the
+   * budget for the elicitation timeout actually configured. See
+   * `toolCallBudgetMs` for why the SDK's own default cannot be left in place.
+   */
+  callTimeoutMs?: number;
   log?: (message: string) => void;
   fetchImpl?: typeof fetch;
+}
+
+/** The most questions one call asks: `book_service` asks provider, window and confirm, and nothing else asks any. */
+export const MAX_QUESTIONS_PER_CALL = 3;
+/** Room for the server's own work around the questions — the availability check, the write, the network. */
+export const TOOL_CALL_GRACE_MS = 60_000;
+
+/**
+ * The budget one `tools/call` gets: every question it can ask, each waited out
+ * in full, plus a minute.
+ *
+ * Explicit because the SDK's default is not a budget anybody chose.
+ * `Protocol.request` applies `DEFAULT_REQUEST_TIMEOUT_MSEC = 60000` to any
+ * request that names none, does not reset it on progress unless asked, and
+ * rejects with `McpError` code -32001 — the same number the container uses
+ * for "Session not found" (`apps/mcp-server/src/legacy.ts`). A person who took
+ * more than a minute over the three booking cards therefore produced a
+ * "request timed out" that this client used to read as a lost session: it
+ * rebuilt the session and replayed `book_service` from its first question,
+ * and told the transcript the connection had expired (FL-056). With this
+ * budget the registry's per-question timeout is the bound that actually
+ * decides how long a person may think, which is what
+ * `DEFAULT_ELICITATION_TIMEOUT_MS` always claimed to be.
+ */
+export function toolCallBudgetMs(elicitationTimeoutMs: number): number {
+  return MAX_QUESTIONS_PER_CALL * elicitationTimeoutMs + TOOL_CALL_GRACE_MS;
 }
 
 /** One line of the wire, for the debug drawer. Methods and timings only — never a payload; see `record`. */
@@ -91,13 +126,34 @@ const CLIENT_INFO = { name: 'homeledger-simulator', version: '0.1.0' } as const;
  * beside it is what that produces — and the sentence arm is kept because a
  * layer that stringifies before rethrowing leaves only the sentence. Each arm
  * has its own assertion in `mcp.test.ts` so none of the three is decorative.
+ *
+ * The `-32001` arm needs the SENTENCE as well as the number (FL-056). -32001 is
+ * also `ErrorCode.RequestTimeout`, the code the SDK's own client-side timeout
+ * rejects with, and a bare-code match read every slow booking as a lost
+ * session. A timeout is not a lost session: the call may have run, so it is
+ * never replayed — see `isRequestTimeoutError`.
  */
 export function isLostSessionError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
   const code = (error as { code?: unknown }).code;
-  if (code === -32001 || code === 404) return true;
   const message = (error as { message?: unknown }).message;
-  return typeof message === 'string' && /\b404\b/.test(message) && /session not found/i.test(message);
+  const saysSessionNotFound = typeof message === 'string' && /session not found/i.test(message);
+  if (code === 404) return true;
+  if (code === -32001) return saysSessionNotFound;
+  return saysSessionNotFound && /\b404\b/.test(message as string);
+}
+
+/**
+ * Whether a failure is the client giving up on a request that took too long.
+ *
+ * The SDK's timeout, and its cancellation of a request for any other reason,
+ * both reject with `McpError` code -32001 (`ErrorCode.RequestTimeout`). Checked
+ * after `isLostSessionError`, which claims the one -32001 that says "Session
+ * not found"; every other -32001 is this.
+ */
+export function isRequestTimeoutError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  return (error as { code?: unknown }).code === -32001 && !isLostSessionError(error);
 }
 
 /**
@@ -155,11 +211,13 @@ export class HomeLedgerMcp {
   private rebuildCount = 0;
   private url: string;
   private readonly wire: JsonRpcLogEntry[] = [];
+  private readonly callTimeoutMs: number;
 
   constructor(options: HomeLedgerMcpOptions) {
     this.options = options;
     this.log = options.log ?? (() => {});
     this.url = options.url;
+    this.callTimeoutMs = options.callTimeoutMs ?? toolCallBudgetMs(DEFAULT_ELICITATION_TIMEOUT_MS);
   }
 
   /** The address currently in use. Not `options.url`: a heal moves it, and the drawer must show where the traffic actually goes. */
@@ -237,9 +295,15 @@ export class HomeLedgerMcp {
    * would turn "I cannot find the runtime" into a hang. So this rejects, and
    * only `attempt` below, which by construction runs after a handshake
    * succeeded, treats a 404 as repairable.
+   *
+   * The client in use is replaced only once its replacement has connected, and
+   * closed after that. The first version closed the old one first, so a
+   * reconnect that failed — an AgentCore cold-start 5xx, an expired SSO session
+   * in `resolveUrl` — left no client at all, and every later call failed "not
+   * connected" until the process restarted. Kept instead, the old client's next
+   * call meets the same lost session, and `attempt` repairs it again then.
    */
   async connect(): Promise<void> {
-    await this.close();
     const client = new Client(CLIENT_INFO, { capabilities: { elicitation: {} } });
     client.setRequestHandler(ElicitRequestSchema, async request => {
       // A server-initiated request, so it never passes through the fetch tap
@@ -283,9 +347,16 @@ export class HomeLedgerMcp {
         }
       }
     });
-    await client.connect(transport);
+    try {
+      await client.connect(transport);
+    } catch (error) {
+      await client.close().catch(() => {});
+      throw error;
+    }
+    const previous = this.client;
     this.client = client;
     this.transport = transport;
+    await previous?.close().catch(() => {});
   }
 
   /**
@@ -307,13 +378,26 @@ export class HomeLedgerMcp {
     this.url = next;
   }
 
-  private require(): Client {
-    if (!this.client) throw new Error('the MCP client is not connected; call connect() first');
+  /**
+   * The connected client, connecting first when there is none.
+   *
+   * "Not connected" is a state to repair, not an answer to give: it is where a
+   * failed first `connect()` or an explicit `close()` leaves this object, and
+   * a conversation that is cached process-wide must not stay dead because one
+   * handshake once failed. Not counted as a rebuild — no session was lost and
+   * no call is being replayed; this is the call's first attempt.
+   */
+  private async require(): Promise<Client> {
+    if (this.client) return this.client;
+    this.log('the MCP client had no connection; connecting before the call');
+    await this.healAddress();
+    await this.connect();
+    if (!this.client) throw new Error('the MCP client could not be connected');
     return this.client;
   }
 
   async listTools(): Promise<McpToolDescriptor[]> {
-    const result = await this.require().listTools();
+    const result = await (await this.require()).listTools();
     return toDescriptors(result.tools as ReadonlyArray<{ name: string; description?: string | undefined; inputSchema: unknown; _meta?: unknown }>);
   }
 
@@ -328,35 +412,34 @@ export class HomeLedgerMcp {
    * most one repair and at most two attempts — a runtime that is genuinely
    * gone, or a credential that is genuinely wrong, is never papered over by a
    * retry that keeps trying.
+   *
+   * A TIMEOUT is not one of those failures and is never replayed: the request
+   * reached the server, which may have run it. It is reported as a timeout,
+   * naming the budget, and nothing else (FL-056). Neither is an abort through
+   * `signal`, which is the caller ending the turn and is passed straight back.
    */
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    onProgress?: (p: { progress: number; total?: number; message?: string }) => void
+    onProgress?: (p: { progress: number; total?: number; message?: string }) => void,
+    options: { signal?: AbortSignal } = {}
   ): Promise<unknown> {
-    return this.attempt(name, args, onProgress, true);
+    return this.attempt(name, args, onProgress, options.signal, true);
   }
 
   private async attempt(
     name: string,
     args: Record<string, unknown>,
     onProgress: ((p: { progress: number; total?: number; message?: string }) => void) | undefined,
+    signal: AbortSignal | undefined,
     mayRetry: boolean
   ): Promise<unknown> {
     try {
-      return await this.require().callTool(
-        { name, arguments: args },
-        undefined,
-        onProgress
-          ? {
-              onprogress: progress => {
-                this.record({ at: Date.now(), direction: 'in', method: 'notifications/progress', id: null, ms: null, status: null });
-                onProgress(progress);
-              }
-            }
-          : undefined
-      );
+      signal?.throwIfAborted();
+      const client = await this.require();
+      return await client.callTool({ name, arguments: args }, undefined, this.requestOptions(signal, onProgress));
     } catch (error) {
+      this.rethrowUnrepairable(name, error, signal);
       if (!mayRetry) throw error;
       // Order matters. A refused bearer is fixed by a fresh bearer and NOT by
       // a new session, so it is tested first and repaired without touching the
@@ -365,20 +448,55 @@ export class HomeLedgerMcp {
       if (isUnauthorizedError(error)) {
         this.options.invalidateToken?.();
         this.log('the endpoint refused the bearer; dropped the cached token and replaying the call once');
-        return this.attempt(name, args, onProgress, false);
+        return this.attempt(name, args, onProgress, signal, false);
       }
       if (!isLostSessionError(error)) throw error;
       this.rebuildCount += 1;
       this.log('the runtime instance holding the MCP session was gone; re-resolved the runtime, re-established a session and replaying the call once');
       await this.healAddress();
       await this.connect();
-      return this.attempt(name, args, onProgress, false);
+      return this.attempt(name, args, onProgress, signal, false);
     }
+  }
+
+  /**
+   * The budget, reset by every progress notification, plus the caller's abort
+   * signal and progress tap. See `toolCallBudgetMs`: without the first two,
+   * the SDK's 60 s default decides how long a person may take over three
+   * cards, and it decides wrongly.
+   */
+  private requestOptions(signal: AbortSignal | undefined, onProgress: ((p: { progress: number; total?: number; message?: string }) => void) | undefined) {
+    return {
+      timeout: this.callTimeoutMs,
+      resetTimeoutOnProgress: true,
+      ...(signal ? { signal } : {}),
+      ...(onProgress
+        ? {
+            onprogress: (progress: { progress: number; total?: number; message?: string }) => {
+              this.record({ at: Date.now(), direction: 'in', method: 'notifications/progress', id: null, ms: null, status: null });
+              onProgress(progress);
+            }
+          }
+        : {})
+    };
+  }
+
+  /** Throws, in its own words, any failure no repair applies to: the caller's abort, and a timeout. Returns for everything else. */
+  private rethrowUnrepairable(name: string, error: unknown, signal: AbortSignal | undefined): void {
+    // The caller ended this. The SDK wraps an abort in a -32001 of its own,
+    // which must be read neither as a timeout nor as a lost session.
+    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
+    if (isRequestTimeoutError(error))
+      throw new Error(
+        `${name} timed out: the server sent nothing for ${Math.round(this.callTimeoutMs / 1000)} s, so the call was abandoned. ` +
+          'It was not retried, because a call that timed out may still have run on the server.',
+        { cause: error }
+      );
   }
 
   /** Reads a `ui://` widget, or any other resource, as text. Rejects rather than returning '' when there is no text part. */
   async readResource(uri: string): Promise<string> {
-    const result = await this.require().readResource({ uri });
+    const result = await (await this.require()).readResource({ uri });
     for (const entry of result.contents) {
       const text = (entry as { text?: unknown }).text;
       if (typeof text === 'string') return text;

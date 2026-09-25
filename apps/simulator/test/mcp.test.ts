@@ -4,7 +4,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '@homeledger/mcp-server/app';
 import { seededDeps } from '@homeledger/mcp-server/test-harness';
-import { HomeLedgerMcp, isLostSessionError, isUnauthorizedError, toDescriptors } from '../src/server/mcp.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { HomeLedgerMcp, isLostSessionError, isRequestTimeoutError, isUnauthorizedError, toDescriptors, toolCallBudgetMs } from '../src/server/mcp.js';
 
 let server: Server | undefined;
 let closeApp: () => Promise<void> = async () => {};
@@ -13,6 +14,13 @@ let closeClient: () => Promise<void> = async () => {};
 afterEach(async () => {
   await closeClient();
   await closeApp();
+  // Every request the test made has ended by now - measured, server side,
+  // when FL-056's fix moved the old client's close() to after its
+  // replacement connects - but `server.close()` still waits out the socket
+  // that carried the old client's aborted SSE GET until undici's 4 s
+  // keep-alive gives it up. Nothing is in flight on it, so it is dropped here
+  // rather than waited for.
+  server?.closeAllConnections();
   await new Promise<void>(resolve => (server ? server.close(() => resolve()) : resolve()));
   server = undefined;
   closeApp = async () => {};
@@ -47,13 +55,40 @@ describe('isLostSessionError', () => {
     // -32001 arriving without a 404 beside it is the shape that produces. Each
     // assertion here is the ONLY input its arm answers for, so deleting any one
     // arm fails exactly one line and no other.
-    expect(isLostSessionError({ code: -32001, message: '' })).toBe(true); // only the -32001 arm
+    expect(isLostSessionError({ code: -32001, message: 'MCP error -32001: Session not found' })).toBe(true); // only the -32001 arm
     expect(isLostSessionError({ code: 404, message: '' })).toBe(true); // only the status arm
     expect(isLostSessionError(new Error('Session not found (404)'))).toBe(true); // only the sentence arm
     // The sentence arm needs BOTH halves, so neither half alone widens it into
     // a 404 that is about the address rather than the session.
     expect(isLostSessionError(new Error('HTTP 404: no such runtime'))).toBe(false);
     expect(isLostSessionError(new Error('Session not found, but no status here'))).toBe(false);
+  });
+
+  it('does not read the client-side request timeout as a lost session, though it carries the same -32001 (FL-056)', () => {
+    // The exact value the SDK rejects with when `Protocol.request`'s timer
+    // fires (`shared/protocol.js`, `McpError.fromError(ErrorCode.RequestTimeout,
+    // 'Request timed out', ...)`). A bare-code match read it as a lost session
+    // and replayed `book_service` from its first question.
+    const timeout = new McpError(ErrorCode.RequestTimeout, 'Request timed out', { timeout: 60000 });
+    expect(timeout.code).toBe(-32001);
+    expect(isLostSessionError(timeout)).toBe(false);
+    expect(isLostSessionError({ code: -32001, message: '' })).toBe(false);
+    expect(isRequestTimeoutError(timeout)).toBe(true);
+    // And the container's own -32001 is still a lost session, never a timeout.
+    const relayed = new McpError(-32001, 'Session not found');
+    expect(isLostSessionError(relayed)).toBe(true);
+    expect(isRequestTimeoutError(relayed)).toBe(false);
+    expect(isRequestTimeoutError(new Error('HTTP 404: Session not found'))).toBe(false);
+  });
+});
+
+describe('toolCallBudgetMs', () => {
+  it('gives a call every question it can ask, each waited out in full, plus a minute', () => {
+    // Written as literals rather than as the formula: 120 s is the default
+    // per-question wait, and seven minutes is what three of them plus a minute
+    // come to. The SDK default this replaces is 60 s, less than ONE question.
+    expect(toolCallBudgetMs(120_000)).toBe(420_000);
+    expect(toolCallBudgetMs(1_000)).toBe(63_000);
   });
 });
 
@@ -441,6 +476,171 @@ describe('HomeLedgerMcp against a real socket', () => {
     expect(mcp.rebuilds).toBe(0);
     expect(resolveUrl).not.toHaveBeenCalled();
     expect(mcp.sessionId).toBeUndefined();
+  });
+
+  it('lets a person take longer than the budget over the whole booking, as long as the server keeps talking (FL-056)', async () => {
+    // The final review's probe, made permanent. With no timeout of its own the
+    // call inherited the SDK's 60 s default, which does not reset on progress
+    // and rejects with -32001, and `isLostSessionError` read that as a lost
+    // session: `rebuilds=1 asked=["provider","provider","window","confirm"]`,
+    // a silent replay of the booking from its first question.
+    //
+    // Scaled down: a 1000 ms budget and two 700 ms answers. The booking takes
+    // longer than the budget in total, and no single silence is longer than it
+    // - `book_service` reports progress between the provider and the window
+    // question - so this passes only if the budget is reset by progress.
+    const url = await listen();
+    const asked: string[] = [];
+    const slow = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const mcp = new HomeLedgerMcp({
+      url,
+      token: async () => 'unused-locally',
+      callTimeoutMs: 1000,
+      onElicit: async prompt => {
+        const properties = (prompt.requestedSchema as { properties: Record<string, unknown> }).properties;
+        const field = Object.keys(properties)[0] ?? '';
+        asked.push(field);
+        if (field === 'provider') return slow(700).then(() => ({ action: 'accept' as const, content: { provider: 'prov_kettle_water' } }));
+        if (field === 'window') return slow(700).then(() => ({ action: 'accept' as const, content: { window: 'win_1' } }));
+        return { action: 'accept', content: { confirm: true } };
+      }
+    });
+    closeClient = () => mcp.close();
+    await mcp.connect();
+    const list = (await mcp.callTool('list_appliances', { category: 'water_heater' })) as { structuredContent: { appliances: Array<{ id: string }> } };
+    const started = Date.now();
+    const result = (await mcp.callTool(
+      'book_service',
+      { applianceId: list.structuredContent.appliances[0]!.id, issue: 'water heater leaking at the base' },
+      () => {}
+    )) as { structuredContent: { status: string } };
+
+    expect(Date.now() - started).toBeGreaterThan(1000);
+    expect(mcp.rebuilds).toBe(0);
+    expect(asked).toEqual(['provider', 'window', 'confirm']);
+    expect(result.structuredContent.status).toBe('scheduled');
+  });
+
+  it('reports a call that genuinely outlived its budget as a timeout, once, and never as a lost session (FL-056)', async () => {
+    const url = await listen();
+    const asked: string[] = [];
+    let lateAnswer: Promise<unknown> = Promise.resolve();
+    const mcp = new HomeLedgerMcp({
+      url,
+      token: async () => 'unused-locally',
+      callTimeoutMs: 300,
+      onElicit: async prompt => {
+        const properties = (prompt.requestedSchema as { properties: Record<string, unknown> }).properties;
+        asked.push(Object.keys(properties)[0] ?? '');
+        const answer = new Promise<{ action: 'accept'; content: Record<string, unknown> }>(resolve =>
+          setTimeout(() => resolve({ action: 'accept', content: { provider: 'prov_kettle_water' } }), 900)
+        );
+        lateAnswer = answer;
+        return answer;
+      }
+    });
+    closeClient = () => mcp.close();
+    await mcp.connect();
+    const list = (await mcp.callTool('list_appliances', { category: 'water_heater' })) as { structuredContent: { appliances: Array<{ id: string }> } };
+    const booking = mcp.callTool('book_service', { applianceId: list.structuredContent.appliances[0]!.id, issue: 'water heater leaking at the base' });
+
+    await expect(booking).rejects.toThrow(/^book_service timed out: the server sent nothing for 0 s, so the call was abandoned\. It was not retried/);
+    await lateAnswer;
+    // Asked once. A replay would have asked the provider question again.
+    expect(asked).toEqual(['provider']);
+    expect(mcp.rebuilds).toBe(0);
+  });
+
+  it("passes an abort straight back as the caller's own reason: not as a timeout, and not as a lost session to rebuild", async () => {
+    // The SDK wraps an aborted request in an McpError with code -32001, the
+    // same code as its timeout. Unrecognised, a turn the browser walked away
+    // from would be reported as "book_service timed out", and before FL-056
+    // as a lost session to replay.
+    const url = await listen();
+    const controller = new AbortController();
+    const mcp = new HomeLedgerMcp({
+      url,
+      token: async () => 'unused-locally',
+      onElicit: async () => {
+        controller.abort(new Error('the browser closed the turn before it finished'));
+        return { action: 'cancel' };
+      }
+    });
+    closeClient = () => mcp.close();
+    await mcp.connect();
+    const list = (await mcp.callTool('list_appliances', { category: 'water_heater' })) as { structuredContent: { appliances: Array<{ id: string }> } };
+    const booking = mcp.callTool(
+      'book_service',
+      { applianceId: list.structuredContent.appliances[0]!.id, issue: 'water heater leaking at the base' },
+      undefined,
+      {
+        signal: controller.signal
+      }
+    );
+    await expect(booking).rejects.toThrow(/^the browser closed the turn before it finished$/);
+    expect(mcp.rebuilds).toBe(0);
+  });
+
+  it('survives a rebuild whose reconnect failed: the next call repairs the session again rather than failing "not connected"', async () => {
+    // The final review's I1. The session is made genuinely dead - every later
+    // request carrying its id is answered 404 - and the first reconnect is
+    // refused the way an AgentCore cold start refuses one.
+    const url = await listen();
+    let dead: string | undefined;
+    let refuseNextInitialize = false;
+    const mcp = new HomeLedgerMcp({
+      url,
+      token: async () => 'unused-locally',
+      onElicit: async () => ({ action: 'cancel' }),
+      fetchImpl: async (input, init) => {
+        const headers = new Headers(init?.headers);
+        if (dead !== undefined && headers.get('mcp-session-id') === dead) headers.set('mcp-session-id', '00000000-0000-4000-8000-000000000000');
+        if (refuseNextInitialize && init?.method === 'POST' && String(init.body).includes('"initialize"')) {
+          refuseNextInitialize = false;
+          return new Response('upstream cold start', { status: 503 });
+        }
+        return fetch(input, { ...init, headers });
+      }
+    });
+    closeClient = () => mcp.close();
+    await mcp.connect();
+    dead = mcp.sessionId;
+    refuseNextInitialize = true;
+
+    await expect(mcp.callTool('list_appliances', {})).rejects.toThrow(/upstream cold start/);
+    expect(mcp.rebuilds).toBe(1);
+
+    const result = (await mcp.callTool('list_appliances', {})) as { structuredContent: { appliances: unknown[] } };
+    expect(result.structuredContent.appliances.length).toBeGreaterThan(0);
+    // A second rebuild, not a quiet reconnect: the client kept after the failed
+    // reconnect met the same lost session and repaired it the ordinary way.
+    expect(mcp.rebuilds).toBe(2);
+    expect(mcp.sessionId).not.toBe(dead);
+  });
+
+  it('connects on the next call after a handshake that failed, rather than staying disconnected', async () => {
+    const url = await listen();
+    let refuseNextInitialize = true;
+    const mcp = new HomeLedgerMcp({
+      url,
+      token: async () => 'unused-locally',
+      onElicit: async () => ({ action: 'cancel' }),
+      fetchImpl: async (input, init) => {
+        if (refuseNextInitialize && init?.method === 'POST' && String(init.body).includes('"initialize"')) {
+          refuseNextInitialize = false;
+          return new Response('upstream cold start', { status: 503 });
+        }
+        return fetch(input, init);
+      }
+    });
+    closeClient = () => mcp.close();
+    await expect(mcp.connect()).rejects.toThrow(/upstream cold start/);
+    expect(mcp.sessionId).toBeUndefined();
+
+    const result = (await mcp.callTool('list_appliances', {})) as { structuredContent: { appliances: unknown[] } };
+    expect(result.structuredContent.appliances.length).toBeGreaterThan(0);
+    expect(mcp.sessionId).toBeDefined();
+    expect(mcp.rebuilds).toBe(0);
   });
 
   it('surfaces a tool the server does not have as a rejection, not as an empty result', async () => {

@@ -18,6 +18,13 @@ let closeClient: () => Promise<void> = async () => {};
 afterEach(async () => {
   await closeClient();
   await closeApp();
+  // Every request the test made has ended by now - measured, server side,
+  // when FL-056's fix moved the old client's close() to after its
+  // replacement connects - but `server.close()` still waits out the socket
+  // that carried the old client's aborted SSE GET until undici's 4 s
+  // keep-alive gives it up. Nothing is in flight on it, so it is dropped here
+  // rather than waited for.
+  server?.closeAllConnections();
   await new Promise<void>(resolve => (server ? server.close(() => resolve()) : resolve()));
   server = undefined;
   closeApp = async () => {};
@@ -878,3 +885,214 @@ describe('runTurn closes its turn on every exit path', () => {
     await expect(router.dispatch({ message: 'pick', requestedSchema: CHOICE_SCHEMA })).rejects.toThrow(/no turn is running/);
   });
 });
+
+/** A reply with a stop reason of the test's choosing, which `scriptedModel` above derives from the content instead. */
+function reply(content: Anthropic.ContentBlock[], stopReason: string): Anthropic.Message {
+  return {
+    id: 'm',
+    type: 'message',
+    role: 'assistant',
+    model: 'fake',
+    content,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage: {}
+  } as unknown as Anthropic.Message;
+}
+
+describe('runTurn stops when it is told to (final review I3)', () => {
+  it('runs no further model round once the turn is aborted mid-call', async () => {
+    // The browser went away while a tool call was in flight. The call's own
+    // failure is reported, and then the loop stops: without the check it would
+    // hand that failure to the model for another paid round nobody will see.
+    const controller = new AbortController();
+    let rounds = 0;
+    const { turnDeps } = loopDeps({
+      signal: controller.signal,
+      model: {
+        async respond() {
+          rounds++;
+          return reply([toolUse(`c${rounds}`, 'list_appliances', {})], 'tool_use');
+        }
+      },
+      mcp: {
+        rebuilds: 0,
+        callTool: async () => {
+          controller.abort(new Error('the browser closed the turn before it finished'));
+          return { content: [{ type: 'text', text: 'Six appliances.' }], structuredContent: { appliances: [] } };
+        }
+      }
+    });
+    await expect(runTurn(turnDeps, 't1', [], 'hello')).rejects.toThrow(/^the browser closed the turn before it finished$/);
+    expect(rounds).toBe(1);
+    expect(turnDeps.registry.size).toBe(0);
+  });
+
+  it('runs no second tool call from the same reply once the turn is aborted during the first', async () => {
+    const controller = new AbortController();
+    const called: string[] = [];
+    const { turnDeps } = loopDeps({
+      signal: controller.signal,
+      model: {
+        async respond() {
+          return reply([toolUse('c1', 'list_appliances', {}), toolUse('c2', 'list_appliances', { category: 'furnace' })], 'tool_use');
+        }
+      },
+      mcp: {
+        rebuilds: 0,
+        callTool: async name => {
+          called.push(name);
+          controller.abort(new Error('the conversation was reset'));
+          return { content: [{ type: 'text', text: 'Six appliances.' }], structuredContent: { appliances: [] } };
+        }
+      }
+    });
+    await expect(runTurn(turnDeps, 't1', [], 'hello')).rejects.toThrow(/^the conversation was reset$/);
+    expect(called).toEqual(['list_appliances']);
+  });
+
+  it("does not clear a later turn's question handler when an earlier turn's call finishes after it started", async () => {
+    // The mechanism behind the final review's I3(b): a reloaded page's old
+    // turn ended while the new turn's booking was in flight, its `finally`
+    // emptied the shared router slot, and the new turn's next question was
+    // refused with "no turn is running". One turn at a time now keeps the two
+    // from overlapping at the route; this keeps a turn from clearing a
+    // handler it does not own if they ever do.
+    const router = createElicitRouter();
+    const registry = new ElicitationRegistry();
+    const releaseA = deferred();
+    const bStarted = deferred();
+    const releaseB = deferred();
+    const events: TurnEvent[] = [];
+    const toolTurn = (callTool: TurnDeps['mcp']['callTool']): TurnDeps => ({
+      ...loopDeps().turnDeps,
+      router,
+      registry,
+      emit: event => {
+        events.push(event);
+        if (event.type === 'elicitation-opened') registry.answer('tB', event.elicitationId, { action: 'accept', content: { provider: 'p1' } });
+      },
+      model: scriptedModel([() => [toolUse('c1', 'book_service', {})], () => [text('Done.')]]),
+      tools: [{ name: 'book_service', description: 'Book.', inputSchema: { type: 'object' } }],
+      mcp: { rebuilds: 0, callTool }
+    });
+    const a = runTurn(
+      toolTurn(async () => {
+        await releaseA.promise;
+        return { content: [{ type: 'text', text: 'A done.' }], structuredContent: {} };
+      }),
+      'tA',
+      [],
+      'first'
+    );
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const b = runTurn(
+      toolTurn(async () => {
+        bStarted.resolve();
+        await releaseB.promise;
+        const answer = await router.dispatch({ message: 'pick one', requestedSchema: CHOICE_SCHEMA });
+        return { content: [{ type: 'text', text: `B answered ${answer.action}` }], structuredContent: {} };
+      }),
+      'tB',
+      [],
+      'second'
+    );
+    await bStarted.promise;
+    releaseA.resolve();
+    await a;
+    releaseB.resolve();
+    await b;
+    const bResult = events.find(e => e.type === 'tool-succeeded' && e.spoken === 'B answered accept');
+    expect(bResult).toBeDefined();
+    expect(events.some(e => e.type === 'tool-failed')).toBe(false);
+  });
+
+  it('hands the abort signal to the model call and to the tool call', async () => {
+    const controller = new AbortController();
+    const modelSignals: Array<AbortSignal | undefined> = [];
+    const toolSignals: Array<AbortSignal | undefined> = [];
+    let rounds = 0;
+    const { turnDeps } = loopDeps({
+      signal: controller.signal,
+      model: {
+        async respond(_request, _onText, signal) {
+          modelSignals.push(signal);
+          return rounds++ === 0 ? reply([toolUse('c1', 'list_appliances', {})], 'tool_use') : reply([text('Six.')], 'end_turn');
+        }
+      },
+      mcp: {
+        rebuilds: 0,
+        callTool: async (_name, _args, _onProgress, options) => {
+          toolSignals.push(options?.signal);
+          return { content: [{ type: 'text', text: 'Six appliances.' }], structuredContent: { appliances: [] } };
+        }
+      }
+    });
+    await runTurn(turnDeps, 't1', [], 'hello');
+    expect(modelSignals).toEqual([controller.signal, controller.signal]);
+    expect(toolSignals).toEqual([controller.signal]);
+  });
+});
+
+describe('runTurn names a reply that ended without an answer (final review I4)', () => {
+  it('reports a refusal as a failed turn, and stores no empty assistant message', async () => {
+    const { turnDeps, events } = loopDeps({
+      model: {
+        async respond() {
+          return reply([], 'refusal');
+        }
+      }
+    });
+    const messages = await runTurn(turnDeps, 't1', [], 'hello');
+    expect(events.map(e => e.type)).toEqual(['turn-started', 'turn-failed', 'turn-finished']);
+    const failed = events.find(e => e.type === 'turn-failed');
+    expect(failed && failed.type === 'turn-failed' && failed.message).toBe(
+      'The model declined to answer this request (stop reason: refusal), so the turn was stopped. Nothing further was done.'
+    );
+    expect(messages).toEqual([{ role: 'user', content: 'hello' }]);
+  });
+
+  it('runs no half-written tool call from a reply cut off at max_tokens, and says so', async () => {
+    let called = 0;
+    const { turnDeps, events } = loopDeps({
+      model: {
+        async respond() {
+          return reply([toolUse('c1', 'list_appliances', {})], 'max_tokens');
+        }
+      },
+      mcp: {
+        rebuilds: 0,
+        callTool: async () => {
+          called++;
+          return { content: [{ type: 'text', text: 'Six appliances.' }], structuredContent: { appliances: [] } };
+        }
+      }
+    });
+    const messages = await runTurn(turnDeps, 't1', [], 'hello');
+    expect(called).toBe(0);
+    const failed = events.find(e => e.type === 'turn-failed');
+    expect(failed && failed.type === 'turn-failed' && failed.message).toBe(
+      'The model ran out of room for its reply before it finished (stop reason: max_tokens), so the turn was stopped. Anything it was about to do was not done.'
+    );
+    // Not stored: a tool_use with no tool_result after it is refused by the API on the next turn.
+    expect(messages).toEqual([{ role: 'user', content: 'hello' }]);
+  });
+
+  it('never stores an empty assistant message, even from an ordinary end of turn', async () => {
+    const { turnDeps } = loopDeps({
+      model: {
+        async respond() {
+          return reply([], 'end_turn');
+        }
+      }
+    });
+    const messages = await runTurn(turnDeps, 't1', [], 'hello');
+    expect(messages).toEqual([{ role: 'user', content: 'hello' }]);
+  });
+});
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(res => (resolve = res));
+  return { promise, resolve };
+}

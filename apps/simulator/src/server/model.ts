@@ -10,8 +10,8 @@ export interface ModelRequest {
 }
 
 export interface ModelPort {
-  /** Streams text deltas to `onText` as they arrive and resolves with the completed message. */
-  respond(request: ModelRequest, onText: (delta: string) => void): Promise<Anthropic.Message>;
+  /** Streams text deltas to `onText` as they arrive and resolves with the completed message. Rejects once `signal` aborts. */
+  respond(request: ModelRequest, onText: (delta: string) => void, signal?: AbortSignal): Promise<Anthropic.Message>;
 }
 
 /**
@@ -22,7 +22,10 @@ export interface ModelPort {
  * be a fake nobody writes.
  */
 export interface MessagesLike {
-  stream(params: Anthropic.MessageStreamParams): {
+  stream(
+    params: Anthropic.MessageStreamParams,
+    options?: { signal?: AbortSignal }
+  ): {
     on(event: 'text', listener: (delta: string) => void): unknown;
     finalMessage(): Promise<Anthropic.Message>;
   };
@@ -34,21 +37,26 @@ export function createAnthropicClient(apiKey: string): Anthropic {
 
 export function createModelPort(options: { messages: MessagesLike; model: string; maxTokens?: number }): ModelPort {
   return {
-    async respond(request, onText) {
-      const stream = options.messages.stream({
-        model: options.model,
-        max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
-        system: request.system,
-        messages: request.messages,
-        tools: request.tools,
-        thinking: { type: 'adaptive' },
-        // Low, deliberately. This is a voice-first surface with a three-second
-        // budget, the tools do the work, and the answers are one or two
-        // sentences — the depth that higher effort buys has nothing to be
-        // spent on here, and it is paid for in the pause before the display
-        // says anything.
-        output_config: { effort: 'low' }
-      });
+    async respond(request, onText, signal) {
+      const stream = options.messages.stream(
+        {
+          model: options.model,
+          max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+          system: request.system,
+          messages: request.messages,
+          tools: request.tools,
+          thinking: { type: 'adaptive' },
+          // Low, deliberately. This is a voice-first surface with a three-second
+          // budget, the tools do the work, and the answers are one or two
+          // sentences — the depth that higher effort buys has nothing to be
+          // spent on here, and it is paid for in the pause before the display
+          // says anything.
+          output_config: { effort: 'low' }
+        },
+        // The SDK's own request option: aborting it cancels the HTTP request,
+        // so a turn nobody is watching stops being paid for mid-reply.
+        signal ? { signal } : undefined
+      );
       stream.on('text', onText);
       return stream.finalMessage();
     }

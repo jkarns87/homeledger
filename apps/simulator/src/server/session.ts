@@ -4,7 +4,7 @@ import { createElicitRouter, type ElicitRouter } from './agent.js';
 import { isUnauthenticatedLocal, resolveUpstream } from './credentials.js';
 import { ElicitationRegistry } from './elicitation.js';
 import { readSimulatorEnv, SimulatorConfigError, type SimulatorEnv } from './env.js';
-import { HomeLedgerMcp } from './mcp.js';
+import { HomeLedgerMcp, toolCallBudgetMs } from './mcp.js';
 import { createAnthropicClient, createModelPort, type ModelPort } from './model.js';
 import { createScriptedModel } from './scripted-model.js';
 import type { McpToolDescriptor } from './tools.js';
@@ -24,6 +24,14 @@ export interface Conversation {
   /** The one clock this conversation reads, for tool timings and for the calendar date alike. */
   now: () => number;
   history: Anthropic.MessageParam[];
+  /**
+   * The turn running now, if any. One at a time: the MCP client routes every
+   * question through one `router.handler` slot and every turn rewrites
+   * `history`, so two concurrent turns corrupt each other (final review I3).
+   * `settled` resolves once the turn has fully unwound, which is what a reset
+   * waits for before it clears `history`.
+   */
+  activeTurn?: { turnId: string; controller: AbortController; settled: Promise<void> };
   /**
    * True when `model` is the scripted stand-in, never the real Anthropic
    * client. Carried on the conversation, not just logged, so `handleDebug`
@@ -178,6 +186,10 @@ async function build(): Promise<Conversation> {
     invalidateToken: upstream.invalidateToken,
     resolveUrl: upstream.resolveUrl,
     onElicit: prompt => router.dispatch(prompt),
+    // Every question a call can ask, each waited out in full, plus a minute —
+    // so the registry's per-question timeout, not the SDK's 60 s default, is
+    // what bounds how long a person may take over the booking cards (FL-056).
+    callTimeoutMs: toolCallBudgetMs(env.elicitationTimeoutMs),
     log: say
   });
   await mcp.connect();

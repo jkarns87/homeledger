@@ -8,7 +8,14 @@ import type { Conversation } from './session.js';
 export const UNKNOWN_TURN_MESSAGE =
   'That answer was not delivered: this server is not running the turn it names. Nothing was booked and nothing was changed. The turn may have ended, or this request may have reached a different instance than the one holding the conversation. Ask again to start a fresh turn.';
 
-const UNKNOWN_QUESTION_MESSAGE =
+export const TURN_RUNNING_MESSAGE =
+  'Another turn is still running in this conversation, so this one was not started. Wait for it to finish, or reload the page to start over.';
+
+/** What a turn's abort carries when the browser closed its stream. Surfaces only in logs: the stream it would be written to is gone. */
+const BROWSER_CLOSED_REASON = 'the browser closed the turn before it finished';
+const RESET_REASON = 'the conversation was reset';
+
+export const UNKNOWN_QUESTION_MESSAGE =
   'That answer was not delivered: the question it names has already been answered or has timed out. Nothing was changed by this click.';
 
 function json(body: unknown, status: number): Response {
@@ -178,7 +185,14 @@ export async function handleTurn(conversation: Conversation, request: Request): 
   if (typeof text !== 'string' || text.trim() === '')
     return json({ ok: false, reason: 'bad-request', message: 'The body needs a non-empty "text" field.' }, 400);
 
+  // One turn at a time, checked and claimed with no `await` in between, so two
+  // POSTs racing each other cannot both see the slot empty.
+  if (conversation.activeTurn) return json({ ok: false, reason: 'turn-running', message: TURN_RUNNING_MESSAGE }, 409);
   const turnId = randomUUID();
+  const abort = new AbortController();
+  let settle!: () => void;
+  const active = { turnId, controller: abort, settled: new Promise<void>(resolve => (settle = resolve)) };
+  conversation.activeTurn = active;
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -210,19 +224,24 @@ export async function handleTurn(conversation: Conversation, request: Request): 
           // `todayInZone` is core's, already fixed once and tested there.
           today: todayInZone(new Date(conversation.now()).toISOString(), conversation.timeZone),
           maxRounds: conversation.env.maxRounds,
-          elicitationTimeoutMs: conversation.env.elicitationTimeoutMs
+          elicitationTimeoutMs: conversation.env.elicitationTimeoutMs,
+          signal: abort.signal
         },
         turnId,
         conversation.history,
         text
       )
         .then(next => {
-          conversation.history = next;
+          // An aborted turn writes nothing: the page that asked is gone, or a
+          // reset has already cleared the history this would overwrite.
+          if (!abort.signal.aborted) conversation.history = next;
         })
         .catch((error: unknown) => {
           emit({ type: 'turn-failed', message: error instanceof Error ? error.message : String(error) });
         })
         .finally(() => {
+          if (conversation.activeTurn === active) conversation.activeTurn = undefined;
+          settle();
           open = false;
           try {
             controller.close();
@@ -232,6 +251,11 @@ export async function handleTurn(conversation: Conversation, request: Request): 
         });
     },
     cancel() {
+      // Both, and the abort first: closing the registry settles an open
+      // question, and the abort stops the model call and every later round,
+      // which would otherwise keep running — and keep being paid for — for a
+      // page that is gone.
+      abort.abort(new Error(BROWSER_CLOSED_REASON));
       conversation.registry.close(turnId, 'the browser closed the turn before answering');
     }
   });
@@ -257,6 +281,36 @@ function readAnswer(body: Record<string, unknown> | undefined): ElicitationAnswe
   const content = body?.content;
   if (typeof content !== 'object' || content === null || Array.isArray(content)) return undefined;
   return { action: 'accept', content: content as Record<string, unknown> };
+}
+
+/**
+ * Starts the conversation over: the history the model is handed is emptied.
+ *
+ * The page calls this once when it loads. The transcript a person sees lives
+ * in the browser and is gone after a reload, but the history lived here, so a
+ * retake used to carry an earlier take's turns — including data the person can
+ * no longer see — into the model's context (final review I3).
+ *
+ * A running turn is aborted first and waited for, rather than refused with a
+ * 409: a reload mid-turn is exactly when this is called, and the old turn's
+ * own unwinding is what must not land after the reset. Every await inside a
+ * turn honours the abort — the model call through the SDK's signal, a tool
+ * call through the MCP client's, an open question through the registry close
+ * below — so the wait is short.
+ */
+export async function handleReset(conversation: Conversation, request: Request): Promise<Response> {
+  const forbidden = checkOrigin(request, conversation.env.allowOrigin);
+  if (forbidden) return forbidden;
+  const wrongMediaType = requireJsonContentType(request);
+  if (wrongMediaType) return wrongMediaType;
+  const running = conversation.activeTurn;
+  if (running) {
+    running.controller.abort(new Error(RESET_REASON));
+    conversation.registry.close(running.turnId, RESET_REASON);
+    await running.settled;
+  }
+  conversation.history = [];
+  return json({ ok: true, abortedTurn: running !== undefined }, 200);
 }
 
 /** Delivers one elicitation answer. 202 mirrors what the MCP wire itself answers to an elicitation response. */
