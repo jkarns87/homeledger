@@ -64,6 +64,24 @@ describe('isLostSessionError', () => {
     expect(isLostSessionError(new Error('Session not found, but no status here'))).toBe(false);
   });
 
+  it("recognises AgentCore's own relay of the container's 404, which says neither -32001 nor 'Session not found' (FL-057)", () => {
+    // Verbatim from the first run against the deployed runtime (FL-055 check 6,
+    // 2026-09-25): after 35 idle minutes AgentCore routed the call to an
+    // instance whose in-memory map had no such session, the container answered
+    // 404, and AgentCore relayed it as a JSON-RPC error of its own inside an
+    // HTTP 200. No arm above matches it, so the simulator showed a failure
+    // instead of rebuilding. The bridge has read this shape since FL-039
+    // (`wrappedRuntimeStatus` in apps/mcp-bridge/src/errors.ts).
+    const relayed = new McpError(-32010, 'Received error (404) from runtime. Please check your CloudWatch logs for more information.');
+    expect(relayed.message).toBe('MCP error -32010: Received error (404) from runtime. Please check your CloudWatch logs for more information.');
+    expect(isLostSessionError(relayed)).toBe(true);
+    // Only the wrapped 404. The same envelope carries every other container
+    // status too, and none of those is a lost session.
+    expect(isLostSessionError(new McpError(-32010, 'Received error (500) from runtime. Please check your CloudWatch logs for more information.'))).toBe(false);
+    expect(isLostSessionError(new McpError(-32010, 'Received error (403) from runtime. Please check your CloudWatch logs for more information.'))).toBe(false);
+    expect(isLostSessionError(new McpError(-32010, 'Something else entirely, 404 aside'))).toBe(false);
+  });
+
   it('does not read the client-side request timeout as a lost session, though it carries the same -32001 (FL-056)', () => {
     // The exact value the SDK rejects with when `Protocol.request`'s timer
     // fires (`shared/protocol.js`, `McpError.fromError(ErrorCode.RequestTimeout,
@@ -312,6 +330,44 @@ describe('HomeLedgerMcp against a real socket', () => {
     // the one failure a redeploy causes. Exactly once: per rebuild, not per
     // attempt.
     expect(resolveUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("rebuilds and replays on AgentCore's wrapped 404, the shape the deployed runtime actually sends (FL-057)", async () => {
+    // The test above forges the local server's own 404. Behind AgentCore the
+    // same lost session arrives differently: HTTP 200, and a JSON-RPC error
+    // -32010 "Received error (404) from runtime" answering the request's id.
+    // That is what the first deployed run met after 35 idle minutes, and the
+    // simulator rendered it as a failure instead of repairing it.
+    const url = await listen();
+    let relayed = 0;
+    const mcp = new HomeLedgerMcp({
+      url,
+      token: async () => 'unused-locally',
+      onElicit: async () => ({ action: 'cancel' }),
+      resolveUrl: async () => url,
+      fetchImpl: (input, init) => {
+        const body = typeof init?.body === 'string' ? init.body : '';
+        if (relayed === 0 && init?.method === 'POST' && body.includes('list_appliances')) {
+          relayed += 1;
+          const { id } = JSON.parse(body) as { id: number };
+          const envelope = {
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32010, message: 'Received error (404) from runtime. Please check your CloudWatch logs for more information.' }
+          };
+          return Promise.resolve(new Response(JSON.stringify(envelope), { status: 200, headers: { 'content-type': 'application/json' } }));
+        }
+        return fetch(input, init);
+      }
+    });
+    closeClient = () => mcp.close();
+    await mcp.connect();
+    const before = mcp.sessionId;
+    const result = (await mcp.callTool('list_appliances', {})) as { structuredContent: { appliances: unknown[] } };
+    expect(relayed).toBe(1);
+    expect(result.structuredContent.appliances.length).toBeGreaterThan(0);
+    expect(mcp.rebuilds).toBe(1);
+    expect(mcp.sessionId).not.toBe(before);
   });
 
   it('follows the runtime to a new address when the name now resolves somewhere else', async () => {

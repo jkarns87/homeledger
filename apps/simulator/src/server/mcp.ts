@@ -140,6 +140,12 @@ export function isLostSessionError(error: unknown): boolean {
   const saysSessionNotFound = typeof message === 'string' && /session not found/i.test(message);
   if (code === 404) return true;
   if (code === -32001) return saysSessionNotFound;
+  // AgentCore's relay of the container's own 404: a JSON-RPC -32010 inside an
+  // HTTP 200, reading "Received error (404) from runtime", with no "Session not
+  // found" anywhere (FL-057). Every call after `initialize` carries a session
+  // id, so a wrapped 404 here is the lost-session case, the same reading the
+  // bridge's `wrappedRuntimeStatus` makes. Other wrapped statuses are not.
+  if (code === -32010) return typeof message === 'string' && /\(404\)\s*from runtime/i.test(message);
   return saysSessionNotFound && /\b404\b/.test(message as string);
 }
 
