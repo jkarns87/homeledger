@@ -30,6 +30,7 @@ jobs:
           languages: javascript-typescript, actions
           build-mode: none
 
+      # No `category`: with two languages in one job, the action tags each
+      # upload `/language:<lang>` itself; one explicit category would put
+      # both analyses under the same key.
       - uses: github/codeql-action/analyze@v3
-        with:
-          category: /language:javascript-typescript
