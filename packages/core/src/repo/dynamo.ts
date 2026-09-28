@@ -261,8 +261,20 @@ export function createDynamoRepository(opts: {
         return 'new';
       } catch (err) {
         // A transaction whose condition fails is cancelled as a whole and
-        // reports TransactionCanceledException, not ConditionalCheckFailedException.
-        if ((err as { name?: string }).name !== 'TransactionCanceledException') throw err;
+        // reports TransactionCanceledException, not ConditionalCheckFailedException
+        // - but that same exception name also covers TransactionConflict (a
+        // concurrent transaction on this same item, i.e. two redeliveries
+        // racing each other - exactly the case this method exists for),
+        // throttling, and other reasons that have nothing to do with this
+        // event already being claimed. CancellationReasons[0] is the marker
+        // Put's outcome; only ConditionalCheckFailed there means "already
+        // claimed". Anything else - including a TransactionCanceledException
+        // with no CancellationReasons - is rethrown unchanged, so the caller
+        // (the webhook) answers 500 and Ring retries the whole delivery.
+        const cancellation = err as { name?: string; CancellationReasons?: { Code?: string }[] };
+        if (cancellation.name !== 'TransactionCanceledException' || cancellation.CancellationReasons?.[0]?.Code !== 'ConditionalCheckFailed') {
+          throw err;
+        }
       }
       const marker = await doc.send(new GetCommand({ TableName: T, Key: { PK: P, SK: sk.eventMarker(e.ringEventId) } }));
       if (marker.Item?.published === true) return 'published';
