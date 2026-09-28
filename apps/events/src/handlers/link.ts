@@ -39,7 +39,7 @@ function page(statusCode: number, title: string, inner: string): HttpReply {
   return { statusCode, headers: HEADERS, body };
 }
 
-/** Device names come from the owner's own Ring app, but they are still text from elsewhere going into HTML. */
+/** Device names and Ring's refusal codes are text from elsewhere going into HTML. */
 const HTML_ESCAPES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, c => HTML_ESCAPES[c] ?? c);
 
@@ -75,16 +75,18 @@ export async function handleLink(deps: LinkDeps, req: HttpRequest & { method: st
     );
   }
 
-  if (!samePassphrase(f.passphrase ?? '', await deps.passphrase())) {
-    log({ outcome: 'wrong-passphrase' });
-    return page(401, 'That passphrase is not right', '<p>Go back and try again.</p>');
-  }
+  // The nonce first: only a link Ring signed for the held account may try a
+  // passphrase, so a forged link cannot be used to test passphrases.
   const record = await deps.store.read();
   if (!record)
     return page(409, 'Ring has not finished its part yet', '<p>HomeLedger has not received Ring’s authorisation. Start again from the Ring app.</p>');
   if (!verifyLinkNonce(nonce, time, record.accountId, await deps.hmacKey())) {
     log({ outcome: 'nonce-mismatch' });
     return page(400, 'This link does not match', '<p>This link does not belong to the Ring account HomeLedger was given. Start again from the Ring app.</p>');
+  }
+  if (!samePassphrase(f.passphrase ?? '', await deps.passphrase())) {
+    log({ outcome: 'wrong-passphrase' });
+    return page(401, 'That passphrase is not right', '<p>Go back and try again.</p>');
   }
 
   const api = deps.apiFor(record.accessToken);
@@ -95,7 +97,7 @@ export async function handleLink(deps: LinkDeps, req: HttpRequest & { method: st
   } catch (err) {
     const detail = err instanceof RingApiError ? `${err.status}${err.code ? ` ${err.code}` : ''}` : 'no answer';
     log({ outcome: 'ring-refused', detail });
-    return page(502, 'Ring refused the link', `<p>Ring refused the link (${detail}). Start again from the Ring app.</p>`);
+    return page(502, 'Ring refused the link', `<p>Ring refused the link (${escapeHtml(detail)}). Start again from the Ring app.</p>`);
   }
   await deps.store.write({ ...record, status: 'linked', updatedAt: new Date(deps.nowMs()).toISOString() });
   log({ outcome: 'linked' });
@@ -118,7 +120,7 @@ function liveDeps(): LinkDeps {
   live = {
     hmacKey: () => secrets.read(requireEnv('RING_HMAC_SECRET_ID')),
     passphrase: () => secrets.read(requireEnv('RING_LINK_PASSPHRASE_SECRET_ID')),
-    store: createTokenStore(secrets, requireEnv('RING_TOKENS_SECRET_ID')),
+    store: createTokenStore(createSecretsPort(undefined, { ttlMs: 0 }), requireEnv('RING_TOKENS_SECRET_ID')),
     apiFor: token => createRingApi({ accessToken: async () => token }),
     sync: api => syncDevices({ repo, now: () => new Date().toISOString() }, api),
     householdId: requireEnv('HOUSEHOLD_ID'),

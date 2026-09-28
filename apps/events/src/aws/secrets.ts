@@ -12,6 +12,10 @@ export interface SecretsPort {
  * webhooks should not pay a Secrets Manager call per delivery. A write
  * replaces the cached value, so the token refresh and the link see their own
  * writes. Errors name the secret, never its value.
+ *
+ * The Ring tokens are the exception: another Lambda (refresh, link) may
+ * rewrite them at any time, so every TokenStore is built on a port with
+ * `ttlMs: 0`, which reads through on every call.
  */
 export function createSecretsPort(client: SecretsManagerClient = new SecretsManagerClient({}), opts: { now?: () => number; ttlMs?: number } = {}): SecretsPort {
   const now = opts.now ?? Date.now;

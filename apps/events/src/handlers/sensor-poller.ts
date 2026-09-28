@@ -41,7 +41,9 @@ export async function pollSensors(
 export const handler = async (): Promise<void> => {
   const base = liveSensorDeps();
   const repo = createDynamoRepository({ tableName: requireEnv('TABLE_NAME'), householdId: requireEnv('HOUSEHOLD_ID') });
-  const api = createRingApi({ accessToken: linkedAccessToken(createTokenStore(createSecretsPort(), requireEnv('RING_TOKENS_SECRET_ID'))) });
+  const api = createRingApi({
+    accessToken: linkedAccessToken(createTokenStore(createSecretsPort(undefined, { ttlMs: 0 }), requireEnv('RING_TOKENS_SECRET_ID')))
+  });
   const outcome = await pollSensors({
     ...base,
     listDevices: () => repo.listDevices(),

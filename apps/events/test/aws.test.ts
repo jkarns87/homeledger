@@ -4,7 +4,7 @@ import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { describe, expect, it, vi } from 'vitest';
 import { raiseSystemAlert } from '../src/aws/alerts.js';
 import { HOMELEDGER_SOURCE, createEventPublisher } from '../src/aws/bus.js';
-import { ANTHROPIC_MESSAGES_URL, DESCRIBE_INSTRUCTION, createAnthropicDescriber, oneSentence } from '../src/aws/describe.js';
+import { ANTHROPIC_MESSAGES_URL, DESCRIBE_INSTRUCTION, DESCRIBE_TIMEOUT_MS, createAnthropicDescriber, oneSentence } from '../src/aws/describe.js';
 import { createSnapshotWriter, snapshotKeyFor } from '../src/aws/objects.js';
 import { SecretMissingError, createSecretsPort } from '../src/aws/secrets.js';
 import { RingNotLinkedError, createTokenStore, linkedAccessToken, type TokenRecord } from '../src/aws/tokens.js';
@@ -31,6 +31,19 @@ describe('secrets port', () => {
     await port.write('a', 'new-value');
     expect((client.send.mock.calls[2]![0] as PutSecretValueCommand).input).toEqual({ SecretId: 'a', SecretString: 'new-value' });
     expect(await port.read('a')).toBe('new-value');
+    expect(client.send).toHaveBeenCalledTimes(3);
+  });
+
+  it('with ttlMs 0, reads through on every call, so another Lambda’s token write is seen at once', async () => {
+    let version = 0;
+    const client = stub<SecretsManagerClient>(async cmd => {
+      if (cmd instanceof GetSecretValueCommand) return { SecretString: `tokens-v${++version}` };
+      throw new Error('unexpected');
+    });
+    const port = createSecretsPort(client, { now: () => 1_000, ttlMs: 0 });
+    expect(await port.read('tokens')).toBe('tokens-v1');
+    expect(await port.read('tokens')).toBe('tokens-v2');
+    expect(await port.read('tokens')).toBe('tokens-v3');
     expect(client.send).toHaveBeenCalledTimes(3);
   });
 
@@ -142,6 +155,8 @@ describe('describer (spec §5: Claude vision, one sentence, nobody identified)',
       'sk-test',
       '2023-06-01'
     ]);
+    expect(DESCRIBE_TIMEOUT_MS).toBe(20_000);
+    expect(req.signal instanceof AbortSignal).toBe(true);
     expect(JSON.parse(req.body!)).toEqual({
       model: 'claude-sonnet-5',
       max_tokens: 120,

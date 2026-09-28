@@ -35,8 +35,11 @@ export function verifyLinkNonce(nonce: string, timeMs: string, accountId: string
 /** Ring's validation window for a link redirect. */
 export const LINK_WINDOW_MS = 600_000;
 
+/** How far Ring's clock may run ahead of ours before a fresh link looks like it comes from the future. */
+export const LINK_CLOCK_SKEW_MS = 60_000;
+
 export function isFreshLinkTime(timeMs: string, nowMs: number): boolean {
   if (!/^\d{13}$/.test(timeMs)) return false;
   const age = nowMs - Number(timeMs);
-  return age >= 0 && age <= LINK_WINDOW_MS;
+  return age >= -LINK_CLOCK_SKEW_MS && age <= LINK_WINDOW_MS;
 }

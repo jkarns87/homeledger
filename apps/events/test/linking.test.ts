@@ -138,6 +138,17 @@ describe('Account Link URL (amendment §12.1 steps 3–5)', () => {
     expect((await handleLink(d, post({ nonce: NONCE, time: String(T), passphrase: 'correct horse battery staple' }))).statusCode).toBe(409);
   });
 
+  it('checks the nonce before the passphrase, so a forged link cannot be used to test passphrases', async () => {
+    const passphrase = vi.fn(async () => 'correct horse battery staple');
+    const d = deps({ passphrase });
+    expect((await handleLink(d, post({ nonce: NONCE, time: String(T + 1), passphrase: 'wrong' }))).statusCode).toBe(400);
+    expect(
+      (await handleLink(deps({ passphrase, store: memoryTokenStore(null) }), post({ nonce: NONCE, time: String(T), passphrase: 'wrong' }))).statusCode
+    ).toBe(409);
+    expect(passphrase).not.toHaveBeenCalled();
+    expect(d.api.calls).toEqual([]);
+  });
+
   it('answers 502 and leaves the tokens unclaimed when Ring refuses to complete the link', async () => {
     const api = fakeRingApi({ refuse: { completeLink: new RingApiError(400, 'INVALID_STATUS_TRANSITION', 'x') } });
     const d = deps({ apiFor: () => api });
@@ -145,6 +156,14 @@ describe('Account Link URL (amendment §12.1 steps 3–5)', () => {
     expect(reply.statusCode).toBe(502);
     expect(reply.body).toContain('Ring refused the link (400 INVALID_STATUS_TRANSITION).');
     expect(d.store.current()?.status).toBe('unclaimed');
+  });
+
+  it("escapes Ring's refusal code on the error page", async () => {
+    const api = fakeRingApi({ refuse: { completeLink: new RingApiError(400, '<b>x</b>', 'x') } });
+    const reply = await handleLink(deps({ apiFor: () => api }), post({ nonce: NONCE, time: String(T), passphrase: 'correct horse battery staple' }));
+    expect(reply.statusCode).toBe(502);
+    expect(reply.body).toContain('<p>Ring refused the link (400 &lt;b&gt;x&lt;/b&gt;). Start again from the Ring app.</p>');
+    expect(reply.body).not.toContain('<b>x</b>');
   });
 
   it('still reports the link as done when only the device sync fails — the nightly sync recovers it', async () => {

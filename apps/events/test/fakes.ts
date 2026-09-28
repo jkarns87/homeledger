@@ -15,6 +15,7 @@ export interface RecordedRequest {
   headers: Record<string, string>;
   body: string | null;
   redirect: RequestRedirect | undefined;
+  signal: AbortSignal | null | undefined;
 }
 
 /** A fetch that records every request and answers from `respond`. Nothing leaves the process. */
@@ -24,7 +25,7 @@ export function fakeFetch(respond: (req: RecordedRequest) => Response | Promise<
     const headers: Record<string, string> = {};
     new Headers(init?.headers).forEach((value, key) => (headers[key] = value));
     const body = init?.body === undefined || init.body === null ? null : init.body instanceof URLSearchParams ? init.body.toString() : String(init.body);
-    const req: RecordedRequest = { url: String(input), method: init?.method ?? 'GET', headers, body, redirect: init?.redirect };
+    const req: RecordedRequest = { url: String(input), method: init?.method ?? 'GET', headers, body, redirect: init?.redirect, signal: init?.signal };
     calls.push(req);
     return respond(req);
   };

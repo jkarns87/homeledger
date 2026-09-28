@@ -144,7 +144,9 @@ let live: CorrelatorDeps | undefined;
 function liveDeps(): CorrelatorDeps {
   if (live) return live;
   const secrets = createSecretsPort();
-  const api = createRingApi({ accessToken: linkedAccessToken(createTokenStore(secrets, requireEnv('RING_TOKENS_SECRET_ID'))) });
+  const api = createRingApi({
+    accessToken: linkedAccessToken(createTokenStore(createSecretsPort(undefined, { ttlMs: 0 }), requireEnv('RING_TOKENS_SECRET_ID')))
+  });
   live = {
     repo: createDynamoRepository({ tableName: requireEnv('TABLE_NAME'), householdId: requireEnv('HOUSEHOLD_ID') }),
     requestImage: (id, window) => api.requestImage(id, window),

@@ -5,6 +5,8 @@
  */
 export const RING_API_BASE = 'https://api.amazonvision.com';
 export const RING_OAUTH_TOKEN_URL = 'https://oauth.ring.com/oauth/token';
+/** Every Ring request, OAuth and API, gives up after this; a hung call must not hold a Lambda to its timeout. */
+export const RING_HTTP_TIMEOUT_MS = 10_000;
 
 export interface RingTokens {
   accessToken: string;
@@ -50,7 +52,8 @@ export function createRingOAuth(opts: { clientId: string; clientSecret: string; 
     const res = await f(RING_OAUTH_TOKEN_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ ...params, client_id: opts.clientId, client_secret: opts.clientSecret })
+      body: new URLSearchParams({ ...params, client_id: opts.clientId, client_secret: opts.clientSecret }),
+      signal: AbortSignal.timeout(RING_HTTP_TIMEOUT_MS)
     });
     if (!res.ok) throw await failure(res, what);
     const body = (await res.json()) as { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown };
@@ -95,7 +98,12 @@ export function createRingApi(opts: { accessToken: () => Promise<string>; fetch?
   const call = async (method: string, path: string, what: string, body?: unknown): Promise<Response> => {
     const headers: Record<string, string> = { authorization: `Bearer ${await opts.accessToken()}` };
     if (body !== undefined) headers['content-type'] = 'application/json';
-    const res = await f(`${RING_API_BASE}${path}`, { method, headers, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+    const res = await f(`${RING_API_BASE}${path}`, {
+      method,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(RING_HTTP_TIMEOUT_MS)
+    });
     if (!res.ok) throw await failure(res, what);
     return res;
   };
@@ -130,14 +138,15 @@ export function createRingApi(opts: { accessToken: () => Promise<string>; fetch?
         method: 'POST',
         redirect: 'manual',
         headers: { authorization: `Bearer ${await opts.accessToken()}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ type: 'latest_in_range', start_timestamp: window.startMs, end_timestamp: window.endMs, image_options: { format: 'jpeg' } })
+        body: JSON.stringify({ type: 'latest_in_range', start_timestamp: window.startMs, end_timestamp: window.endMs, image_options: { format: 'jpeg' } }),
+        signal: AbortSignal.timeout(RING_HTTP_TIMEOUT_MS)
       });
       let image = res;
       if (res.status === 303) {
         const location = res.headers.get('location');
         if (!location) return { kind: 'refused', status: 303, code: 'NO_LOCATION' };
         // Presigned: no bearer on this leg (amendment §12.5).
-        image = await f(location, { method: 'GET' });
+        image = await f(location, { method: 'GET', signal: AbortSignal.timeout(RING_HTTP_TIMEOUT_MS) });
       }
       if (image.status !== 200) return { kind: 'refused', status: image.status, code: await refusalCode(image) };
       return { kind: 'image', bytes: Buffer.from(await image.arrayBuffer()), contentType: image.headers.get('content-type') };

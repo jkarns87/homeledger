@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { RING_API_BASE, RING_OAUTH_TOKEN_URL, RingApiError, createRingApi, createRingOAuth } from '../src/ring/client.js';
+import { RING_API_BASE, RING_HTTP_TIMEOUT_MS, RING_OAUTH_TOKEN_URL, RingApiError, createRingApi, createRingOAuth } from '../src/ring/client.js';
 import { JPEG_BYTES, fakeFetch, fixture, jsonResponse } from './fakes.js';
 
 const NOW = Date.parse('2026-10-06T13:00:00.000Z');
@@ -136,5 +136,41 @@ describe('Ring API', () => {
         : jsonResponse(416, { errors: [{ status: '416', code: 'MEDIA_NOT_FOUND' }] })
     );
     expect(await onGet.api.requestImage('dev-doorbell-1', { startMs: 1, endMs: 2 })).toEqual({ kind: 'refused', status: 416, code: 'MEDIA_NOT_FOUND' });
+  });
+});
+
+describe('Ring timeouts', () => {
+  it('bounds every Ring request, OAuth and API, including both legs of the image download', async () => {
+    expect(RING_HTTP_TIMEOUT_MS).toBe(10_000);
+    const f = fakeFetch(req => {
+      if (req.url === RING_OAUTH_TOKEN_URL) return jsonResponse(200, tokenBody);
+      if (req.url.endsWith('/media/image/download')) return new Response(null, { status: 303, headers: { location: 'https://media.api.amazonvision.com/x' } });
+      if (req.url === 'https://media.api.amazonvision.com/x') return new Response(JPEG_BYTES, { status: 200, headers: { 'content-type': 'image/jpeg' } });
+      if (req.url.endsWith('/v1/users/me')) return jsonResponse(200, fixture('users-me'));
+      if (req.url.endsWith('/v1/devices')) return jsonResponse(200, fixture('devices'));
+      if (req.url.endsWith('/status')) return jsonResponse(200, fixture('status-doorbell'));
+      return jsonResponse(200, { status: 'completed' });
+    });
+    const oauth = createRingOAuth({ clientId: 'client-1', clientSecret: 's3cret-value', fetch: f.fetch, now: () => NOW });
+    const ring = createRingApi({ accessToken: async () => 'tok', fetch: f.fetch });
+    await oauth.exchangeCode('code-abc');
+    await oauth.refresh('rt-1');
+    await ring.accountId();
+    await ring.listDevices();
+    await ring.deviceStatus('dev-doorbell-1');
+    await ring.confirmLink('IEV-fda_gDgbfFvtVJ1Bbi10n29TIGJ6e2v0ZmJ8N1c', 'hh_h***w');
+    await ring.completeLink('hh_h***w');
+    await ring.requestImage('dev-doorbell-1', { startMs: 1, endMs: 2 });
+    expect(f.calls.map(c => [c.method, c.url, c.signal instanceof AbortSignal])).toEqual([
+      ['POST', RING_OAUTH_TOKEN_URL, true],
+      ['POST', RING_OAUTH_TOKEN_URL, true],
+      ['GET', `${RING_API_BASE}/v1/users/me`, true],
+      ['GET', `${RING_API_BASE}/v1/devices`, true],
+      ['GET', `${RING_API_BASE}/v1/devices/dev-doorbell-1/status`, true],
+      ['POST', `${RING_API_BASE}/v1/accounts/me/app-integrations`, true],
+      ['PATCH', `${RING_API_BASE}/v1/accounts/me/app-integrations`, true],
+      ['POST', `${RING_API_BASE}/v1/devices/dev-doorbell-1/media/image/download`, true],
+      ['GET', 'https://media.api.amazonvision.com/x', true]
+    ]);
   });
 });

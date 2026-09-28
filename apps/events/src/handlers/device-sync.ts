@@ -76,7 +76,7 @@ let live: DeviceEventDeps | undefined;
 function liveDeps(): DeviceEventDeps {
   if (live) return live;
   const repo = createDynamoRepository({ tableName: requireEnv('TABLE_NAME'), householdId: requireEnv('HOUSEHOLD_ID') });
-  const store = createTokenStore(createSecretsPort(), requireEnv('RING_TOKENS_SECRET_ID'));
+  const store = createTokenStore(createSecretsPort(undefined, { ttlMs: 0 }), requireEnv('RING_TOKENS_SECRET_ID'));
   const publish = createEventPublisher(requireEnv('EVENT_BUS_NAME'));
   const now = () => new Date().toISOString();
   live = {

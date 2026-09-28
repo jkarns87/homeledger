@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LINK_WINDOW_MS, isFreshLinkTime, linkNonce, verifyLinkNonce, verifyWebhookSignature, webhookSignature } from '../src/ring/hmac.js';
+import { LINK_CLOCK_SKEW_MS, LINK_WINDOW_MS, isFreshLinkTime, linkNonce, verifyLinkNonce, verifyWebhookSignature, webhookSignature } from '../src/ring/hmac.js';
 
 const KEY = 'test-hmac-signing-key';
 const BODY = '{"meta":{"request_id":"req-1"},"data":{"type":"button_press"}}';
@@ -56,13 +56,16 @@ describe('link nonce (amendment §12.1: URL-safe Base64, no padding, over "<time
     expect(verifyLinkNonce(`${NONCE}=`, '1771130906289', 'acct-123', KEY)).toBe(false);
   });
 
-  it('refuses a link older than ten minutes, from the future, or with a malformed time', () => {
+  it('refuses a link older than ten minutes, more than a minute from the future, or with a malformed time', () => {
     expect(LINK_WINDOW_MS).toBe(600_000);
+    expect(LINK_CLOCK_SKEW_MS).toBe(60_000);
     const t = 1771130906289;
     expect(isFreshLinkTime(String(t), t)).toBe(true);
     expect(isFreshLinkTime(String(t), t + 600_000)).toBe(true);
     expect(isFreshLinkTime(String(t), t + 600_001)).toBe(false);
-    expect(isFreshLinkTime(String(t), t - 1)).toBe(false);
+    // Ring's clock up to a minute ahead of ours.
+    expect(isFreshLinkTime(String(t), t - 60_000)).toBe(true);
+    expect(isFreshLinkTime(String(t), t - 60_001)).toBe(false);
     expect(isFreshLinkTime('17711309062', t)).toBe(false);
     expect(isFreshLinkTime('1771130906289abc', t)).toBe(false);
   });

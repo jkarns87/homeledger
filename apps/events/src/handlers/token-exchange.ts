@@ -53,7 +53,7 @@ function liveDeps(): TokenExchangeDeps {
   live = {
     oauth: async () => createRingOAuth({ clientId: requireEnv('RING_CLIENT_ID'), clientSecret: await secrets.read(requireEnv('RING_CLIENT_SECRET_ID')) }),
     accountIdFor: token => createRingApi({ accessToken: async () => token }).accountId(),
-    store: createTokenStore(secrets, requireEnv('RING_TOKENS_SECRET_ID')),
+    store: createTokenStore(createSecretsPort(undefined, { ttlMs: 0 }), requireEnv('RING_TOKENS_SECRET_ID')),
     now: () => new Date().toISOString()
   };
   return live;

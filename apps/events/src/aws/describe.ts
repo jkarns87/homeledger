@@ -1,4 +1,6 @@
 export const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
+/** The description gives up after this, well inside the correlator's own timeout. */
+export const DESCRIBE_TIMEOUT_MS = 20_000;
 
 /**
  * Spec §5 and §7's content rule. The sentence describes the scene; who the
@@ -33,7 +35,8 @@ export function createAnthropicDescriber(opts: { apiKey: () => Promise<string>; 
             ]
           }
         ]
-      })
+      }),
+      signal: AbortSignal.timeout(DESCRIBE_TIMEOUT_MS)
     });
     if (!res.ok) {
       let kind = '';

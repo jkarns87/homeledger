@@ -43,7 +43,7 @@ export const handler = async (): Promise<void> => {
   const repo = createDynamoRepository({ tableName: requireEnv('TABLE_NAME'), householdId: requireEnv('HOUSEHOLD_ID') });
   const publish = createEventPublisher(requireEnv('EVENT_BUS_NAME'));
   const outcome = await refreshIfDue({
-    store: createTokenStore(secrets, requireEnv('RING_TOKENS_SECRET_ID')),
+    store: createTokenStore(createSecretsPort(undefined, { ttlMs: 0 }), requireEnv('RING_TOKENS_SECRET_ID')),
     oauth: async () => createRingOAuth({ clientId: requireEnv('RING_CLIENT_ID'), clientSecret: await secrets.read(requireEnv('RING_CLIENT_SECRET_ID')) }),
     nowMs: () => Date.now(),
     alert: async message => {
