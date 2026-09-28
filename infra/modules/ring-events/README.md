@@ -131,6 +131,6 @@ No modules.
 | <a name="output_snapshot_bucket_arn"></a> [snapshot\_bucket\_arn](#output\_snapshot\_bucket\_arn) | ARN of the snapshot bucket; the MCP runtime may read snapshots/* only. |
 | <a name="output_snapshot_origin"></a> [snapshot\_origin](#output\_snapshot\_origin) | Origin of presigned snapshot URLs; the visit widget declares it as a resource domain (R8). |
 | <a name="output_token_exchange_url"></a> [token\_exchange\_url](#output\_token\_exchange\_url) | Ring Developer Portal: Token Exchange URL. |
-| <a name="output_tokens_secret_arn"></a> [tokens\_secret\_arn](#output\_tokens\_secret\_arn) | Secret the link and token-refresh functions write the Ring tokens to. |
+| <a name="output_tokens_secret_arn"></a> [tokens\_secret\_arn](#output\_tokens\_secret\_arn) | Secret the token-exchange, link and token-refresh functions write the Ring tokens to. |
 | <a name="output_webhook_url"></a> [webhook\_url](#output\_webhook\_url) | Ring Developer Portal: Webhook URL. |
 <!-- END_TF_DOCS -->

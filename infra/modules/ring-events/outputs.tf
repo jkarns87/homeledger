@@ -44,7 +44,7 @@ output "event_bus_name" {
 }
 
 output "tokens_secret_arn" {
-  description = "Secret the link and token-refresh functions write the Ring tokens to."
+  description = "Secret the token-exchange, link and token-refresh functions write the Ring tokens to."
   value       = aws_secretsmanager_secret.tokens.arn
 }
 

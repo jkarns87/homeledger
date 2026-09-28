@@ -212,3 +212,125 @@ run "rejects_a_fractional_or_zero_poll_interval" {
   }
   expect_failures = [var.sensor_poll_minutes]
 }
+
+run "the_remaining_secret_rows_are_exactly_as_spec_section_3_says" {
+  command = apply
+  assert {
+    condition     = output.secret_grants["token-exchange"] == [var.ring_client_secret_arn, "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/tokens-AbCdEf"]
+    error_message = "token exchange reads the client secret and the tokens"
+  }
+  assert {
+    condition     = output.secret_grants["token-refresh"] == [var.ring_client_secret_arn, "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/tokens-AbCdEf"]
+    error_message = "token refresh reads the client secret and the tokens"
+  }
+  assert {
+    condition     = output.secret_grants["device-sync"] == ["arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/tokens-AbCdEf"]
+    error_message = "device sync reads the tokens only"
+  }
+  assert {
+    condition     = output.secret_grants["sensor-poller"] == ["arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/tokens-AbCdEf"]
+    error_message = "the sensor poller reads the tokens only"
+  }
+  assert {
+    condition     = output.secret_grants["dlq-alerter"] == [] && output.secret_grants["ws-connections"] == []
+    error_message = "the alerter and the connections function read no secret"
+  }
+}
+
+run "only_the_three_token_writers_may_put_the_tokens_secret" {
+  command = apply
+  assert {
+    condition = alltrue([for k in ["token-exchange", "link", "token-refresh"] :
+      [for s in jsondecode(aws_iam_role_policy.fn[k].policy).Statement : s.Resource if s.Sid == "WriteSecrets"] == [["arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/tokens-AbCdEf"]]
+    ])
+    error_message = "token exchange, link and token refresh each write the tokens secret and nothing else"
+  }
+  assert {
+    condition     = alltrue([for k, p in aws_iam_role_policy.fn : contains(["token-exchange", "link", "token-refresh"], k) || length([for s in jsondecode(p.policy).Statement : s if s.Sid == "WriteSecrets"]) == 0])
+    error_message = "no other function may write a secret"
+  }
+}
+
+run "only_push_manages_websocket_connections" {
+  command = apply
+  assert {
+    condition     = [for s in jsondecode(aws_iam_role_policy.fn["push"].policy).Statement : s.Resource if s.Sid == "ManageConnections"] == [["arn:aws:execute-api:us-east-1:123456789012:wsapi01/demo/POST/@connections/*"]]
+    error_message = "push may post to connections on the demo stage only"
+  }
+  assert {
+    condition     = alltrue([for k, p in aws_iam_role_policy.fn : k == "push" || length([for s in jsondecode(p.policy).Statement : s if s.Sid == "ManageConnections"]) == 0])
+    error_message = "no other function may manage connections"
+  }
+}
+
+run "the_scheduler_and_the_bus_deliver_only_where_they_should" {
+  command = apply
+  assert {
+    condition     = one([for s in jsondecode(aws_iam_role_policy.scheduler.policy).Statement : s.Resource if s.Sid == "Invoke"]) == ["arn:aws:lambda:us-east-1:123456789012:function:fn", "arn:aws:lambda:us-east-1:123456789012:function:fn", "arn:aws:lambda:us-east-1:123456789012:function:fn"]
+    error_message = "the scheduler invokes the three scheduled functions (device sync, sensor poller, token refresh) and never push"
+  }
+  assert {
+    condition     = toset(keys(aws_sqs_queue_policy.dlq)) == toset(["doorbell", "sensors", "devices", "push"]) && alltrue([for p in values(aws_sqs_queue_policy.dlq) : jsondecode(p.policy).Statement[0].Principal.Service == "events.amazonaws.com" && jsondecode(p.policy).Statement[0].Condition.ArnEquals["aws:SourceArn"] == "arn:aws:events:us-east-1:123456789012:rule/demo-homeledger/rule"])
+    error_message = "each rule's dead-letter queue accepts EventBridge only on behalf of that rule"
+  }
+  assert {
+    condition     = aws_cloudwatch_event_target.this["push"].arn == "arn:aws:lambda:us-east-1:123456789012:function:push" && alltrue([for k in ["doorbell", "sensors", "devices"] : aws_cloudwatch_event_target.this[k].arn == "arn:aws:lambda:us-east-1:123456789012:function:fn"])
+    error_message = "the push rule targets push; the Ring rules target for_each functions"
+  }
+  assert {
+    condition     = alltrue([for t in values(aws_cloudwatch_event_target.this) : t.retry_policy[0].maximum_retry_attempts == 2 && t.dead_letter_config[0].arn == "arn:aws:sqs:us-east-1:123456789012:dlq"])
+    error_message = "every rule target retries twice and then dead-letters"
+  }
+}
+
+run "every_async_function_is_wired_to_its_dead_letter_queue" {
+  command = apply
+  assert {
+    condition     = length(aws_lambda_function_event_invoke_config.async) == 6 && toset([for c in values(aws_lambda_function_event_invoke_config.async) : c.function_name]) == toset(["demo-homeledger-device-sync", "demo-homeledger-visit-correlator", "demo-homeledger-sensor-rules", "demo-homeledger-sensor-poller", "demo-homeledger-token-refresh", "demo-homeledger-push"])
+    error_message = "one invoke config per async function"
+  }
+  assert {
+    condition     = alltrue([for k in ["device-sync", "visit-correlator", "sensor-rules", "sensor-poller", "token-refresh"] : length(aws_lambda_function.fn[k].dead_letter_config) == 1 && aws_lambda_function.fn[k].dead_letter_config[0].target_arn == "arn:aws:sqs:us-east-1:123456789012:dlq"])
+    error_message = "the five async for_each functions dead-letter to their queue"
+  }
+  assert {
+    condition     = length(aws_lambda_function.push.dead_letter_config) == 1 && aws_lambda_function.push.dead_letter_config[0].target_arn == "arn:aws:sqs:us-east-1:123456789012:dlq"
+    error_message = "push dead-letters to its queue"
+  }
+  assert {
+    condition     = alltrue([for k in ["webhook", "token-exchange", "link", "dlq-alerter", "ws-authorizer", "ws-connections"] : length(aws_lambda_function.fn[k].dead_letter_config) == 0])
+    error_message = "synchronous functions have no dead-letter config"
+  }
+  assert {
+    condition     = alltrue([for q in values(aws_sqs_queue.dlq) : q.visibility_timeout_seconds == 180])
+    error_message = "dead-letter visibility timeout is six times the alerter's 30 s timeout"
+  }
+}
+
+run "routes_target_their_functions_and_the_urls_are_exact" {
+  command = apply
+  assert {
+    condition     = alltrue([for rk, fn in { "POST /ring/token" = "token-exchange", "GET /ring/link" = "link", "POST /ring/link" = "link", "POST /ring/webhook" = "webhook" } : aws_apigatewayv2_route.http[rk].target == "integrations/${aws_apigatewayv2_integration.http[fn].id}"])
+    error_message = "each Ring route targets its own function's integration"
+  }
+  assert {
+    condition     = length(toset([for i in values(aws_apigatewayv2_integration.http) : i.id])) == 3
+    error_message = "the three HTTP integrations are distinct, so the route-target assertion can tell them apart"
+  }
+  assert {
+    condition     = output.token_exchange_url == "https://httpapi01.execute-api.us-east-1.amazonaws.com/ring/token" && output.account_link_url == "https://httpapi01.execute-api.us-east-1.amazonaws.com/ring/link" && output.webhook_url == "https://httpapi01.execute-api.us-east-1.amazonaws.com/ring/webhook"
+    error_message = "the three Ring Developer Portal URLs"
+  }
+  assert {
+    condition     = output.push_websocket_url == "wss://wsapi01.execute-api.us-east-1.amazonaws.com/demo" && output.push_endpoint == "https://wsapi01.execute-api.us-east-1.amazonaws.com/demo"
+    error_message = "the simulator's WebSocket URL and push's management endpoint"
+  }
+}
+
+run "rejects_a_fractional_poll_interval" {
+  command = plan
+  variables {
+    sensor_poll_minutes = 1.5
+  }
+  expect_failures = [var.sensor_poll_minutes]
+}

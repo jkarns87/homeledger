@@ -80,10 +80,11 @@ resource "aws_iam_role_policy" "fn" {
 
 # trivy:ignore:AVD-AWS-0135 SQS-managed SSE encrypts at rest; a CMK would add a key policy for no change in who can read a dead letter.
 resource "aws_sqs_queue" "dlq" {
-  for_each                  = local.async_functions
-  name                      = "${var.name_prefix}-${each.key}-dead-letters"
-  message_retention_seconds = 1209600
-  sqs_managed_sse_enabled   = true
+  for_each                   = local.async_functions
+  name                       = "${var.name_prefix}-${each.key}-dead-letters"
+  message_retention_seconds  = 1209600
+  visibility_timeout_seconds = 180 # at least six times the dlq-alerter's 30 s timeout
+  sqs_managed_sse_enabled    = true
 }
 
 resource "aws_lambda_function" "fn" {
