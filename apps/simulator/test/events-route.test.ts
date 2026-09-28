@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handleEvents } from '../src/server/http.js';
 import { createEventHub } from '../src/server/hub.js';
 import type { Conversation } from '../src/server/session.js';
@@ -51,5 +51,34 @@ describe('GET /api/agent/events', () => {
     const r = handleEvents(conversation, new Request('http://127.0.0.1:3000/api/agent/events', { headers: { host: '127.0.0.1:3000' } }));
     await readEvents(r, 1);
     expect(hub.size()).toBe(0);
+  });
+
+  describe('cleanup (one idempotent cleanup: unsubscribe and stop the keepalive)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('stops the keepalive timer as well as the subscription when the browser goes away', async () => {
+      vi.useFakeTimers();
+      const { conversation, hub } = convo();
+      const r = handleEvents(conversation, new Request('http://127.0.0.1:3000/api/agent/events', { headers: { host: '127.0.0.1:3000' } }), {
+        keepaliveMs: 10
+      });
+      expect(vi.getTimerCount()).toBe(1);
+      await r.body!.cancel();
+      expect(hub.size()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('stops the keepalive timer as well as the subscription when an event cannot be sent', () => {
+      vi.useFakeTimers();
+      const { conversation, hub } = convo();
+      handleEvents(conversation, new Request('http://127.0.0.1:3000/api/agent/events', { headers: { host: '127.0.0.1:3000' } }), { keepaliveMs: 10 });
+      expect([hub.size(), vi.getTimerCount()]).toEqual([1, 1]);
+      // An event that will not serialise takes the same catch path as an
+      // enqueue on a closed controller.
+      hub.publish({ type: 'push-received', cardType: 'visit.arrived', id: 1n } as unknown as TurnEvent);
+      expect([hub.size(), vi.getTimerCount()]).toEqual([0, 0]);
+    });
   });
 });

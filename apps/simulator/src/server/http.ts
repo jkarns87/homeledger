@@ -500,28 +500,38 @@ export function handleEvents(conversation: Conversation, request: Request, opts:
   const encoder = new TextEncoder();
   let unsubscribe = (): void => {};
   let timer: ReturnType<typeof setInterval> | undefined;
+  let cleaned = false;
+  // One cleanup for every way the stream ends (the browser leaving, or an
+  // enqueue failing on a closed controller): drop the subscription and stop
+  // the keepalive. Idempotent, so any path may call it.
+  const cleanup = (): void => {
+    if (cleaned) return;
+    cleaned = true;
+    unsubscribe();
+    if (timer) clearInterval(timer);
+  };
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const send = (event: TurnEvent): void => {
         try {
           controller.enqueue(encoder.encode(encodeSse(event)));
         } catch {
-          unsubscribe();
+          cleanup();
         }
       };
       send({ type: 'push-status', status: conversation.push.status() });
+      if (cleaned) return;
       unsubscribe = conversation.hub.subscribe(send);
       timer = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(': keepalive\n\n'));
         } catch {
-          /* closed */
+          cleanup();
         }
       }, opts.keepaliveMs ?? EVENTS_KEEPALIVE_MS);
     },
     cancel() {
-      unsubscribe();
-      if (timer) clearInterval(timer);
+      cleanup();
     }
   });
   return new Response(stream, {

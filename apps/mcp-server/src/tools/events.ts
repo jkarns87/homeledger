@@ -8,7 +8,9 @@ const EventRow = z.object({
   at: z.string(),
   deviceName: z.string().nullable(),
   summary: z.string(),
-  visitId: z.string().nullable()
+  visitId: z.string().nullable(),
+  // The alert's id for kind 'alert', so a pushed alert id can be matched to its row.
+  alertId: z.string().nullable()
 });
 
 // Since Plan 4 the webhook stores every Ring event it receives (spec §4);
@@ -41,7 +43,8 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
           at: v.windowStart,
           deviceName: null,
           summary: `${v.providerName} ${v.status === 'scheduled' ? 'is scheduled' : v.status} for the ${v.issue}`,
-          visitId: v.id
+          visitId: v.id,
+          alertId: null
         })),
         ...doors
           .filter(e => DOOR_TYPES.has(e.type))
@@ -53,14 +56,16 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
               e.type === 'button_press'
                 ? `Someone rang the ${e.deviceName}`
                 : `${e.subType === 'human' ? 'A person' : e.subType === 'vehicle' ? 'A vehicle' : 'Motion'} at the ${e.deviceName}`,
-            visitId: null
+            visitId: null,
+            alertId: null
           })),
         ...alerts.map(a => ({
           kind: 'alert' as const,
           at: a.at,
           deviceName: a.deviceName,
           summary: a.message ?? `${a.sensorType} alert from the ${a.deviceName}`,
-          visitId: null
+          visitId: null,
+          alertId: a.id
         }))
       ].sort((x, y) => y.at.localeCompare(x.at));
       // `at` is a stored UTC instant and the spoken line is the only place it

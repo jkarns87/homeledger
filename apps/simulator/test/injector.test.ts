@@ -41,7 +41,7 @@ describe('homeEventNote', () => {
   it('names each record and the tool that reads it, one line per push', () => {
     expect(homeEventNote([visit, alert])).toBe(
       '[Home event] The doorbell matched a booked visit, visit_abcdefghijklmnop. Call get_visit with that id and tell the household what it returned.\n' +
-        '[Home event] An alert was raised, alert_abcdefghijklmnop. Call recent_events and tell the household what it returned about that alert.'
+        '[Home event] An alert was raised, alert_abcdefghijklmnop. Call recent_events, find the row whose alertId is alert_abcdefghijklmnop, and tell the household what it says.'
     );
   });
 });

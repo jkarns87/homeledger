@@ -8,7 +8,7 @@ export function homeEventNote(pushes: readonly PushPayload[]): string {
     .map(p =>
       p.cardType === 'visit.arrived'
         ? `${HOME_EVENT_PREFIX} The doorbell matched a booked visit, ${p.id}. Call get_visit with that id and tell the household what it returned.`
-        : `${HOME_EVENT_PREFIX} An alert was raised, ${p.id}. Call recent_events and tell the household what it returned about that alert.`
+        : `${HOME_EVENT_PREFIX} An alert was raised, ${p.id}. Call recent_events, find the row whose alertId is ${p.id}, and tell the household what it says.`
     )
     .join('\n');
 }
