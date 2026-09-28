@@ -1,0 +1,35 @@
+# Non-required by design: this is a brand-new check, and whether `main`
+# requires it is a repository (branch protection) setting — Joey's call, not
+# this workflow's. See docs/RUNBOOK.md §8.3 for the current required-check
+# list and why it lives in one place only.
+name: codeql
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1' # every Monday 06:00 UTC
+
+permissions:
+  security-events: write
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          # `actions` scans the workflow YAML itself for injection (e.g.
+          # untrusted `${{ }}` expansion into a `run:` step) and is trivially
+          # supported alongside javascript-typescript by codeql-action v3.
+          languages: javascript-typescript, actions
+          build-mode: none
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript
