@@ -235,9 +235,21 @@ HOMELEDGER_MCP_URL=http://127.0.0.1:8010/mcp ANTHROPIC_API_KEY=sk-ant-... pnpm -
 
 A loopback `HOMELEDGER_MCP_URL` with no `HOMELEDGER_COGNITO_TOKEN_URL` is the one configuration that sends no bearer token. It cannot be pointed at the deployed runtime: the check requires a loopback host.
 
-**Where the secrets are.** `ANTHROPIC_API_KEY` is read inside a request handler in `apps/simulator/src/server/`, never at import time and never under a `NEXT_PUBLIC_` name; the Cognito client secret comes from Secrets Manager through the same code path the bridge uses; the AgentCore bearer is minted per HTTP request and never leaves the server. The browser talks only to `/api/agent/*` (`turn`, `answer`, `reset`), `/api/widget*` and `/api/debug`, and `apps/simulator/test/no-client-secrets.test.ts` fails `pnpm test` (CI's `test` job, not `next build`) if any credential name appears outside `src/server/` or if a `'use client'` module imports from it.
+**Where the secrets are.** `ANTHROPIC_API_KEY` is read inside a request handler in `apps/simulator/src/server/`, never at import time and never under a `NEXT_PUBLIC_` name; the Cognito client secret comes from Secrets Manager through the same code path the bridge uses; the AgentCore bearer is minted per HTTP request and never leaves the server. The browser talks only to `/api/agent/*` (`turn`, `answer`, `reset`, `events`), `/api/widget*` and `/api/debug`, and `apps/simulator/test/no-client-secrets.test.ts` fails `pnpm test` (CI's `test` job, not `next build`) if any credential name appears outside `src/server/` or if a `'use client'` module imports from it.
 
 `ask_manual` fails against the deployed server and the simulator shows that as a failure: a card titled "The manuals could not be searched", the server's own sentence quoted underneath, and an explanation that model access is blocked on the account. It never renders a blocked retrieval as an empty one.
+
+## Ring
+
+A doorbell press that matches a booked visit writes a snapshot and a one-sentence description onto the visit and pushes a notice to the simulator; a Flood & Freeze sensor trip writes an alert event that `recent_events` and `maintenance_due` can read, whichever of the webhook or the reconciliation poll delivers it first.
+
+Snapshots are stored byte-for-byte with Ring's own watermark — never cropped, resized, or re-encoded — and every description is written without naming or identifying anyone in the frame.
+
+Push is this simulation's own WebSocket channel, not an Alexa+ or MCP capability.
+
+One Ring account links to exactly one household, through the Developer Portal's Token Exchange, Account Link and Webhook URLs.
+
+See `docs/RUNBOOK.md` §4.7 to link a real account and run the live checklist.
 
 ## Deployed endpoint
 

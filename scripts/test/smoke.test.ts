@@ -11,12 +11,16 @@ import {
   assertWidgetWiring,
   askManualRetrievalUnavailableLine,
   buildElicitResponse,
+  buildSmokeWebhook,
   checkManualPassages,
   EXPECTED_TOOLS,
   firstTextBlock,
   manualIngestionSkipped,
   need,
   readManualResult,
+  ringWebhookSmoke,
+  signSmokeBody,
+  SMOKE_EVENT_TYPE,
   timedWithBudget,
   widgetUriOf,
   WIDGET_EXPECTATIONS,
@@ -593,6 +597,47 @@ describe('buildElicitResponse', () => {
     const asked: string[] = [];
     expect(() => buildElicitResponse({ properties: { window: { enum: ['w1', 'w2', 'w3', 'w4', 'w5', 'w6'] } } }, asked)).toThrow(
       'elicitation for window offered 6 options'
+    );
+  });
+});
+
+describe('the signed synthetic webhook (spec §8 smoke, Plan 4 R11)', () => {
+  it('signs exactly as Ring does: sha256=<hex> over the body bytes', () => {
+    // Same body, key and digest as apps/events/test/hmac.test.ts (computed with openssl).
+    expect(signSmokeBody('{"meta":{"request_id":"req-1"},"data":{"type":"button_press"}}', 'test-hmac-signing-key')).toBe(
+      'sha256=c35d7d8c23cdcfc8758c7ad20d4af807220957d80140ee8bedee54226d19f9a5'
+    );
+  });
+
+  it('builds a v1.1 envelope of a type no rule routes', () => {
+    expect(SMOKE_EVENT_TYPE).toBe('homeledger_smoke');
+    expect(JSON.parse(buildSmokeWebhook('smoke-1', 1791292800000))).toEqual({
+      meta: { version: '1.1', time: '2026-10-06T13:20:00.000Z', request_id: 'smoke-1', account_id: 'homeledger-smoke' },
+      data: { id: 'smoke-1', type: 'homeledger_smoke', attributes: { source: 'homeledger-smoke', source_type: 'devices', timestamp: 1791292800000 } }
+    });
+  });
+
+  it('expects accepted, then duplicate, then 401 for a tampered signature', async () => {
+    const answers = [
+      new Response('{"status":"accepted"}', { status: 200 }),
+      new Response('{"status":"duplicate"}', { status: 200 }),
+      new Response('{"error":"signature"}', { status: 401 })
+    ];
+    const seen: Array<{ signature: string | null; body: string }> = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      seen.push({ signature: new Headers(init.headers).get('x-signature'), body: String(init.body) });
+      return answers.shift()!;
+    }) as typeof fetch;
+    await ringWebhookSmoke({ url: 'https://x/ring/webhook', hmacKey: 'k', fetch: fetchImpl, now: () => 1791292800000 });
+    expect(seen[0]!.body).toBe(seen[1]!.body);
+    expect(seen[0]!.signature).toBe(signSmokeBody(seen[0]!.body, 'k'));
+    expect(seen[2]!.signature).not.toBe(seen[0]!.signature);
+  });
+
+  it('fails loudly when the ingest does not answer as it must', async () => {
+    const fetchImpl = (async () => new Response('{"status":"accepted"}', { status: 200 })) as unknown as typeof fetch;
+    await expect(ringWebhookSmoke({ url: 'https://x/ring/webhook', hmacKey: 'k', fetch: fetchImpl, now: () => 1 })).rejects.toThrow(
+      'Ring webhook smoke: a redelivery answered 200 {"status":"accepted"}, expected 200 {"status":"duplicate"}'
     );
   });
 });

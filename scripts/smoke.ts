@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -347,6 +348,39 @@ export function buildElicitResponse(requestedSchema: ElicitRequestedSchema, aske
   return { action: 'accept', content: { [field]: options[0] } };
 }
 
+/** No EventBridge rule matches this type, so a smoke delivery is stored and published and then acted on by nothing (Plan 4 R11). */
+export const SMOKE_EVENT_TYPE = 'homeledger_smoke';
+
+export function buildSmokeWebhook(requestId: string, nowMs: number): string {
+  return JSON.stringify({
+    meta: { version: '1.1', time: new Date(nowMs).toISOString(), request_id: requestId, account_id: 'homeledger-smoke' },
+    data: { id: requestId, type: SMOKE_EVENT_TYPE, attributes: { source: 'homeledger-smoke', source_type: 'devices', timestamp: nowMs } }
+  });
+}
+
+/** Ring's webhook signature (spec §12.2): lowercase hex of HMAC-SHA256 keyed by the key's UTF-8 bytes. */
+export function signSmokeBody(body: string, hmacKey: string): string {
+  return `sha256=${createHmac('sha256', Buffer.from(hmacKey, 'utf8')).update(Buffer.from(body, 'utf8')).digest('hex')}`;
+}
+
+export async function ringWebhookSmoke(opts: { url: string; hmacKey: string; fetch?: typeof fetch; now?: () => number }): Promise<void> {
+  const f = opts.fetch ?? fetch;
+  const now = opts.now ?? Date.now;
+  const body = buildSmokeWebhook(`smoke-${now()}`, now());
+  const send = async (signature: string) => {
+    const res = await f(opts.url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-signature': signature }, body });
+    return { status: res.status, text: (await res.text()).trim() };
+  };
+  const check = (label: string, got: { status: number; text: string }, status: number, text: string | null) => {
+    if (got.status !== status || (text !== null && got.text !== text))
+      throw new Error(`Ring webhook smoke: ${label} answered ${got.status} ${got.text}, expected ${status}${text === null ? '' : ` ${text}`}`);
+  };
+  const signature = signSmokeBody(body, opts.hmacKey);
+  check('a signed delivery', await send(signature), 200, '{"status":"accepted"}');
+  check('a redelivery', await send(signature), 200, '{"status":"duplicate"}');
+  check('a tampered signature', await send(`${signature.slice(0, -1)}${signature.endsWith('0') ? '1' : '0'}`), 401, null);
+}
+
 // ESM's canonical "am I the entrypoint" check. manuals.ts and seed-manual.ts
 // now carry the identical realpathSync form; for a period they carried the
 // unhardened version this comment claimed they matched, which pointed a
@@ -546,6 +580,14 @@ if (isEntrypoint) {
       console.log(`legacy terminateSession: non-fatal - ${err instanceof Error ? err.message : String(err)}`);
     }
     await client.close();
+  }
+
+  const ringWebhookUrl = process.env.RING_WEBHOOK_URL?.trim();
+  if (ringWebhookUrl) {
+    await ringWebhookSmoke({ url: ringWebhookUrl, hmacKey: need('RING_HMAC_KEY') });
+    console.log('RING SMOKE OK');
+  } else {
+    console.log('RING_SMOKE_SKIPPED (no RING_WEBHOOK_URL)');
   }
 
   console.log('SMOKE OK');

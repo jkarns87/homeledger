@@ -42,7 +42,7 @@ not work as documented, and what it cost).
 | MCP Apps widgets (four `ui://` resources) | Yes | Yes, wiring only | The five widget-backed tools carry their `ui://` reference — asserted in-process by `apps/mcp-server/test/widgets.test.ts` and over the wire by the smoke. **Rendering** them now has an MCP Apps host: `apps/simulator`'s `WidgetFrame` renders all four in a sandboxed iframe, exercised end to end by the Playwright suite against a local server. Rendering against the deployed server specifically has not been exercised — see §4.6 and §13 |
 | DynamoDB persistence | Yes, via DynamoDB Local | Yes | |
 | Bedrock Knowledge Base | n/a | Provisioned, unusable | Exists, addressable, cannot be ingested into or queried |
-| Ring events | No | No | No Ring integration exists in this repository. `recent_events` reads rows nothing writes |
+| Ring events | No | Wiring only — proven by a signed synthetic delivery, not a real Ring account | The webhook, HMAC verification, dedupe and EventBridge publish are implemented and exercised end to end by the signed synthetic smoke (§4.7, §9), which delivers a fake, unroutable event through the real pipeline. No Ring account has linked yet — that live run is Plan 4 Task 18. See §4.7 |
 | Alexa+ | No | No | The Alexa+ MCP Toolkit is private preview; entrants cannot call Alexa+ (FL-001) |
 | Echo Show simulator | Yes (against a local server) | Yes, wiring only — **not yet run with the real model** | `apps/simulator` exists and drives the deployed MCP server through an agent on the Anthropic API, not Bedrock (FL-019, FL-032; see §4.6 and `README.md`). Six Playwright specs verify it end to end against a local, scripted server. The run against the deployed runtime with the real model (§13) has not been executed by anyone yet |
 
@@ -241,6 +241,43 @@ Drive it and check, in order — recording what actually happens by updating `FR
 9. **The startup log must not contain `answering from a fixed script`, and no element with `data-testid="scripted-marker"` may appear on the page.** Both are guaranteed by `assertScriptedModeAllowed` (`session.ts`) refusing to start at all if `HOMELEDGER_SIMULATOR_SCRIPTED_MODEL=1` is ever left set against a non-loopback upstream — this is the one point where that refusal fires against the real thing rather than a unit fixture.
 
 Nothing above is a result — it is the checklist `FRICTION-LOG.md` FL-055 is waiting on. The entry there, once this runs, is the log of record; this document does not restate or anticipate an outcome.
+
+### 4.7 Ring: link the account, then check the pipeline
+
+**What it needs:** the deployed stack (Plan 4 merged and applied), the owner's Ring account with the doorbell and the Flood & Freeze sensor set up (steps below), and the four owner secrets. No local AWS work beyond `describe-secret` checks.
+
+**Owner set-up in the Ring app** (from the owner walkthrough of 2026-09-27): the doorbell is added to the location that holds the Ring plan; Control Center → Video Encryption shows no TAKE or end-to-end encryption — re-check this before recording and before judging opens on 2026-11-09, since TAKE is rolling out as a default, and **never** press "Reset Account Encryption"; Sidewalk is on; the Flood & Freeze sensor is added as a Sidewalk device and named for where it sits.
+
+**Ring Developer Portal:** paste `terraform output -raw ring_token_exchange_url`, `ring_account_link_url` and `ring_webhook_url` (read from the latest deploy's summary) into the app's Token Exchange URL, Account Link URL and Webhook URL fields; select the Cameras & Doorbells scope and the Sensors → Flood/Freeze scope.
+
+**Link:** on the app's Test page, authorise the Ring account. The browser lands on HomeLedger's sign-in page; enter the household passphrase; the page answers "Ring is linked to HomeLedger. Found N devices: …". Then:
+
+```bash
+aws dynamodb query --table-name demo-homeledger \
+  --key-condition-expression "PK = :p AND begins_with(SK, :s)" \
+  --expression-attribute-values '{":p":{"S":"HH#hh_harlow"},":s":{"S":"DEVICE#"}}' \
+  --profile homeledger-admin --region us-east-1
+```
+
+shows the doorbell and the sensor (`kind: sensor` for the latter).
+
+**The simulator:** add `HOMELEDGER_PUSH_URL=$(terraform output -raw push_websocket_url)` to `apps/simulator/.env.local`; the debug drawer's "push channel" row reads `connected`.
+
+**The live checklist** (spec §8), each with its expected result — record what actually happens in the FRICTION-LOG entry Task 18 files:
+
+1. Link and check the `DEVICE#` rows (the Link step above).
+2. With a visit booked in a window around now: press the doorbell. Expect, within about a minute, the notice "Home event: the doorbell matched a booked visit.", then the agent's sentence, the visit card with the photo and one sentence, and `snapshotLatencyMs` on the visit row.
+3. With no visit booked around now: press the doorbell. Expect nothing on the display, and an `EVENT#` row for the press.
+4. **Put Ring professional monitoring in test mode first.** Trip the Flood & Freeze sensor (a damp cloth across its probes). Expect the notice "Home event: an alert was raised.", the agent reading the alert from `recent_events`, and the water heater's inspection due today in `maintenance_due`. Note which arrived first, the webhook or the reconciliation poll (the function logs say `source`).
+5. Check again that Video Encryption shows no TAKE, before recording and before judging opens.
+
+**Troubleshooting:**
+
+- A 401 in the webhook logs means the HMAC key secret does not match the portal's key.
+- "Ring has not finished its part yet" on the sign-in page means the Token Exchange URL was not called — check the portal URL and the token-exchange logs.
+- A card that says the photo could not be fetched, with `lastRefusal` in the correlator's log, names Ring's refusal code.
+
+Nothing above is a result until Task 18 of Plan 4 records it.
 
 ---
 
