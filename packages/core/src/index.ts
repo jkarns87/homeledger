@@ -4,6 +4,8 @@ export * from './domain/schemas.js';
 export * from './domain/maintenance.js';
 export * from './domain/time.js';
 export * from './domain/push.js';
+export * from './domain/arrival.js';
+export * from './domain/sensors.js';
 export * from './marketplace/providers.js';
 export * from './repo/keys.js';
 export type { Repository, VisitSnapshot } from './repo/repository.js';
