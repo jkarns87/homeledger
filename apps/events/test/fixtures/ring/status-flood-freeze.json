@@ -1,0 +1,22 @@
+{
+  "source": "Ring knowledge base: amazon_vision_api/sensors/flood_freeze_sensor.md (Flood/Freeze State)",
+  "substitutions": "<device_status_id>=st-2; values exactly as documented",
+  "payload": {
+    "data": {
+      "type": "device-status",
+      "id": "st-2",
+      "attributes": {
+        "flood_detection": { "faulted": false },
+        "freeze_detection": { "faulted": false },
+        "tamper_detection": { "detected": false },
+        "sensor_reporting_state": { "value": "active" },
+        "battery_status": { "percentage": 90 },
+        "signal_strength": { "value": "good" },
+        "online": true,
+        "reported_at": "2026-01-15T21:58:08.213Z",
+        "audio": { "snooze": { "active": null, "until": null } },
+        "state": null
+      }
+    }
+  }
+}

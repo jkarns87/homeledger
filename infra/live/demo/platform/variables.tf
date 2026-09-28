@@ -92,3 +92,27 @@ variable "embedding_model_arn" {
   description = "Override for the knowledge base embedding model ARN. Empty uses Titan Text Embeddings v2 in the deployment region."
   default     = ""
 }
+
+variable "ring_client_id" {
+  type        = string
+  description = "Ring app Client ID - not a secret (spec §3). Passed from the RING_CLIENT_ID repository variable by deploy.yml and teardown.yml."
+  default     = ""
+}
+
+variable "sensors_enabled" {
+  type        = bool
+  description = "Spec §6 flag for the live sensor path."
+  default     = true
+}
+
+variable "sensor_appliance_id" {
+  type        = string
+  description = "Appliance whose inspection a flood or freeze advances (Plan 4 R12)."
+  default     = "appl_waterheater22222"
+}
+
+variable "events_artifacts_dir" {
+  type        = string
+  description = "apps/events build output, relative to this root. deploy.yml builds it before every plan and apply."
+  default     = "../../../../apps/events/dist"
+}

@@ -1,0 +1,5 @@
+{
+  "source": "Ring knowledge base: amazon_vision_api/device_discovery.md (included device-status: key attribute online)",
+  "substitutions": "<device_status_id>=st-1",
+  "payload": { "data": { "type": "device-status", "id": "st-1", "attributes": { "online": true } } }
+}

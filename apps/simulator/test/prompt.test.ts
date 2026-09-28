@@ -17,6 +17,12 @@ const NINE = [
 ];
 
 describe('buildSystemPrompt', () => {
+  it('tells the model a home event comes from the house, and to say only what the tool returned', () => {
+    expect(buildSystemPrompt({ today: '2026-10-06', toolNames: ['get_visit'] })).toContain(
+      '- A message that starts with "[Home event]" comes from the house, not from the person. Call the tool it names, then say in one or two sentences what that tool returned and nothing it did not return. Speak about the visit, the property and maintenance only; never tell anyone they are safe.'
+    );
+  });
+
   it('names every tool it was given, so a new tool cannot go unmentioned', () => {
     const prompt = buildSystemPrompt({ today: '2026-09-21', toolNames: NINE });
     for (const name of NINE) expect(prompt, name).toContain(name);

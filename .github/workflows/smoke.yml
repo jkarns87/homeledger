@@ -57,6 +57,13 @@ jobs:
           KNOWLEDGE_BASE_ID=$(terraform output -raw knowledge_base_id 2>/dev/null || true)
           DATA_SOURCE_ID=$(terraform output -raw data_source_id 2>/dev/null || true)
           AGENT_RUNTIME_ARN=$(terraform output -raw agent_runtime_arn)
+          # Read the same tolerant way as the knowledge-base outputs above, and
+          # for the same reason: a `terraform destroy` of just the ring-events
+          # module, or a rollback to a state before it, puts this back to
+          # exiting 1, which must not fail the workflow before the smoke runs
+          # at all. Empty is meaningful downstream too - it is exactly what
+          # scripts/smoke.ts reads as "no Ring pipeline deployed, skip it".
+          RING_WEBHOOK_URL=$(terraform output -raw ring_webhook_url 2>/dev/null || true)
           echo "::add-mask::$COGNITO_CLIENT_SECRET"
           {
             echo "MCP_URL=$MCP_URL"
@@ -67,11 +74,20 @@ jobs:
             echo "KNOWLEDGE_BASE_ID=$KNOWLEDGE_BASE_ID"
             echo "DATA_SOURCE_ID=$DATA_SOURCE_ID"
             echo "AGENT_RUNTIME_ARN=$AGENT_RUNTIME_ARN"
+            echo "RING_WEBHOOK_URL=$RING_WEBHOOK_URL"
           } >> "$GITHUB_ENV"
           # Kept out of $GITHUB_ENV so it never reaches later steps' full
           # environment (pnpm install included) - only the "Run smoke" step
           # below receives it, via its own env:.
           echo "client_secret=$COGNITO_CLIENT_SECRET" >> "$GITHUB_OUTPUT"
+
+      - name: Read the Ring HMAC key for the signed synthetic webhook
+        id: ring-key
+        if: env.RING_WEBHOOK_URL != ''
+        run: |
+          KEY=$(aws secretsmanager get-secret-value --secret-id demo-homeledger/ring/hmac-key --query SecretString --output text)
+          echo "::add-mask::$KEY"
+          echo "hmac_key=$KEY" >> "$GITHUB_OUTPUT"
 
       - uses: pnpm/action-setup@v4
         with: { version: 10.15.0 }
@@ -130,6 +146,7 @@ jobs:
       - name: Run smoke
         env:
           COGNITO_CLIENT_SECRET: ${{ steps.tf-outputs.outputs.client_secret }}
+          RING_HMAC_KEY: ${{ steps.ring-key.outputs.hmac_key }}
         # KNOWLEDGE_BASE_ID and MANUAL_INGESTION_SKIPPED are not listed here
         # and must not be: both arrive through $GITHUB_ENV (the first from
         # the Terraform outputs step, the second from the seed step's
@@ -145,7 +162,7 @@ jobs:
         # this step cannot pass without the script actually having reached
         # its end, independent of and in addition to the realpath fix in
         # smoke.ts itself.
-        run: pnpm smoke | tee smoke.log && grep -q '^SMOKE OK$' smoke.log
+        run: pnpm smoke | tee smoke.log && grep -q '^SMOKE OK$' smoke.log && grep -Eq '^(RING SMOKE OK|RING_SMOKE_SKIPPED)' smoke.log
 
       - name: Tail runtime logs
         if: always()

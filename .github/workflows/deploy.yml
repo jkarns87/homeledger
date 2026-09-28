@@ -27,8 +27,18 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      RING_CLIENT_ID: ${{ vars.RING_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
+
+      # module.ring_events zips apps/events' bundles at plan time (archive_file),
+      # so they must exist before Terraform reads the configuration.
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @homeledger/core build && pnpm --filter @homeledger/events build
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -46,7 +56,7 @@ jobs:
         working-directory: infra/live/demo/platform
         run: |
           IMAGE=$(terraform output -raw deployed_image_uri 2>/dev/null || true)
-          terraform plan -no-color -input=false -var "image_uri=$IMAGE" -out=tfplan
+          terraform plan -no-color -input=false -var "image_uri=$IMAGE" -var "ring_client_id=$RING_CLIENT_ID" -out=tfplan
           {
             echo "<details><summary>terraform plan</summary>"
             echo ""
@@ -64,8 +74,18 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      RING_CLIENT_ID: ${{ vars.RING_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
+
+      # module.ring_events zips apps/events' bundles at plan time (archive_file),
+      # so they must exist before Terraform reads the configuration.
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @homeledger/core build && pnpm --filter @homeledger/events build
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -91,7 +111,7 @@ jobs:
         working-directory: infra/live/demo/platform
         run: |
           if ! terraform state list 2>/dev/null | grep -qx 'aws_ecr_repository.mcp'; then
-            terraform apply -auto-approve -input=false -target=aws_ecr_repository.mcp -target=aws_ecr_lifecycle_policy.mcp -var image_uri=""
+            terraform apply -auto-approve -input=false -target=aws_ecr_repository.mcp -target=aws_ecr_lifecycle_policy.mcp -var image_uri="" -var "ring_client_id=$RING_CLIENT_ID"
           fi
 
       - name: Build and push image
@@ -105,7 +125,7 @@ jobs:
         working-directory: infra/live/demo/platform
         env:
           IMAGE_URI: ${{ steps.image.outputs.uri }}
-        run: terraform apply -auto-approve -input=false -var "image_uri=$IMAGE_URI"
+        run: terraform apply -auto-approve -input=false -var "image_uri=$IMAGE_URI" -var "ring_client_id=$RING_CLIENT_ID"
 
       - name: Publish outputs summary
         working-directory: infra/live/demo/platform

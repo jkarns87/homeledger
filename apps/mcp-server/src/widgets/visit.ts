@@ -52,18 +52,22 @@ const SCRIPT = String.raw`
     if (visit.arrivedAtLabel) textRow(card, 'muted', 'arrived ' + visit.arrivedAtLabel);
     detail.appendChild(card);
 
+    if (data.matchNote) textRow(detail, 'muted', data.matchNote);
     if (data.description) {
       var described = document.createElement('div');
       described.className = 'card';
       textRow(described, 'muted', data.description);
       detail.appendChild(described);
     }
+    if (data.snapshotNote && !data.snapshotUrl) textRow(detail, 'muted', data.snapshotNote);
     if (data.snapshotUrl) {
       var shot = document.createElement('img');
-      shot.src = data.snapshotUrl;
-      shot.alt = 'Doorbell snapshot taken when the visit was matched';
+      shot.alt = 'Doorbell photo from the moment of the ring';
       shot.style.maxWidth = '100%';
       shot.style.borderRadius = '12px';
+      // The frame is measured before a remote image arrives; measure again once it has.
+      shot.onload = function () { window.homeledger.reportSize(); };
+      shot.src = data.snapshotUrl;
       detail.appendChild(shot);
     }
     window.homeledger.reportSize();

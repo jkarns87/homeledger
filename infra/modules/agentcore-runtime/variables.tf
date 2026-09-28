@@ -82,3 +82,9 @@ variable "knowledge_base_arn" {
   description = "ARN of the Bedrock Knowledge Base the runtime may call bedrock:Retrieve on. Empty string grants no retrieval access."
   default     = ""
 }
+
+variable "snapshot_bucket_arn" {
+  type        = string
+  description = "ARN of the doorbell snapshot bucket. The runtime may s3:GetObject under snapshots/ only, to presign the image get_visit returns (spec §5). Empty grants no S3 access."
+  default     = ""
+}

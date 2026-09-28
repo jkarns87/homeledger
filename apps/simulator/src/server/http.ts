@@ -164,6 +164,64 @@ async function readJson(request: Request): Promise<Record<string, unknown> | und
   }
 }
 
+export interface StartedTurn {
+  turnId: string;
+  done: Promise<void>;
+  abort: AbortController;
+}
+
+/**
+ * Claims the one turn slot and runs a turn, emitting into `emit`. Used by the
+ * POST route (emit = the response stream) and by the push injector (emit =
+ * the event hub), so both are held to one turn at a time (final review I3).
+ * Checked and claimed with no `await` in between.
+ */
+export function startTurn(conversation: Conversation, text: string, emit: (event: TurnEvent) => void): StartedTurn | 'busy' {
+  if (conversation.activeTurn) return 'busy';
+  const turnId = randomUUID();
+  const abort = new AbortController();
+  let settle!: () => void;
+  const active = { turnId, controller: abort, settled: new Promise<void>(resolve => (settle = resolve)) };
+  conversation.activeTurn = active;
+  const done = runTurn(
+    {
+      model: conversation.model,
+      mcp: conversation.mcp,
+      registry: conversation.registry,
+      router: conversation.router,
+      tools: conversation.tools,
+      emit,
+      now: conversation.now,
+      // The household's calendar date, not the UTC one. The model is told
+      // `Today is ${today}` and then says it out loud, so this is a date a
+      // person hears — and `new Date().toISOString().slice(0,10)`, which
+      // this used to be, is the construct spec §4.2 names as wrong and the
+      // one that flipped maintenance items to overdue at 7 PM US Central.
+      // `todayInZone` is core's, already fixed once and tested there.
+      today: todayInZone(new Date(conversation.now()).toISOString(), conversation.timeZone),
+      maxRounds: conversation.env.maxRounds,
+      elicitationTimeoutMs: conversation.env.elicitationTimeoutMs,
+      signal: abort.signal
+    },
+    turnId,
+    conversation.history,
+    text
+  )
+    .then(next => {
+      // An aborted turn writes nothing: the page that asked is gone, or a
+      // reset has already cleared the history this would overwrite.
+      if (!abort.signal.aborted) conversation.history = next;
+    })
+    .catch((error: unknown) => {
+      emit({ type: 'turn-failed', message: error instanceof Error ? error.message : String(error) });
+    })
+    .finally(() => {
+      if (conversation.activeTurn === active) conversation.activeTurn = undefined;
+      settle();
+    });
+  return { turnId, done, abort };
+}
+
 /**
  * Runs one turn and streams it.
  *
@@ -185,15 +243,13 @@ export async function handleTurn(conversation: Conversation, request: Request): 
   if (typeof text !== 'string' || text.trim() === '')
     return json({ ok: false, reason: 'bad-request', message: 'The body needs a non-empty "text" field.' }, 400);
 
-  // One turn at a time, checked and claimed with no `await` in between, so two
-  // POSTs racing each other cannot both see the slot empty.
+  // One turn at a time, checked here and claimed inside the stream's start(),
+  // which the ReadableStream constructor runs synchronously - so there is
+  // still no await between the check and the claim, and two POSTs racing each
+  // other cannot both see the slot empty.
   if (conversation.activeTurn) return json({ ok: false, reason: 'turn-running', message: TURN_RUNNING_MESSAGE }, 409);
-  const turnId = randomUUID();
-  const abort = new AbortController();
-  let settle!: () => void;
-  const active = { turnId, controller: abort, settled: new Promise<void>(resolve => (settle = resolve)) };
-  conversation.activeTurn = active;
   const encoder = new TextEncoder();
+  let started!: StartedTurn;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       let open = true;
@@ -207,56 +263,25 @@ export async function handleTurn(conversation: Conversation, request: Request): 
           open = false;
         }
       };
-      void runTurn(
-        {
-          model: conversation.model,
-          mcp: conversation.mcp,
-          registry: conversation.registry,
-          router: conversation.router,
-          tools: conversation.tools,
-          emit,
-          now: conversation.now,
-          // The household's calendar date, not the UTC one. The model is told
-          // `Today is ${today}` and then says it out loud, so this is a date a
-          // person hears — and `new Date().toISOString().slice(0,10)`, which
-          // this used to be, is the construct spec §4.2 names as wrong and the
-          // one that flipped maintenance items to overdue at 7 PM US Central.
-          // `todayInZone` is core's, already fixed once and tested there.
-          today: todayInZone(new Date(conversation.now()).toISOString(), conversation.timeZone),
-          maxRounds: conversation.env.maxRounds,
-          elicitationTimeoutMs: conversation.env.elicitationTimeoutMs,
-          signal: abort.signal
-        },
-        turnId,
-        conversation.history,
-        text
-      )
-        .then(next => {
-          // An aborted turn writes nothing: the page that asked is gone, or a
-          // reset has already cleared the history this would overwrite.
-          if (!abort.signal.aborted) conversation.history = next;
-        })
-        .catch((error: unknown) => {
-          emit({ type: 'turn-failed', message: error instanceof Error ? error.message : String(error) });
-        })
-        .finally(() => {
-          if (conversation.activeTurn === active) conversation.activeTurn = undefined;
-          settle();
-          open = false;
-          try {
-            controller.close();
-          } catch {
-            /* already closed by a cancel */
-          }
-        });
+      const claimed = startTurn(conversation, text, emit);
+      if (claimed === 'busy') throw new Error('unreachable: the slot was checked free with no await since');
+      started = claimed;
+      void claimed.done.finally(() => {
+        open = false;
+        try {
+          controller.close();
+        } catch {
+          /* already closed by a cancel */
+        }
+      });
     },
     cancel() {
       // Both, and the abort first: closing the registry settles an open
       // question, and the abort stops the model call and every later round,
       // which would otherwise keep running — and keep being paid for — for a
       // page that is gone.
-      abort.abort(new Error(BROWSER_CLOSED_REASON));
-      conversation.registry.close(turnId, 'the browser closed the turn before answering');
+      started.abort.abort(new Error(BROWSER_CLOSED_REASON));
+      conversation.registry.close(started.turnId, 'the browser closed the turn before answering');
     }
   });
 
@@ -268,7 +293,7 @@ export async function handleTurn(conversation: Conversation, request: Request): 
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',
       'x-accel-buffering': 'no',
-      'x-homeledger-turn-id': turnId
+      'x-homeledger-turn-id': started.turnId
     }
   });
 }
@@ -451,6 +476,7 @@ export function handleDebug(conversation: Conversation, request: Request): Respo
       // the deployed runtime, and this field is what lets the page say so
       // rather than only logging it where nobody watching a demo would see.
       scripted: conversation.scripted,
+      push: conversation.push.status(),
       // Methods and timings. `HomeLedgerMcp.record` keeps payloads out at the
       // source; this endpoint spreads the entries it is given and adds
       // nothing, so there is one place to read to know what can appear here.
@@ -458,4 +484,62 @@ export function handleDebug(conversation: Conversation, request: Request): Respo
     }),
     { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } }
   );
+}
+
+export const EVENTS_KEEPALIVE_MS = 25_000;
+
+/**
+ * GET /api/agent/events: the browser's only view of pushes (spec §7). Same
+ * origin and loopback checks as every route; no credential crosses it. The
+ * first event is the push channel's current status, so a page that opens
+ * late still shows the right state.
+ */
+export function handleEvents(conversation: Conversation, request: Request, opts: { keepaliveMs?: number } = {}): Response {
+  const forbidden = checkOrigin(request, conversation.env.allowOrigin);
+  if (forbidden) return forbidden;
+  const encoder = new TextEncoder();
+  let unsubscribe = (): void => {};
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let cleaned = false;
+  // One cleanup for every way the stream ends (the browser leaving, or an
+  // enqueue failing on a closed controller): drop the subscription and stop
+  // the keepalive. Idempotent, so any path may call it.
+  const cleanup = (): void => {
+    if (cleaned) return;
+    cleaned = true;
+    unsubscribe();
+    if (timer) clearInterval(timer);
+  };
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const send = (event: TurnEvent): void => {
+        try {
+          controller.enqueue(encoder.encode(encodeSse(event)));
+        } catch {
+          cleanup();
+        }
+      };
+      send({ type: 'push-status', status: conversation.push.status() });
+      if (cleaned) return;
+      unsubscribe = conversation.hub.subscribe(send);
+      timer = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': keepalive\n\n'));
+        } catch {
+          cleanup();
+        }
+      }, opts.keepaliveMs ?? EVENTS_KEEPALIVE_MS);
+    },
+    cancel() {
+      cleanup();
+    }
+  });
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no'
+    }
+  });
 }

@@ -34,6 +34,7 @@ export interface SimulatorEnv {
    * name a loopback address, and an `Origin`, when one is sent, must match it.
    */
   allowOrigin: string | undefined;
+  pushUrl: string | undefined;
 }
 
 function positiveInt(source: NodeJS.ProcessEnv, key: string, fallback: number): number {
@@ -42,6 +43,22 @@ function positiveInt(source: NodeJS.ProcessEnv, key: string, fallback: number): 
   if (!/^\d+$/.test(raw) || Number(raw) <= 0)
     throw new SimulatorConfigError(`${key} must be a positive whole number of ${key.endsWith('_MS') ? 'milliseconds' : 'rounds'}; got ${JSON.stringify(raw)}.`);
   return Number(raw);
+}
+
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/** Optional: unset means no push channel. wss:// always; ws:// only to loopback, for a local stand-in. */
+function pushUrlFrom(source: NodeJS.ProcessEnv): string | undefined {
+  const raw = source.HOMELEDGER_PUSH_URL?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new SimulatorConfigError(`HOMELEDGER_PUSH_URL must be a wss:// URL; got ${JSON.stringify(raw)}.`);
+  }
+  if (url.protocol === 'wss:' || (url.protocol === 'ws:' && LOOPBACK.has(url.hostname))) return raw;
+  throw new SimulatorConfigError(`HOMELEDGER_PUSH_URL must be a wss:// URL (ws:// is accepted only for localhost); got ${JSON.stringify(raw)}.`);
 }
 
 export function readSimulatorEnv(source: NodeJS.ProcessEnv = process.env): SimulatorEnv {
@@ -55,6 +72,7 @@ export function readSimulatorEnv(source: NodeJS.ProcessEnv = process.env): Simul
     model: source.HOMELEDGER_SIMULATOR_MODEL?.trim() || DEFAULT_MODEL,
     maxRounds: positiveInt(source, 'HOMELEDGER_SIMULATOR_MAX_ROUNDS', DEFAULT_MAX_ROUNDS),
     elicitationTimeoutMs: positiveInt(source, 'HOMELEDGER_SIMULATOR_ELICITATION_TIMEOUT_MS', DEFAULT_ELICITATION_TIMEOUT_MS),
-    allowOrigin: source.HOMELEDGER_SIMULATOR_ALLOW_ORIGIN?.trim() || undefined
+    allowOrigin: source.HOMELEDGER_SIMULATOR_ALLOW_ORIGIN?.trim() || undefined,
+    pushUrl: pushUrlFrom(source)
   };
 }

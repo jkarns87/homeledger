@@ -1,6 +1,15 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { BatchWriteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import type { Alert, Appliance, Device, Doc, Event, Household, LogEntry, MaintenanceItem, TaskTypeValue, Visit } from '../domain/schemas.js';
+import {
+  BatchWriteCommand,
+  DeleteCommand,
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  TransactWriteCommand,
+  UpdateCommand
+} from '@aws-sdk/lib-dynamodb';
+import type { Alert, Appliance, Connection, Device, Doc, Event, Household, LogEntry, MaintenanceItem, TaskTypeValue, Visit } from '../domain/schemas.js';
 import { HouseholdSchema } from '../domain/schemas.js';
 import { gsi1, gsi2, pk, sk } from './keys.js';
 import type { Repository } from './repository.js';
@@ -13,7 +22,7 @@ function addDays(isoDate: string, days: number): string {
 
 function strip<T>(item: Item | undefined): T | null {
   if (!item) return null;
-  const { PK: _pk, SK: _sk, GSI1PK: _g1p, GSI1SK: _g1s, GSI2PK: _g2p, GSI2SK: _g2s, entity: _e, ...rest } = item;
+  const { PK: _pk, SK: _sk, GSI1PK: _g1p, GSI1SK: _g1s, GSI2PK: _g2p, GSI2SK: _g2s, entity: _e, ttl: _ttl, ...rest } = item;
   return rest as T;
 }
 
@@ -55,6 +64,8 @@ export function createDynamoRepository(opts: {
     );
     return (out.Items ?? []).map(i => strip<R>(i) as R);
   };
+
+  const isConditionFailure = (err: unknown): boolean => (err as { name?: string }).name === 'ConditionalCheckFailedException';
 
   return {
     async getHousehold() {
@@ -158,7 +169,7 @@ export function createDynamoRepository(opts: {
         await doc.send(
           new PutCommand({
             TableName: T,
-            Item: { PK: P, SK: `EVENTID#${e.ringEventId}`, entity: 'event_marker', eventId: e.id },
+            Item: { PK: P, SK: sk.eventMarker(e.ringEventId), entity: 'event_marker', eventId: e.id },
             ConditionExpression: 'attribute_not_exists(PK)'
           })
         );
@@ -227,6 +238,115 @@ export function createDynamoRepository(opts: {
     async listDevices() {
       const all = await queryPrefix<Device>('DEVICE#');
       return all.sort((x, y) => x.name.localeCompare(y.name));
+    },
+    async getDevice(ringDeviceId) {
+      return get<Device>(sk.device(ringDeviceId));
+    },
+    async claimEvent(e) {
+      try {
+        await doc.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                Put: {
+                  TableName: T,
+                  Item: { PK: P, SK: sk.eventMarker(e.ringEventId), entity: 'event_marker', eventId: e.id, published: false },
+                  ConditionExpression: 'attribute_not_exists(PK)'
+                }
+              },
+              { Put: { TableName: T, Item: { PK: P, SK: sk.event(e.at, e.id), entity: 'event', ...e } } }
+            ]
+          })
+        );
+        return 'new';
+      } catch (err) {
+        // A transaction whose condition fails is cancelled as a whole and
+        // reports TransactionCanceledException, not ConditionalCheckFailedException
+        // - but that same exception name also covers TransactionConflict (a
+        // concurrent transaction on this same item, i.e. two redeliveries
+        // racing each other - exactly the case this method exists for),
+        // throttling, and other reasons that have nothing to do with this
+        // event already being claimed. CancellationReasons[0] is the marker
+        // Put's outcome; only ConditionalCheckFailed there means "already
+        // claimed". Anything else - including a TransactionCanceledException
+        // with no CancellationReasons - is rethrown unchanged, so the caller
+        // (the webhook) answers 500 and Ring retries the whole delivery.
+        const cancellation = err as { name?: string; CancellationReasons?: { Code?: string }[] };
+        if (cancellation.name !== 'TransactionCanceledException' || cancellation.CancellationReasons?.[0]?.Code !== 'ConditionalCheckFailed') {
+          throw err;
+        }
+      }
+      const marker = await doc.send(new GetCommand({ TableName: T, Key: { PK: P, SK: sk.eventMarker(e.ringEventId) } }));
+      if (marker.Item?.published === true) return 'published';
+      await put(sk.event(e.at, e.id), 'event', e);
+      return 'retry';
+    },
+    async markEventPublished(ringEventId) {
+      await doc.send(
+        new UpdateCommand({
+          TableName: T,
+          Key: { PK: P, SK: sk.eventMarker(ringEventId) },
+          UpdateExpression: 'SET published = :t',
+          ConditionExpression: 'attribute_exists(PK)',
+          ExpressionAttributeValues: { ':t': true }
+        })
+      );
+    },
+    async markVisitArrived(visitId, arrivedAt, ringEventId) {
+      try {
+        await doc.send(
+          new UpdateCommand({
+            TableName: T,
+            Key: { PK: P, SK: sk.visit(visitId) },
+            UpdateExpression: 'SET #status = :arrived, arrivedAt = :at, ringEventIds = list_append(if_not_exists(ringEventIds, :empty), :ev)',
+            ConditionExpression: 'attribute_exists(PK) AND #status = :scheduled',
+            ExpressionAttributeNames: { '#status': 'status' },
+            ExpressionAttributeValues: { ':arrived': 'arrived', ':scheduled': 'scheduled', ':at': arrivedAt, ':empty': [], ':ev': [ringEventId] }
+          })
+        );
+        return 'arrived';
+      } catch (err) {
+        if (isConditionFailure(err)) return 'not-scheduled';
+        throw err;
+      }
+    },
+    async recordVisitSnapshot(visitId, snapshot) {
+      try {
+        await doc.send(
+          new UpdateCommand({
+            TableName: T,
+            Key: { PK: P, SK: sk.visit(visitId) },
+            UpdateExpression: 'SET snapshotKey = :k, snapshotStatus = :s, description = :d, snapshotLatencyMs = :l',
+            ConditionExpression: 'attribute_exists(PK)',
+            ExpressionAttributeValues: {
+              ':k': snapshot.snapshotKey,
+              ':s': snapshot.snapshotStatus,
+              ':d': snapshot.description,
+              ':l': snapshot.snapshotLatencyMs
+            }
+          })
+        );
+      } catch (err) {
+        if (isConditionFailure(err)) throw new Error(`No visit ${visitId}`);
+        throw err;
+      }
+    },
+    async findOpenAlert(ringDeviceId, sensorType) {
+      const all = await queryPrefix<Alert>('ALERT#');
+      return (
+        all.filter(a => a.ringDeviceId === ringDeviceId && a.sensorType === sensorType && a.status === 'open').sort((x, y) => y.at.localeCompare(x.at))[0] ??
+        null
+      );
+    },
+    async putConnection(c) {
+      await put(sk.connection(c.connectionId), 'connection', c, { ttl: c.expiresAt });
+    },
+    async deleteConnection(connectionId) {
+      await doc.send(new DeleteCommand({ TableName: T, Key: { PK: P, SK: sk.connection(connectionId) } }));
+    },
+    async listConnections(nowEpochSeconds) {
+      const all = await queryPrefix<Connection>('CONN#');
+      return all.filter(c => c.expiresAt > nowEpochSeconds);
     }
   };
 }

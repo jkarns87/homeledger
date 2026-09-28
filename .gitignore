@@ -23,3 +23,4 @@ blob-report/
 .DS_Store
 .claude/worktrees/
 .superpowers/
+infra/modules/ring-events/.build/

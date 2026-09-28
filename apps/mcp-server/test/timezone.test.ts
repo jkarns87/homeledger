@@ -28,6 +28,8 @@ async function putWindowVisit(repo: Awaited<ReturnType<typeof modernClient>>['de
     ringEventIds: [],
     snapshotKey: null,
     description: null,
+    snapshotStatus: null,
+    snapshotLatencyMs: null,
     arrivedAt: null,
     createdAt: `${TODAY}T12:00:00.000Z`
   });

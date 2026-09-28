@@ -68,3 +68,33 @@ output "data_source_id" {
   description = "Bedrock data source id used by the manuals ingestion script to start ingestion jobs."
   value       = module.knowledge_base.data_source_id
 }
+
+output "ring_token_exchange_url" {
+  description = "Ring Developer Portal: Token Exchange URL."
+  value       = module.ring_events.token_exchange_url
+}
+
+output "ring_account_link_url" {
+  description = "Ring Developer Portal: Account Link URL."
+  value       = module.ring_events.account_link_url
+}
+
+output "ring_webhook_url" {
+  description = "Ring Developer Portal: Webhook URL."
+  value       = module.ring_events.webhook_url
+}
+
+output "push_websocket_url" {
+  description = "HOMELEDGER_PUSH_URL for the simulator."
+  value       = module.ring_events.push_websocket_url
+}
+
+output "snapshot_bucket" {
+  description = "Doorbell snapshot bucket."
+  value       = module.ring_events.snapshot_bucket
+}
+
+output "ring_event_bus_name" {
+  description = "The Ring pipeline's event bus."
+  value       = module.ring_events.event_bus_name
+}

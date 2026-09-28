@@ -66,6 +66,7 @@ describe('Frame', () => {
     expect(DISCLOSURE_TEXT).toContain('Simulation');
     expect(DISCLOSURE_TEXT).toContain('sample data');
     expect(DISCLOSURE_TEXT).toContain('no booking leaves this system');
+    expect(DISCLOSURE_TEXT).toContain('Home events arrive over this simulation’s own push channel');
   });
 
   it('wears no product name it has no right to', () => {

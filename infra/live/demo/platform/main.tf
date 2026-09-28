@@ -74,6 +74,12 @@ resource "aws_dynamodb_table" "homeledger" {
     projection_type = "ALL"
   }
 
+  # Push connection rows (CONN#) expire on their own (Plan 4 Task 3).
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
   point_in_time_recovery { enabled = true }
 }
 
@@ -146,6 +152,46 @@ resource "aws_secretsmanager_secret_version" "request_state" {
   secret_string_wo_version = 1
 }
 
+# ---------- Ring (Plan 4) ----------
+# Owner-created secrets, read by reference so a destroy can never delete them
+# and their values never enter state (spec §3, Plan 4 R7).
+data "aws_secretsmanager_secret" "ring_client_secret" {
+  name = "${local.name_prefix}/ring/client-secret"
+}
+
+data "aws_secretsmanager_secret" "ring_hmac_key" {
+  name = "${local.name_prefix}/ring/hmac-key"
+}
+
+data "aws_secretsmanager_secret" "anthropic_key" {
+  name = "${local.name_prefix}/anthropic/api-key"
+}
+
+data "aws_secretsmanager_secret" "link_passphrase" {
+  name = "${local.name_prefix}/ring/link-passphrase"
+}
+
+module "ring_events" {
+  source = "../../../modules/ring-events"
+
+  name_prefix            = local.name_prefix
+  household_id           = var.household_id
+  table_name             = aws_dynamodb_table.homeledger.name
+  table_arn              = aws_dynamodb_table.homeledger.arn
+  artifacts_dir          = var.events_artifacts_dir
+  ring_client_id         = var.ring_client_id
+  ring_client_secret_arn = data.aws_secretsmanager_secret.ring_client_secret.arn
+  ring_hmac_key_arn      = data.aws_secretsmanager_secret.ring_hmac_key.arn
+  anthropic_key_arn      = data.aws_secretsmanager_secret.anthropic_key.arn
+  link_passphrase_arn    = data.aws_secretsmanager_secret.link_passphrase.arn
+  cognito_user_pool_id   = module.cognito.user_pool_id
+  cognito_client_id      = module.cognito.client_id
+  sensors_enabled        = var.sensors_enabled
+  sensor_appliance_id    = var.sensor_appliance_id
+
+  secret_recovery_window_in_days = var.secret_recovery_window_in_days
+}
+
 # ---------- AgentCore Runtime (execution role + runtime) ----------
 module "agentcore_runtime" {
   source = "../../../modules/agentcore-runtime"
@@ -166,10 +212,13 @@ module "agentcore_runtime" {
     KNOWLEDGE_BASE_ID     = module.knowledge_base.knowledge_base_id
     REQUEST_STATE_KEY     = random_password.request_state.result
     AVAILABILITY_DELAY_MS = tostring(var.availability_delay_ms)
+    SNAPSHOT_BUCKET       = module.ring_events.snapshot_bucket
+    SNAPSHOT_ORIGIN       = module.ring_events.snapshot_origin
   }
 
   jwt_discovery_url            = module.cognito.discovery_url
   jwt_allowed_client_ids       = [module.cognito.client_id]
   idle_session_timeout_seconds = var.idle_session_timeout_seconds
   knowledge_base_arn           = module.knowledge_base.knowledge_base_arn
+  snapshot_bucket_arn          = module.ring_events.snapshot_bucket_arn
 }

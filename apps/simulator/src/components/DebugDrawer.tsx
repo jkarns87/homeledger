@@ -57,6 +57,12 @@ export function DebugDrawer({ snapshot, state }: { snapshot: DebugSnapshot | nul
           <li>{snapshot.tools.length} tools</li>
         </ul>
       )}
+      {/* From the home-event stream, not from the snapshot: the snapshot is
+          polled only while a turn runs or a question is open, and the push
+          channel changes state (spec §7 "Reconnect") while the page is idle. */}
+      <ul className="muted">
+        <li data-testid="debug-push">push channel {state.pushStatus}</li>
+      </ul>
       <ul className="muted">
         {calls.map(call => (
           <li key={call.id}>{call.ms === null ? `${call.tool} running` : `${call.tool} ${call.ms} ms`}</li>

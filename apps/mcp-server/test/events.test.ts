@@ -25,6 +25,8 @@ describe('recent_events', () => {
       ringEventIds: [],
       snapshotKey: null,
       description: null,
+      snapshotStatus: null,
+      snapshotLatencyMs: null,
       arrivedAt: null,
       createdAt: '2026-09-12T10:00:00.000Z'
     });
@@ -44,6 +46,8 @@ describe('recent_events', () => {
       ringEventIds: [],
       snapshotKey: null,
       description: null,
+      snapshotStatus: null,
+      snapshotLatencyMs: null,
       arrivedAt: null,
       createdAt: '2026-09-12T10:00:00.000Z'
     });
@@ -68,6 +72,9 @@ describe('recent_events', () => {
     await h.deps.repo.putAlert({
       id: 'alert_aaaaaaaaaaaaaaaa',
       sensorType: 'freeze',
+      severity: 'high',
+      ringDeviceId: null,
+      message: null,
       deviceName: 'Garage sensor',
       at: '2026-09-13T11:30:00.000Z',
       maintenanceRef: null,
@@ -84,7 +91,7 @@ describe('recent_events', () => {
       rawS3Key: null
     });
     const r = await h.client.callTool({ name: 'recent_events', arguments: { sinceHours: 24 } });
-    const sc = r.structuredContent as { events: Array<{ kind: string; at: string; summary: string; visitId: string | null }> };
+    const sc = r.structuredContent as { events: Array<{ kind: string; at: string; summary: string; visitId: string | null; alertId: string | null }> };
     // Neither of these is the source order events.ts builds the array in
     // (visits, then doors, then alerts), so both fail if the sort is removed
     // or reversed. The `at` list is asserted alongside the kinds because it
@@ -94,6 +101,27 @@ describe('recent_events', () => {
     expect(sc.events.map(e => e.at)).toEqual(['2026-09-13T11:30:00.000Z', '2026-09-13T11:00:00.000Z', '2026-09-13T09:30:00.000Z']);
     expect(sc.events.find(e => e.kind === 'visit')?.visitId).toBe('visit_aaaaaaaaaaaaaaaa');
     expect(sc.events.some(e => e.visitId === 'visit_cccccccccccccccc')).toBe(false);
+    // The injected alert note names an alert id; the alert row must carry it
+    // so the model can find that row (and no other kind of row carries one).
+    expect(sc.events).toEqual([
+      {
+        kind: 'alert',
+        at: '2026-09-13T11:30:00.000Z',
+        deviceName: 'Garage sensor',
+        summary: 'freeze alert from the Garage sensor',
+        visitId: null,
+        alertId: 'alert_aaaaaaaaaaaaaaaa'
+      },
+      {
+        kind: 'visit',
+        at: '2026-09-13T11:00:00.000Z',
+        deviceName: null,
+        summary: 'Reliable Plumbing is scheduled for the leak',
+        visitId: 'visit_aaaaaaaaaaaaaaaa',
+        alertId: null
+      },
+      { kind: 'door', at: '2026-09-13T09:30:00.000Z', deviceName: 'Front Door', summary: 'Someone rang the Front Door', visitId: null, alertId: null }
+    ]);
     const text = (r.content as Array<{ text?: string }>)[0]?.text ?? '';
     expect(hasJson(text)).toBe(false);
     expect(text).toContain('Reliable Plumbing');
@@ -103,5 +131,46 @@ describe('recent_events', () => {
     close = h.close;
     const r = await h.client.callTool({ name: 'recent_events', arguments: {} });
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe('Nothing happened in the last 24 hours.');
+  });
+
+  it('lists only door events as door rows, and speaks a system alert in its own words', async () => {
+    const h = await modernClient();
+    close = h.close;
+    await h.deps.repo.putEvent({
+      id: 'evt_aaaaaaaaaaaaaaaa',
+      ringEventId: 'req-fl-0001',
+      type: 'flood_detected',
+      subType: null,
+      deviceId: 'dev-flood-1',
+      deviceName: 'Water Heater',
+      at: '2026-09-13T11:10:00.000Z',
+      rawS3Key: null
+    });
+    await h.deps.repo.putEvent({
+      id: 'evt_bbbbbbbbbbbbbbbb',
+      ringEventId: 'req-bp-0001',
+      type: 'button_press',
+      subType: null,
+      deviceId: 'dev-doorbell-1',
+      deviceName: 'Front Door',
+      at: '2026-09-13T11:20:00.000Z',
+      rawS3Key: null
+    });
+    await h.deps.repo.putAlert({
+      id: 'alert_aaaaaaaaaaaaaaaa',
+      sensorType: 'system',
+      severity: 'high',
+      ringDeviceId: null,
+      message: 'Ring access lapsed, so doorbell and sensor events have stopped. Link the Ring account again from the Ring app.',
+      deviceName: 'HomeLedger',
+      at: '2026-09-13T11:30:00.000Z',
+      maintenanceRef: null,
+      status: 'open'
+    });
+    const sc = (await h.client.callTool({ name: 'recent_events', arguments: {} })).structuredContent as { events: Array<{ kind: string; summary: string }> };
+    expect(sc.events.map(e => [e.kind, e.summary])).toEqual([
+      ['alert', 'Ring access lapsed, so doorbell and sensor events have stopped. Link the Ring account again from the Ring app.'],
+      ['door', 'Someone rang the Front Door']
+    ]);
   });
 });

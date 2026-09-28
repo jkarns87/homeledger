@@ -3,6 +3,9 @@ export interface ElicitationOption {
   label: string;
 }
 
+/** The push channel's state, shown in the debug drawer (spec §7 "Reconnect"). */
+export type PushStatus = 'off' | 'connecting' | 'connected' | 'reconnecting';
+
 /**
  * Everything one turn can tell the browser.
  *
@@ -32,7 +35,9 @@ export type TurnEvent =
   | { type: 'elicitation-closed'; elicitationId: string; action: 'accept' | 'decline' | 'cancel' | 'abandoned' }
   | { type: 'session-rebuilt'; note: string }
   | { type: 'turn-failed'; message: string }
-  | { type: 'turn-finished'; turnId: string };
+  | { type: 'turn-finished'; turnId: string }
+  | { type: 'push-received'; cardType: 'visit.arrived' | 'alert.raised'; id: string }
+  | { type: 'push-status'; status: PushStatus };
 
 /**
  * One event, one SSE message.

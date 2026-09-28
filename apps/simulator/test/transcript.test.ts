@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INITIAL_STATE, askedByUser, reduceTurn, type AgentState } from '../src/lib/transcript.js';
+import { INITIAL_STATE, PUSH_NOTICE_TEXT, askedByUser, reduceTurn, type AgentState } from '../src/lib/transcript.js';
 import type { TurnEvent } from '../src/shared/events.js';
 
 function run(events: TurnEvent[], from: AgentState = INITIAL_STATE): AgentState {
@@ -193,5 +193,23 @@ describe('askedByUser', () => {
     const state = askedByUser(INITIAL_STATE, 'what appliances do we have');
     expect(state.entries).toEqual([{ kind: 'user', id: expect.any(String), text: 'what appliances do we have' }]);
     expect(state.running).toBe(true);
+  });
+});
+
+describe('home events', () => {
+  it('shows a pushed record as an informational notice, in words that claim nothing about safety', () => {
+    const state = run([{ type: 'push-received', cardType: 'alert.raised', id: 'alert_abcdefghijklmnop' }]);
+    expect(state.entries).toEqual([{ kind: 'notice', id: expect.stringMatching(/^notice_\d+$/), text: 'Home event: an alert was raised.', tone: 'info' }]);
+    expect(PUSH_NOTICE_TEXT).toEqual({
+      'visit.arrived': 'Home event: the doorbell matched a booked visit.',
+      'alert.raised': 'Home event: an alert was raised.'
+    });
+  });
+
+  it('tracks the push channel’s status without touching the transcript', () => {
+    const state = run([{ type: 'push-status', status: 'reconnecting' }]);
+    expect(state.pushStatus).toBe('reconnecting');
+    expect(state.entries).toEqual([]);
+    expect(INITIAL_STATE.pushStatus).toBe('off');
   });
 });

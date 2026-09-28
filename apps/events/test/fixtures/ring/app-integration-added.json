@@ -1,0 +1,12 @@
+{
+  "source": "Ring knowledge base: amazon_vision_api/notifications/app_integration_added.md (Webhook Payload)",
+  "substitutions": "<request_id>=req-ai-0001, <account_id>=acct-123, <event_id>=evt-ai-0001",
+  "payload": {
+    "meta": { "version": "1.1", "time": "2026-10-06T11:59:00Z", "request_id": "req-ai-0001", "account_id": "acct-123" },
+    "data": {
+      "id": "evt-ai-0001",
+      "type": "app_integration_added",
+      "attributes": { "source": "acct-123", "source_type": "users", "timestamp": 1699457230000 }
+    }
+  }
+}

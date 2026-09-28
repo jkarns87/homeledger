@@ -13,6 +13,8 @@ export interface AgentTurn {
   answer(question: PendingQuestion, action: 'accept' | 'decline' | 'cancel', content?: Record<string, unknown>): Promise<void>;
   /** Asks the server to start the conversation over. Called once when the page loads. */
   reset(): Promise<void>;
+  /** Folds events that did not come from this page's own POST - the home-event stream - into the same state. */
+  apply(next: (previous: AgentState) => AgentState): void;
 }
 
 async function failureMessage(response: Response): Promise<string> {
@@ -152,5 +154,5 @@ export function useAgentTurn(fetchImpl: typeof fetch = fetch): AgentTurn {
     }
   }, [apply, fetchImpl]);
 
-  return { state, ready, ask, answer, reset };
+  return { state, ready, ask, answer, reset, apply };
 }

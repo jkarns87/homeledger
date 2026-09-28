@@ -1,4 +1,5 @@
 mock_provider "random" {}
+mock_provider "archive" {}
 
 mock_provider "aws" {
   override_data {
@@ -82,6 +83,40 @@ mock_provider "aws" {
     values = {
       account_id = "123456789012"
     }
+  }
+
+  override_data {
+    target = data.aws_secretsmanager_secret.ring_client_secret
+    values = { arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/client-secret-AAAAAA" }
+  }
+  override_data {
+    target = data.aws_secretsmanager_secret.ring_hmac_key
+    values = { arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/hmac-key-BBBBBB" }
+  }
+  override_data {
+    target = data.aws_secretsmanager_secret.anthropic_key
+    values = { arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/anthropic/api-key-CCCCCC" }
+  }
+  override_data {
+    target = data.aws_secretsmanager_secret.link_passphrase
+    values = { arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/link-passphrase-DDDDDD" }
+  }
+}
+
+override_module {
+  target = module.ring_events
+  outputs = {
+    token_exchange_url  = "https://httpapi01.execute-api.us-east-1.amazonaws.com/ring/token"
+    account_link_url    = "https://httpapi01.execute-api.us-east-1.amazonaws.com/ring/link"
+    webhook_url         = "https://httpapi01.execute-api.us-east-1.amazonaws.com/ring/webhook"
+    push_websocket_url  = "wss://wsapi01.execute-api.us-east-1.amazonaws.com/demo"
+    push_endpoint       = "https://wsapi01.execute-api.us-east-1.amazonaws.com/demo"
+    snapshot_bucket     = "demo-homeledger-snapshots-123456789012"
+    snapshot_bucket_arn = "arn:aws:s3:::demo-homeledger-snapshots-123456789012"
+    snapshot_origin     = "https://demo-homeledger-snapshots-123456789012.s3.us-east-1.amazonaws.com"
+    event_bus_name      = "demo-homeledger"
+    tokens_secret_arn   = "arn:aws:secretsmanager:us-east-1:123456789012:secret:demo-homeledger/ring/tokens-EEEEEE"
+    secret_grants       = {}
   }
 }
 
@@ -298,4 +333,20 @@ run "rejects_a_recovery_window_aws_will_not_accept" {
   }
 
   expect_failures = [var.secret_recovery_window_in_days]
+}
+
+run "push_connections_expire_on_the_ttl_attribute" {
+  command = plan
+  assert {
+    condition     = one(aws_dynamodb_table.homeledger.ttl).attribute_name == "ttl" && one(aws_dynamodb_table.homeledger.ttl).enabled
+    error_message = "CONN# rows carry `ttl` in epoch seconds (Plan 4 Task 3); the table must expire on it"
+  }
+}
+
+run "ring_urls_reach_the_root_outputs" {
+  command = plan
+  assert {
+    condition     = output.ring_webhook_url == "https://httpapi01.execute-api.us-east-1.amazonaws.com/ring/webhook" && output.push_websocket_url == "wss://wsapi01.execute-api.us-east-1.amazonaws.com/demo"
+    error_message = "the owner copies these into the Ring Developer Portal and the simulator"
+  }
 }

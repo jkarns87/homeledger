@@ -11,7 +11,7 @@
  * README.
  */
 export const DISCLOSURE_TEXT =
-  'Simulation — a smart-display surface built from published design guidance. It drives HomeLedger’s own MCP server for real; the service-provider marketplace is sample data and no booking leaves this system.';
+  'Simulation — a smart-display surface built from published design guidance. It drives HomeLedger’s own MCP server for real; the service-provider marketplace is sample data and no booking leaves this system. Home events arrive over this simulation’s own push channel.';
 
 /**
  * What a person reads when `scripted` is true, printed alongside — never in

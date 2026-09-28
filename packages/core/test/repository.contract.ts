@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Repository } from '../src/repo/repository.js';
-import type { Alert, Appliance, Device, Event, MaintenanceItem, Visit } from '../src/domain/schemas.js';
+import type { Alert, Appliance, Connection, Device, Event, MaintenanceItem, Visit } from '../src/domain/schemas.js';
 
 export const appliance = (over: Partial<Appliance> = {}): Appliance => ({
   id: 'appl_aaaaaaaaaaaaaaaa',
@@ -40,6 +40,8 @@ export const visit = (over: Partial<Visit> = {}): Visit => ({
   ringEventIds: [],
   snapshotKey: null,
   description: null,
+  snapshotStatus: null,
+  snapshotLatencyMs: null,
   arrivedAt: null,
   createdAt: '2026-09-13T10:00:00.000Z',
   ...over
@@ -60,6 +62,9 @@ export const event = (over: Partial<Event> = {}): Event => ({
 export const alert = (over: Partial<Alert> = {}): Alert => ({
   id: 'alert_aaaaaaaaaaaaaaaa',
   sensorType: 'freeze',
+  severity: 'high',
+  ringDeviceId: 'ava1.ring.device.9',
+  message: null,
   deviceName: 'Garage sensor',
   at: '2026-09-22T03:00:00.000Z',
   maintenanceRef: null,
@@ -74,6 +79,7 @@ export const device = (over: Partial<Device> = {}): Device => ({
   kind: 'doorbell',
   online: true,
   lastSeenAt: '2026-09-22T13:00:00.000Z',
+  sensorState: null,
   ...over
 });
 
@@ -208,6 +214,89 @@ export function runRepositoryContract(name: string, make: () => Promise<Reposito
       expect(alerts[0]?.status).toBe('acknowledged');
       expect(alerts[0]?.id).toBe('alert_aaaaaaaaaaaaaaaa');
       expect(alerts[0]?.at).toBe('2026-09-22T03:00:00.000Z');
+    });
+
+    it('claims a webhook event once, lets an unpublished one through again, and drops a published one', async () => {
+      const e = event({ ringEventId: 'req-bp-0001' });
+      expect(await repo.claimEvent(e)).toBe('new');
+      // Checked before the retry call, whose own write would otherwise mask a
+      // 'new' claim that recorded the marker but not the event row.
+      expect((await repo.listEvents('2026-09-22T00:00:00.000Z')).map(x => x.id)).toEqual([e.id]);
+      expect(await repo.claimEvent(e)).toBe('retry');
+      expect((await repo.listEvents('2026-09-22T00:00:00.000Z')).map(x => x.id)).toEqual([e.id]);
+      await repo.markEventPublished('req-bp-0001');
+      expect(await repo.claimEvent(e)).toBe('published');
+      expect(await repo.claimEvent(event({ id: 'evt_bbbbbbbbbbbbbbbb', ringEventId: 'req-bp-0002' }))).toBe('new');
+    });
+
+    it('marks a scheduled visit arrived exactly once, and never a visit that is not scheduled', async () => {
+      await repo.putVisit(visit());
+      expect(await repo.markVisitArrived('visit_aaaaaaaaaaaaaaaa', '2026-09-22T13:20:00.000Z', 'req-bp-0001')).toBe('arrived');
+      expect(await repo.markVisitArrived('visit_aaaaaaaaaaaaaaaa', '2026-09-22T13:20:05.000Z', 'req-mo-0001')).toBe('not-scheduled');
+      const after = await repo.getVisit('visit_aaaaaaaaaaaaaaaa');
+      expect(after?.status).toBe('arrived');
+      expect(after?.arrivedAt).toBe('2026-09-22T13:20:00.000Z');
+      expect(after?.ringEventIds).toEqual(['req-bp-0001']);
+      // Still findable by window: the arrival must not knock it out of the visit index.
+      expect((await repo.listVisitsInWindow('2026-09-22T12:30:00.000Z', '2026-09-22T15:30:00.000Z')).map(v => v.status)).toEqual(['arrived']);
+      expect(await repo.markVisitArrived('visit_zzzzzzzzzzzzzzzz', '2026-09-22T13:20:00.000Z', 'req-bp-0003')).toBe('not-scheduled');
+      await repo.putVisit(visit({ id: 'visit_bbbbbbbbbbbbbbbb', status: 'completed' }));
+      expect(await repo.markVisitArrived('visit_bbbbbbbbbbbbbbbb', '2026-09-22T13:20:00.000Z', 'req-bp-0004')).toBe('not-scheduled');
+    });
+
+    it('records a snapshot outcome on a visit, and refuses a visit that does not exist', async () => {
+      await repo.putVisit(visit({ status: 'arrived', arrivedAt: '2026-09-22T13:20:00.000Z' }));
+      await repo.recordVisitSnapshot('visit_aaaaaaaaaaaaaaaa', {
+        snapshotKey: 'snapshots/hh_test/visit_aaaaaaaaaaaaaaaa.jpg',
+        snapshotStatus: 'ok',
+        description: 'A person holding a toolbox stands at the front door.',
+        snapshotLatencyMs: 4200
+      });
+      const after = await repo.getVisit('visit_aaaaaaaaaaaaaaaa');
+      expect(after?.snapshotKey).toBe('snapshots/hh_test/visit_aaaaaaaaaaaaaaaa.jpg');
+      expect(after?.snapshotStatus).toBe('ok');
+      expect(after?.description).toBe('A person holding a toolbox stands at the front door.');
+      expect(after?.snapshotLatencyMs).toBe(4200);
+      expect(after?.status).toBe('arrived');
+      await expect(
+        repo.recordVisitSnapshot('visit_zzzzzzzzzzzzzzzz', { snapshotKey: null, snapshotStatus: 'error', description: null, snapshotLatencyMs: 10 })
+      ).rejects.toThrow('No visit visit_zzzzzzzzzzzzzzzz');
+    });
+
+    it('reads one device by its Ring id', async () => {
+      await repo.putDevice(device({ ringDeviceId: 'dev-flood-1', name: 'Water Heater', kind: 'sensor', sensorState: { flood: false, freeze: false } }));
+      expect((await repo.getDevice('dev-flood-1'))?.sensorState).toEqual({ flood: false, freeze: false });
+      expect(await repo.getDevice('dev-missing')).toBeNull();
+    });
+
+    it('finds the newest open alert for one device and sensor type, and nothing else', async () => {
+      await repo.putAlert(alert({ id: 'alert_aaaaaaaaaaaaaaaa', sensorType: 'flood', ringDeviceId: 'dev-flood-1', at: '2026-10-06T21:15:00.000Z' }));
+      await repo.putAlert(alert({ id: 'alert_bbbbbbbbbbbbbbbb', sensorType: 'flood', ringDeviceId: 'dev-flood-1', at: '2026-10-06T22:00:00.000Z' }));
+      await repo.putAlert(
+        alert({ id: 'alert_cccccccccccccccc', sensorType: 'flood', ringDeviceId: 'dev-flood-1', at: '2026-10-06T23:00:00.000Z', status: 'resolved' })
+      );
+      await repo.putAlert(alert({ id: 'alert_dddddddddddddddd', sensorType: 'freeze', ringDeviceId: 'dev-flood-1', at: '2026-10-07T00:00:00.000Z' }));
+      await repo.putAlert(alert({ id: 'alert_eeeeeeeeeeeeeeee', sensorType: 'flood', ringDeviceId: 'dev-flood-2', at: '2026-10-07T01:00:00.000Z' }));
+      expect((await repo.findOpenAlert('dev-flood-1', 'flood'))?.id).toBe('alert_bbbbbbbbbbbbbbbb');
+      expect(await repo.findOpenAlert('dev-flood-3', 'flood')).toBeNull();
+    });
+
+    it('keeps live display connections, hides expired ones, and forgets a closed one', async () => {
+      const live: Connection = { connectionId: 'Ab1=', connectedAt: '2026-10-06T13:00:00.000Z', expiresAt: 2_000 };
+      await repo.putConnection(live);
+      await repo.putConnection({ connectionId: 'Cd2=', connectedAt: '2026-10-06T11:00:00.000Z', expiresAt: 1_000 });
+      // Exactly the stored shape: no TTL attribute or key leaking back out.
+      expect(await repo.listConnections(1_500)).toEqual([live]);
+      await repo.deleteConnection('Ab1=');
+      expect(await repo.listConnections(1_500)).toEqual([]);
+    });
+
+    it('resetHousehold also forgets connections and event markers', async () => {
+      await repo.putConnection({ connectionId: 'Ab1=', connectedAt: '2026-10-06T13:00:00.000Z', expiresAt: 2_000 });
+      await repo.claimEvent(event({ ringEventId: 'req-bp-0001' }));
+      await repo.resetHousehold();
+      expect(await repo.listConnections(0)).toEqual([]);
+      expect(await repo.claimEvent(event({ ringEventId: 'req-bp-0001' }))).toBe('new');
     });
   });
 }

@@ -1,6 +1,6 @@
 import { acceptedContent, inputRequired, type McpServer, type RequestStateCodec, type ServerContext } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import { NOT_BOOKED, NotBooked, VisitStatus, derivedId, providersForCategory } from '@homeledger/core';
+import { NOT_BOOKED, NotBooked, SnapshotStatus, VisitStatus, arrivalMatchNote, derivedId, providersForCategory, snapshotSentence } from '@homeledger/core';
 import { booleanField, elicitOutcome, enumField, supportsFormElicitation } from '../elicit.js';
 import { runAvailabilityCheck } from '../progress.js';
 import type { ServerDeps } from '../server.js';
@@ -258,6 +258,8 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
         ringEventIds: [],
         snapshotKey: null,
         description: null,
+        snapshotStatus: null,
+        snapshotLatencyMs: null,
         arrivedAt: null,
         createdAt: deps.now()
       });
@@ -301,7 +303,11 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
           arrivedAtLabel: z.string().nullable()
         }),
         snapshotUrl: z.string().nullable(),
-        description: z.string().nullable()
+        description: z.string().nullable(),
+        snapshotStatus: SnapshotStatus.nullable(),
+        snapshotNote: z.string().nullable(),
+        matchNote: z.string().nullable(),
+        snapshotLatencyMs: z.number().nullable()
       }),
       annotations: { readOnlyHint: true },
       _meta: uiMeta(WIDGET_URIS.visit)
@@ -320,10 +326,24 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
       // "1 to 3 PM" that ignored the stored clock time.
       const windowLabel = speakZonedWindow(visit.windowStart, visit.windowEnd, zone);
       const arrivedAtLabel = visit.arrivedAt ? speakZonedInstant(visit.arrivedAt, zone) : null;
-      const spoken =
+      // `?? null`: a visit written before Plan 4 has no snapshot fields at
+      // all in DynamoDB, whatever the Visit type claims.
+      const snapshotStatus = visit.snapshotStatus ?? null;
+      const snapshotNote = snapshotSentence(snapshotStatus);
+      const description = visit.description ?? null;
+      let snapshotUrl: string | null = null;
+      if (visit.snapshotKey && deps.snapshotUrl) {
+        snapshotUrl = await deps.snapshotUrl(visit.snapshotKey).catch(err => {
+          console.log(JSON.stringify({ msg: 'get_visit', outcome: 'presign-failed', error: err instanceof Error ? err.message : String(err) }));
+          return null;
+        });
+      }
+      const matchNote = visit.status !== 'scheduled' && visit.arrivedAt ? arrivalMatchNote({ windowLabel, providerName: visit.providerName }) : null;
+      const base =
         visit.status === 'scheduled'
           ? `${visit.providerName} is scheduled for the ${applianceWords} on ${windowLabel}.`
           : `${visit.providerName} ${visit.status} for the ${applianceWords} on ${speakZonedDay(visit.windowStart, zone)}.`;
+      const spoken = description ? `${base} From the doorbell: ${description}` : snapshotNote && snapshotStatus !== 'ok' ? `${base} ${snapshotNote}` : base;
       return {
         content: [{ type: 'text', text: spoken }],
         structuredContent: {
@@ -340,11 +360,12 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
             arrivedAt: visit.arrivedAt,
             arrivedAtLabel
           },
-          // Both filled in by the Ring plan: snapshotUrl from a short-TTL
-          // presign of visit.snapshotKey, description from the Nova vision
-          // sentence. Always present, always null until then.
-          snapshotUrl: null,
-          description: visit.description
+          snapshotUrl,
+          description,
+          snapshotStatus,
+          snapshotNote,
+          matchNote,
+          snapshotLatencyMs: visit.snapshotLatencyMs ?? null
         }
       };
     }
