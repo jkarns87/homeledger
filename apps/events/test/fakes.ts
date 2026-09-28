@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { BusEntry, EventPublisher } from '../src/aws/bus.js';
+import type { TokenRecord, TokenStore } from '../src/aws/tokens.js';
+import type { RingApi, RingDeviceStatus } from '../src/ring/client.js';
 import { webhookSignature } from '../src/ring/hmac.js';
 
 /** A Ring fixture's `payload` (Task 1). The wrapper's `source` names the Ring document it came from. */
@@ -82,5 +84,48 @@ export function signedRequest(payload: unknown, opts: { key?: string; base64?: b
     body: opts.base64 ? raw.toString('base64') : raw.toString('utf8'),
     isBase64Encoded: opts.base64 === true,
     headers: { 'content-type': 'application/json', ...(signature === null ? {} : { 'x-signature': signature }) } as Record<string, string | undefined>
+  };
+}
+
+export function memoryTokenStore(initial: TokenRecord | null = null): TokenStore & { current: () => TokenRecord | null } {
+  let record = initial;
+  return {
+    read: async () => record,
+    write: async r => {
+      record = r;
+    },
+    current: () => record
+  };
+}
+
+/** A Ring API that answers from tables and records the order of calls. */
+export function fakeRingApi(opts: {
+  devices?: Array<{ id: string; name: string }>;
+  statuses?: Record<string, RingDeviceStatus | Error>;
+  refuse?: Partial<Record<'confirmLink' | 'completeLink', Error>>;
+}): RingApi & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    accountId: async () => 'acct-123',
+    listDevices: async () => {
+      calls.push('listDevices');
+      return opts.devices ?? [];
+    },
+    deviceStatus: async id => {
+      calls.push(`deviceStatus:${id}`);
+      const s = opts.statuses?.[id];
+      if (s instanceof Error) throw s;
+      return s ?? { online: true, flood: null, freeze: null };
+    },
+    confirmLink: async (nonce, who) => {
+      calls.push(`confirmLink:${nonce}:${who}`);
+      if (opts.refuse?.confirmLink) throw opts.refuse.confirmLink;
+    },
+    completeLink: async who => {
+      calls.push(`completeLink:${who}`);
+      if (opts.refuse?.completeLink) throw opts.refuse.completeLink;
+    },
+    requestImage: async () => ({ kind: 'refused', status: 416, code: 'MEDIA_NOT_FOUND' })
   };
 }
