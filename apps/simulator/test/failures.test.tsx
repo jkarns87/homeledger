@@ -139,6 +139,14 @@ describe('DebugDrawer', () => {
     expect(screen.getByTestId('debug').textContent).toContain('book_service running');
   });
 
+  it('shows the push channel live from the event stream, whatever the polled snapshot says', () => {
+    const state = reduceTurn(INITIAL_STATE, { type: 'push-status', status: 'reconnecting' });
+    const { rerender } = render(<DebugDrawer snapshot={null} state={state} />);
+    expect(screen.getByTestId('debug-push').textContent).toBe('push channel reconnecting');
+    rerender(<DebugDrawer snapshot={snapshot} state={reduceTurn(state, { type: 'push-status', status: 'connected' })} />);
+    expect(screen.getByTestId('debug-push').textContent).toBe('push channel connected');
+  });
+
   it('says the endpoint is unknown rather than rendering nothing when there is no snapshot', () => {
     render(<DebugDrawer snapshot={null} state={INITIAL_STATE} />);
     expect(screen.getByTestId('debug').textContent).toContain('not connected');

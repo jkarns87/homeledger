@@ -1,7 +1,6 @@
 'use client';
 
 import type { AgentState } from '../lib/transcript.js';
-import type { PushStatus } from '../shared/events.js';
 
 export interface JsonRpcLine {
   at: number;
@@ -25,7 +24,6 @@ export interface DebugSnapshot {
   log: JsonRpcLine[];
   /** True when the conversation is answering from `scripted-model.ts`, never a real model. Drives the on-screen marker in `Disclosure`. */
   scripted: boolean;
-  push: PushStatus;
 }
 
 const ADDRESSING: Record<DebugSnapshot['addressing'], string> = {
@@ -56,10 +54,15 @@ export function DebugDrawer({ snapshot, state }: { snapshot: DebugSnapshot | nul
           <li>
             {snapshot.rebuilds} session rebuild{snapshot.rebuilds === 1 ? '' : 's'}
           </li>
-          <li data-testid="debug-push">push channel {snapshot.push}</li>
           <li>{snapshot.tools.length} tools</li>
         </ul>
       )}
+      {/* From the home-event stream, not from the snapshot: the snapshot is
+          polled only while a turn runs or a question is open, and the push
+          channel changes state (spec §7 "Reconnect") while the page is idle. */}
+      <ul className="muted">
+        <li data-testid="debug-push">push channel {state.pushStatus}</li>
+      </ul>
       <ul className="muted">
         {calls.map(call => (
           <li key={call.id}>{call.ms === null ? `${call.tool} running` : `${call.tool} ${call.ms} ms`}</li>

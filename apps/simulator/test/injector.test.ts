@@ -72,6 +72,37 @@ describe('injected turns (spec §7 turn discipline)', () => {
     expect(h.texts).toEqual([homeEventNote([visit, alert])]);
   });
 
+  it('puts the batch back when the slot is taken between the check and the claim, and runs it once that turn settles', async () => {
+    let active: { settled: Promise<void> } | undefined;
+    const typed = deferred();
+    const refused: string[] = [];
+    const texts: string[] = [];
+    const injector = createInjector({
+      activeTurn: () => active,
+      startTurn: text => {
+        if (refused.length === 0) {
+          // A typed question claimed the slot after the injector saw it free.
+          refused.push(text);
+          active = { settled: typed.promise };
+          return 'busy';
+        }
+        texts.push(text);
+        return { done: Promise.resolve() };
+      },
+      publish: () => {}
+    });
+    injector.enqueue(visit);
+    await new Promise(r => setImmediate(r));
+    expect(refused).toEqual([homeEventNote([visit])]);
+    expect(injector.pending()).toBe(1);
+    expect(texts).toEqual([]);
+    active = undefined;
+    typed.resolve();
+    await injector.idle();
+    expect(texts).toEqual([homeEventNote([visit])]);
+    expect(injector.pending()).toBe(0);
+  });
+
   it('keeps going when a push lands just as the drain finishes', async () => {
     // The window this guards is the few microtasks between the drain loop
     // finding the queue empty and its `finally` clearing `draining`: a push

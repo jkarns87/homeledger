@@ -99,6 +99,8 @@ describe('push client (spec §7: the server holds the socket)', () => {
     await flush();
     x.sockets[0]!.emit('open');
     x.sockets[0]!.emit('close');
+    // A socket that opened and later closed was authorised: its token is not the problem.
+    expect(x.invalidateToken).not.toHaveBeenCalled();
     expect(x.statuses.at(-1)).toBe('reconnecting');
     expect(x.intervals[0]!.live).toBe(false);
     expect(x.timeouts.map(t => t.ms)).toEqual([PUSH_BACKOFF_MS[0]]);
@@ -108,6 +110,7 @@ describe('push client (spec §7: the server holds the socket)', () => {
     x.sockets[1]!.emit('open');
     x.sockets[1]!.emit('close');
     expect(x.timeouts.map(t => t.ms)).toEqual([1_000, 1_000]);
+    expect(x.invalidateToken).not.toHaveBeenCalled();
     expect([...PUSH_BACKOFF_MS]).toEqual([1_000, 2_000, 5_000, 10_000, 30_000]);
   });
 
@@ -133,6 +136,20 @@ describe('push client (spec §7: the server holds the socket)', () => {
     expect(x.client.status()).toBe('off');
     expect(x.timeouts.filter(t => t.live)).toEqual([]);
     expect(x.sockets).toHaveLength(1);
+  });
+
+  it('stops while a retry is pending: cancels it, and a retry that fires anyway opens nothing', async () => {
+    const x = setup();
+    x.client.start();
+    await flush();
+    x.sockets[0]!.emit('close'); // refused before open, so a retry is now scheduled
+    expect(x.timeouts.filter(t => t.live)).toHaveLength(1);
+    x.client.stop();
+    expect(x.timeouts.filter(t => t.live)).toEqual([]);
+    x.timeouts[0]!.fn(); // the timer's callback, as if it had fired regardless
+    await flush();
+    expect(x.sockets).toHaveLength(1);
+    expect(x.statuses).toEqual(['connecting', 'reconnecting', 'off']);
   });
 });
 
