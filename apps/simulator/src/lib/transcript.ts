@@ -1,4 +1,4 @@
-import type { ElicitationOption, TurnEvent } from '../shared/events.js';
+import type { ElicitationOption, PushStatus, TurnEvent } from '../shared/events.js';
 
 export type Entry =
   | { kind: 'user'; id: string; text: string }
@@ -44,9 +44,16 @@ export interface AgentState {
   progress: Progress | null;
   running: boolean;
   turnId: string | null;
+  pushStatus: PushStatus;
 }
 
-export const INITIAL_STATE: AgentState = { entries: [], pending: null, progress: null, running: false, turnId: null };
+export const INITIAL_STATE: AgentState = { entries: [], pending: null, progress: null, running: false, turnId: null, pushStatus: 'off' };
+
+/** What a pushed record looks like in the transcript before the agent speaks. Property and appointments only - no safety claim (spec §7). */
+export const PUSH_NOTICE_TEXT: Record<'visit.arrived' | 'alert.raised', string> = {
+  'visit.arrived': 'Home event: the doorbell matched a booked visit.',
+  'alert.raised': 'Home event: an alert was raised.'
+};
 
 let counter = 0;
 function nextId(prefix: string): string {
@@ -189,6 +196,12 @@ export function reduceTurn(state: AgentState, event: TurnEvent): AgentState {
 
     case 'turn-finished':
       return { ...state, running: false, pending: null, progress: null };
+
+    case 'push-received':
+      return { ...state, entries: [...state.entries, { kind: 'notice', id: nextId('notice'), text: PUSH_NOTICE_TEXT[event.cardType], tone: 'info' }] };
+
+    case 'push-status':
+      return { ...state, pushStatus: event.status };
 
     default:
       return state;

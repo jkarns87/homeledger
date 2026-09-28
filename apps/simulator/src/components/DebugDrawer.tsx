@@ -1,6 +1,7 @@
 'use client';
 
 import type { AgentState } from '../lib/transcript.js';
+import type { PushStatus } from '../shared/events.js';
 
 export interface JsonRpcLine {
   at: number;
@@ -24,6 +25,7 @@ export interface DebugSnapshot {
   log: JsonRpcLine[];
   /** True when the conversation is answering from `scripted-model.ts`, never a real model. Drives the on-screen marker in `Disclosure`. */
   scripted: boolean;
+  push: PushStatus;
 }
 
 const ADDRESSING: Record<DebugSnapshot['addressing'], string> = {
@@ -54,6 +56,7 @@ export function DebugDrawer({ snapshot, state }: { snapshot: DebugSnapshot | nul
           <li>
             {snapshot.rebuilds} session rebuild{snapshot.rebuilds === 1 ? '' : 's'}
           </li>
+          <li data-testid="debug-push">push channel {snapshot.push}</li>
           <li>{snapshot.tools.length} tools</li>
         </ul>
       )}

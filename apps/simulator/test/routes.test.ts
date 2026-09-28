@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createElicitRouter } from '../src/server/agent.js';
 import { ElicitationRegistry } from '../src/server/elicitation.js';
 import { createSseDecoder, type TurnEvent } from '../src/shared/events.js';
-import { checkOrigin, handleAnswer, handleReset, handleTurn, UNKNOWN_TURN_MESSAGE } from '../src/server/http.js';
+import { checkOrigin, handleAnswer, handleReset, handleTurn, startTurn, UNKNOWN_TURN_MESSAGE } from '../src/server/http.js';
+import { createEventHub } from '../src/server/hub.js';
 import { HomeLedgerMcp } from '../src/server/mcp.js';
 import type { ModelPort } from '../src/server/model.js';
 import { householdTimeZone, type Conversation } from '../src/server/session.js';
@@ -64,12 +65,14 @@ async function conversation(model: ModelPort): Promise<Conversation> {
     router,
     model,
     tools: await mcp.listTools(),
-    env: { anthropicApiKey: 'unused', model: 'fake', maxRounds: 6, elicitationTimeoutMs: 3000, allowOrigin: undefined },
+    env: { anthropicApiKey: 'unused', model: 'fake', maxRounds: 6, elicitationTimeoutMs: 3000, allowOrigin: undefined, pushUrl: undefined },
     endpoint: { arn: undefined, origin: 'url' },
     timeZone: await householdTimeZone(mcp),
     now: () => Date.now(),
     history: [],
-    scripted: false
+    scripted: false,
+    hub: createEventHub(),
+    push: { status: () => 'off' as const }
   };
 }
 
@@ -664,6 +667,12 @@ describe('GET /api/debug', () => {
     const response = (await import('../src/server/http.js')).handleDebug(convo, debugRequest());
     expect(response.status).toBe(200);
   });
+
+  it('reports the push channel’s status', async () => {
+    const convo = await conversation(scriptedModel([]));
+    const body = (await (await import('../src/server/http.js')).handleDebug(convo, debugRequest()).json()) as { push: unknown };
+    expect(body.push).toBe('off');
+  });
 });
 
 describe('the widget routes', () => {
@@ -872,6 +881,23 @@ describe('one turn at a time (final review I3)', () => {
     await until(() => convo.activeTurn === undefined, 1000);
     expect(convo.activeTurn).toBeUndefined();
     expect(convo.history).toEqual([]);
+  });
+});
+
+describe('an injected turn shares the one-turn lock', () => {
+  it('runs through startTurn, streams to the given sink, and turns a typed question away with 409 until it settles', async () => {
+    let release!: () => void;
+    const convo = await conversation(heldModel(new Promise<void>(r => (release = r))));
+    const seen: string[] = [];
+    const started = startTurn(convo, '[Home event] The doorbell matched a booked visit, visit_abcdefghijklmnop.', e => seen.push(e.type));
+    expect(started).not.toBe('busy');
+    expect(startTurn(convo, 'again', () => {})).toBe('busy');
+    expect((await handleTurn(convo, post({ text: 'hello' }))).status).toBe(409);
+    release();
+    await (started as { done: Promise<void> }).done;
+    expect(seen[0]).toBe('turn-started');
+    expect(seen.at(-1)).toBe('turn-finished');
+    expect(convo.activeTurn).toBeUndefined();
   });
 });
 

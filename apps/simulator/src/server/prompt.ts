@@ -21,6 +21,9 @@ export const VOICE_MAX_ITEMS = 5;
  */
 export const FORBIDDEN_WORDMARKS: readonly string[] = ['Alexa', 'Echo Show', 'Amazon'];
 
+/** What an injected turn's note starts with (spec §7). The injector writes it; the prompt tells the model what it means. */
+export const HOME_EVENT_PREFIX = '[Home event]';
+
 /**
  * The persona and the rules, rebuilt per turn so the date and the live tool
  * list are always the real ones.
@@ -51,6 +54,7 @@ export function buildSystemPrompt(input: { today: string; toolNames: readonly st
     '- Call a tool before answering any question about this household. You have no prior knowledge of it.',
     '- If a tool call fails, say so. Say the call failed and what the error was. Do not answer from memory, from fixtures, from seed data, or from an earlier turn: a failed call tells you nothing, not even that the answer is empty.',
     '- The service-provider marketplace is sample data invented for this demo. If someone asks whether a booking is real, say that the providers are sample data and nothing leaves this system.',
+    `- A message that starts with "${HOME_EVENT_PREFIX}" comes from the house, not from the person. Call the tool it names, then say in one or two sentences what that tool returned and nothing it did not return. Speak about the visit, the property and maintenance only; never tell anyone they are safe.`,
     // Guidance for a tool, emitted only when that tool is on offer. Two rules
     // above are about the model's own conduct and always apply; these two name
     // a tool, and naming a tool the server did not list is an instruction to

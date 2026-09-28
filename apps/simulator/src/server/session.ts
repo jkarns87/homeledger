@@ -4,10 +4,15 @@ import { createElicitRouter, type ElicitRouter } from './agent.js';
 import { isUnauthenticatedLocal, resolveUpstream } from './credentials.js';
 import { ElicitationRegistry } from './elicitation.js';
 import { readSimulatorEnv, SimulatorConfigError, type SimulatorEnv } from './env.js';
+import { startTurn } from './http.js';
+import { createEventHub, type EventHub } from './hub.js';
+import { createInjector } from './injector.js';
 import { HomeLedgerMcp, toolCallBudgetMs } from './mcp.js';
 import { createAnthropicClient, createModelPort, type ModelPort } from './model.js';
 import { createScriptedModel } from './scripted-model.js';
+import { createPushClient } from './push.js';
 import type { McpToolDescriptor } from './tools.js';
+import type { PushStatus } from '../shared/events.js';
 
 export interface Conversation {
   mcp: HomeLedgerMcp;
@@ -40,6 +45,10 @@ export interface Conversation {
    * is watching is not that guarantee.
    */
   scripted: boolean;
+  /** Fan-out to /api/agent/events (spec §7). */
+  hub: EventHub;
+  /** The push channel's state for the debug drawer; 'off' when HOMELEDGER_PUSH_URL is unset. */
+  push: { status: () => PushStatus };
 }
 
 /**
@@ -196,7 +205,7 @@ async function build(): Promise<Conversation> {
   const scripted = scriptedModelRequested();
   if (scripted) console.log(JSON.stringify({ msg: 'simulator', detail: `${SCRIPTED_MODEL_FLAG}=1: answering from a fixed script, NOT from the model` }));
   const model = scripted ? createScriptedModel() : createModelPort({ messages: createAnthropicClient(env.anthropicApiKey).messages, model: env.model });
-  return {
+  const conversation: Conversation = {
     mcp,
     registry: new ElicitationRegistry(),
     router,
@@ -207,6 +216,27 @@ async function build(): Promise<Conversation> {
     timeZone: await householdTimeZone(mcp, say),
     now: () => Date.now(),
     history: [],
-    scripted
+    scripted,
+    hub: createEventHub(),
+    push: { status: () => 'off' }
   };
+  if (env.pushUrl) {
+    const injector = createInjector({
+      activeTurn: () => conversation.activeTurn,
+      startTurn: (text, emit) => startTurn(conversation, text, emit),
+      publish: event => conversation.hub.publish(event),
+      log: say
+    });
+    const client = createPushClient({
+      url: env.pushUrl,
+      token: upstream.token,
+      invalidateToken: upstream.invalidateToken,
+      onPush: payload => injector.enqueue(payload),
+      onStatus: status => conversation.hub.publish({ type: 'push-status', status }),
+      log: say
+    });
+    conversation.push = { status: () => client.status() };
+    client.start();
+  }
+  return conversation;
 }

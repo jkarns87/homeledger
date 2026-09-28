@@ -9,10 +9,12 @@ import { ProgressMeter } from '../components/ProgressMeter.js';
 import { Transcript } from '../components/Transcript.js';
 import { useAgentTurn } from '../lib/useAgentTurn.js';
 import { useDebugSnapshot } from '../lib/useDebugSnapshot.js';
+import { useHomeEvents } from '../lib/useHomeEvents.js';
 
 export default function Home() {
   const [theme, setTheme] = useState<Theme>('dark');
   const turn = useAgentTurn();
+  useHomeEvents(turn.apply);
   // Once per page load, and the composer waits for it. The history the model
   // is handed lives on the server and outlives a reload; the transcript does
   // not. Without this, a retake carried every earlier take's turns into the

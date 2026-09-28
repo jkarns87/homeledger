@@ -20,7 +20,12 @@ const config: NextConfig = {
   // literal filename and fails with "Module not found" the first time a
   // route handler's import chain reaches into src/server/, which Task 9 is.
   // This is the documented escape hatch for that exact gap.
-  experimental: { extensionAlias: { '.js': ['.ts', '.tsx', '.js'] } }
+  experimental: { extensionAlias: { '.js': ['.ts', '.tsx', '.js'] } },
+  // The push client (src/server/push.ts) is loaded from node_modules at run
+  // time rather than bundled. Bundled, `ws`'s optional `require('bufferutil')`
+  // resolves to an empty stub instead of throwing, so its try/catch keeps the
+  // stub and every masked frame of 48 bytes or more calls `mask` on `{}`.
+  serverExternalPackages: ['ws']
 };
 
 export default config;
