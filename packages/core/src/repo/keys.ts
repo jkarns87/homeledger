@@ -9,7 +9,9 @@ export const sk = {
   visit: (id: string) => `VISIT#${id}`,
   event: (at: string, id: string) => `EVENT#${at}#${id}`,
   alert: (id: string) => `ALERT#${id}`,
-  device: (ringDeviceId: string) => `DEVICE#${ringDeviceId}`
+  device: (ringDeviceId: string) => `DEVICE#${ringDeviceId}`,
+  eventMarker: (ringEventId: string) => `EVENTID#${ringEventId}`,
+  connection: (connectionId: string) => `CONN#${connectionId}`
 };
 
 export const gsi1 = { due: (householdId: string) => `HH#${householdId}#DUE` };

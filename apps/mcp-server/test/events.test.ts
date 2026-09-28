@@ -25,6 +25,8 @@ describe('recent_events', () => {
       ringEventIds: [],
       snapshotKey: null,
       description: null,
+      snapshotStatus: null,
+      snapshotLatencyMs: null,
       arrivedAt: null,
       createdAt: '2026-09-12T10:00:00.000Z'
     });
@@ -44,6 +46,8 @@ describe('recent_events', () => {
       ringEventIds: [],
       snapshotKey: null,
       description: null,
+      snapshotStatus: null,
+      snapshotLatencyMs: null,
       arrivedAt: null,
       createdAt: '2026-09-12T10:00:00.000Z'
     });
@@ -68,6 +72,9 @@ describe('recent_events', () => {
     await h.deps.repo.putAlert({
       id: 'alert_aaaaaaaaaaaaaaaa',
       sensorType: 'freeze',
+      severity: 'high',
+      ringDeviceId: null,
+      message: null,
       deviceName: 'Garage sensor',
       at: '2026-09-13T11:30:00.000Z',
       maintenanceRef: null,

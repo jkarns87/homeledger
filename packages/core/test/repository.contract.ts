@@ -40,6 +40,8 @@ export const visit = (over: Partial<Visit> = {}): Visit => ({
   ringEventIds: [],
   snapshotKey: null,
   description: null,
+  snapshotStatus: null,
+  snapshotLatencyMs: null,
   arrivedAt: null,
   createdAt: '2026-09-13T10:00:00.000Z',
   ...over
@@ -60,6 +62,9 @@ export const event = (over: Partial<Event> = {}): Event => ({
 export const alert = (over: Partial<Alert> = {}): Alert => ({
   id: 'alert_aaaaaaaaaaaaaaaa',
   sensorType: 'freeze',
+  severity: 'high',
+  ringDeviceId: 'ava1.ring.device.9',
+  message: null,
   deviceName: 'Garage sensor',
   at: '2026-09-22T03:00:00.000Z',
   maintenanceRef: null,
@@ -74,6 +79,7 @@ export const device = (over: Partial<Device> = {}): Device => ({
   kind: 'doorbell',
   online: true,
   lastSeenAt: '2026-09-22T13:00:00.000Z',
+  sensorState: null,
   ...over
 });
 

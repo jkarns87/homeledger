@@ -258,6 +258,8 @@ export function registerServiceTools(server: McpServer, deps: ServerDeps, codec:
         ringEventIds: [],
         snapshotKey: null,
         description: null,
+        snapshotStatus: null,
+        snapshotLatencyMs: null,
         arrivedAt: null,
         createdAt: deps.now()
       });

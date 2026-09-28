@@ -52,6 +52,14 @@ export const DocSchema = z.object({
 });
 
 export const VisitStatus = z.enum(['scheduled', 'arrived', 'completed', 'missed']);
+
+/**
+ * What happened when HomeLedger asked Ring for the doorbell photo at an
+ * arrival (spec §5, amendment §12.5). Every value maps to a plain sentence on
+ * the card (`snapshotSentence`); none may render as a blank.
+ */
+export const SnapshotStatus = z.enum(['ok', 'encrypted', 'none-in-window', 'forbidden', 'error']);
+
 export const VisitSchema = z.object({
   id: prefixed('visit'),
   providerId: z.string().min(1),
@@ -65,6 +73,8 @@ export const VisitSchema = z.object({
   ringEventIds: z.array(z.string()),
   snapshotKey: z.string().nullable(),
   description: z.string().nullable(),
+  snapshotStatus: SnapshotStatus.nullable(),
+  snapshotLatencyMs: z.number().int().nonnegative().nullable(),
   arrivedAt: isoDateTime.nullable(),
   createdAt: isoDateTime
 });
@@ -105,9 +115,19 @@ export const EventSchema = z.object({
   rawS3Key: z.string().nullable()
 });
 
+/**
+ * `system` alerts are HomeLedger's own failures made visible — Ring access
+ * lapsed, a home event that could not be processed. They carry their own
+ * `message` because there is no sensor to name. A sensor alert's `message` is
+ * null and its sentence is built from the sensor type and device name.
+ */
+export const AlertSensorType = z.enum(['flood', 'freeze', 'contact', 'temperature', 'air_quality', 'system']);
 export const AlertSchema = z.object({
   id: prefixed('alert'),
-  sensorType: z.enum(['flood', 'freeze', 'contact', 'temperature', 'air_quality']),
+  sensorType: AlertSensorType,
+  severity: z.enum(['high', 'info']),
+  ringDeviceId: z.string().min(1).nullable(),
+  message: z.string().min(1).nullable(),
   deviceName: z.string().min(1),
   at: isoDateTime,
   maintenanceRef: z.object({ applianceId: prefixed('appl'), taskType: TaskType }).nullable(),
@@ -120,7 +140,16 @@ export const DeviceSchema = z.object({
   name: z.string().min(1),
   kind: z.enum(['doorbell', 'camera', 'sensor', 'chime', 'other']),
   online: z.boolean(),
-  lastSeenAt: isoDateTime.nullable()
+  lastSeenAt: isoDateTime.nullable(),
+  /** Last known detector state for a Flood & Freeze sensor; null for anything else. Transitions are computed against this, so a trip alerts once however many paths report it (amendment §12.4). */
+  sensorState: z.object({ flood: z.boolean(), freeze: z.boolean() }).nullable()
+});
+
+/** One display's live WebSocket connection. `expiresAt` is epoch seconds because DynamoDB TTL reads seconds; API Gateway closes a WebSocket at two hours regardless. */
+export const ConnectionSchema = z.object({
+  connectionId: z.string().min(1),
+  connectedAt: isoDateTime,
+  expiresAt: z.number().int().positive()
 });
 
 /**
@@ -149,3 +178,7 @@ export type Device = z.infer<typeof DeviceSchema>;
 export type Household = z.infer<typeof HouseholdSchema>;
 export type TaskTypeValue = z.infer<typeof TaskType>;
 export type ApplianceCategoryValue = z.infer<typeof ApplianceCategory>;
+export type SnapshotStatusValue = z.infer<typeof SnapshotStatus>;
+export type AlertSensorTypeValue = z.infer<typeof AlertSensorType>;
+export type SensorState = NonNullable<Device['sensorState']>;
+export type Connection = z.infer<typeof ConnectionSchema>;

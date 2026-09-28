@@ -12,4 +12,9 @@ describe('keys', () => {
     expect(gsi1.due('hh_harlow')).toBe('HH#hh_harlow#DUE');
     expect(gsi2.visit('hh_harlow')).toBe('HH#hh_harlow#VISIT');
   });
+
+  it('builds the event marker and connection keys', () => {
+    expect(sk.eventMarker('req-bp-0001')).toBe('EVENTID#req-bp-0001');
+    expect(sk.connection('Ab1=')).toBe('CONN#Ab1=');
+  });
 });

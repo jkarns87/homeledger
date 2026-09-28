@@ -25,6 +25,8 @@ describe('get_visit', () => {
       ringEventIds: [],
       snapshotKey: null,
       description: null,
+      snapshotStatus: null,
+      snapshotLatencyMs: null,
       arrivedAt: null,
       createdAt: '2026-09-13T12:00:00.000Z'
     });
@@ -76,6 +78,8 @@ describe('get_visit', () => {
       ringEventIds: ['ring-evt-1'],
       snapshotKey: 'snapshots/hh_test/visit_b.jpg',
       description: null,
+      snapshotStatus: null,
+      snapshotLatencyMs: null,
       arrivedAt: '2026-09-15T13:07:00.000Z',
       createdAt: '2026-09-13T12:00:00.000Z'
     });
@@ -110,6 +114,8 @@ describe('get_visit', () => {
       ringEventIds: [],
       snapshotKey: null,
       description: null,
+      snapshotStatus: null,
+      snapshotLatencyMs: null,
       arrivedAt: null,
       createdAt: '2026-09-13T12:00:00.000Z'
     });
