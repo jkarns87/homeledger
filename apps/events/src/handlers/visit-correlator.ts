@@ -121,6 +121,16 @@ export async function correlateArrival(deps: CorrelatorDeps, detail: RingEventDe
   const unfinished = candidates.find(v => v.status === 'arrived' && v.ringEventIds.includes(detail.requestId) && (v.snapshotStatus ?? null) === null);
   if (unfinished) return snapshotAndPush(deps, unfinished, detail);
 
+  // A retry of this very delivery that already recorded its snapshot outcome
+  // but never got the push out (e.g. EventBridge failed the PutEvents call
+  // after recordVisitSnapshot succeeded): re-send only the push. A duplicate
+  // card for one arrival beats a lost one.
+  const recorded = candidates.find(v => v.status === 'arrived' && v.ringEventIds.includes(detail.requestId) && v.snapshotStatus !== null);
+  if (recorded) {
+    await deps.publish([{ source: HOMELEDGER_SOURCE, detailType: 'visit.arrived', detail: pushPayload('visit.arrived', recorded.id) }]);
+    return { outcome: 'arrived', visitId: recorded.id, snapshotStatus: recorded.snapshotStatus!, snapshotLatencyMs: recorded.snapshotLatencyMs ?? 0 };
+  }
+
   const visit = pickArrivalVisit(candidates, detail.at);
   if (!visit) {
     const arrivedAlready = candidates.find(v => v.status === 'arrived');

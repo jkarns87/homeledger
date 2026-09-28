@@ -197,4 +197,22 @@ describe('correlateArrival (spec §5)', () => {
     expect(bus.entries).toHaveLength(1);
     expect((await repo.getVisit('visit_aaaaaaaaaaaaaaaa'))?.ringEventIds).toEqual(['req-bp-0001']);
   });
+
+  it('re-sends the push when the first attempt recorded the photo but the push failed', async () => {
+    let requestImageCalls = 0;
+    const countingRequestImage: CorrelatorDeps['requestImage'] = async () => {
+      requestImageCalls += 1;
+      return { kind: 'image', bytes: JPEG_BYTES, contentType: 'image/jpeg' };
+    };
+    bus.failNext(1);
+    await expect(correlateArrival(deps(undefined, { requestImage: countingRequestImage }), press)).rejects.toThrow('EventBridge refused');
+    expect(bus.entries).toEqual([]);
+    const retry = await correlateArrival(deps(undefined, { requestImage: countingRequestImage }), press);
+    expect(retry).toEqual({ outcome: 'arrived', visitId: 'visit_aaaaaaaaaaaaaaaa', snapshotStatus: 'ok', snapshotLatencyMs: 3_000 });
+    expect(bus.entries).toEqual([
+      { source: 'homeledger.events', detailType: 'visit.arrived', detail: { cardType: 'visit.arrived', id: 'visit_aaaaaaaaaaaaaaaa' } }
+    ]);
+    expect(requestImageCalls).toBe(1);
+    expect(stored).toHaveLength(1);
+  });
 });
