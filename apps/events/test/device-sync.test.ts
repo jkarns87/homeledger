@@ -1,6 +1,7 @@
 import { createMemoryRepository, derivedId } from '@homeledger/core';
 import { describe, expect, it, vi } from 'vitest';
 import { RING_UNLINKED_MESSAGE, handleDeviceEvent, syncDevices } from '../src/handlers/device-sync.js';
+import { RingNotLinkedError } from '../src/aws/tokens.js';
 import { fakeRingApi } from './fakes.js';
 
 const now = () => '2026-10-06T12:00:00.000Z';
@@ -106,6 +107,23 @@ describe('device and integration events', () => {
     expect(sync).not.toHaveBeenCalled();
     expect(raiseUnlinked).toHaveBeenCalledTimes(1);
     expect(RING_UNLINKED_MESSAGE).toBe('Ring was disconnected from HomeLedger in the Ring app. Doorbell and sensor events will stop until it is linked again.');
+  });
+
+  it('says not-linked, without throwing, when Ring is not linked yet (so the nightly schedule does not retry and dead-letter)', async () => {
+    const raiseUnlinked = vi.fn(async () => {});
+    const sync = vi.fn(async () => {
+      throw new RingNotLinkedError('Ring is not linked to HomeLedger yet.');
+    });
+    expect(await handleDeviceEvent({ sync, raiseUnlinked }, 'Scheduled Event')).toBe('not-linked');
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(raiseUnlinked).not.toHaveBeenCalled();
+  });
+
+  it('still throws any other sync failure, so Lambda retries it', async () => {
+    const sync = vi.fn(async () => {
+      throw new Error('Ring 503');
+    });
+    await expect(handleDeviceEvent({ sync, raiseUnlinked: vi.fn() }, 'Scheduled Event')).rejects.toThrow('Ring 503');
   });
 
   it('ignores anything else', async () => {

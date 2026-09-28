@@ -271,6 +271,17 @@ shows the doorbell and the sensor (`kind: sensor` for the latter).
 4. **Put Ring professional monitoring in test mode first.** Trip the Flood & Freeze sensor (a damp cloth across its probes). Expect the notice "Home event: an alert was raised.", the agent reading the alert from `recent_events`, and the water heater's inspection due today in `maintenance_due`. Note which arrived first, the webhook or the reconciliation poll (the function logs say `source`).
 5. Check again that Video Encryption shows no TAKE, before recording and before judging opens.
 
+**Warning: `smoke.yml` after linking.** The smoke run reseeds the household, which wipes the whole household partition — the learned device kinds (`DEVICE#` rows), sensor state, open alerts, and the push connection rows — and pushes are silently dropped until the connection rows come back. Afterwards, re-run device sync:
+
+```bash
+aws lambda invoke --function-name demo-homeledger-device-sync \
+  --payload '{"detail-type":"Scheduled Event","source":"homeledger.schedule","detail":{}}' \
+  --cli-binary-format raw-in-base64-out /dev/stdout \
+  --profile homeledger-admin --region us-east-1
+```
+
+and the connection rows heal on the simulator's next keepalive (≤ 5 min).
+
 **Troubleshooting:**
 
 - A 401 in the webhook logs means the HMAC key secret does not match the portal's key.

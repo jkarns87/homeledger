@@ -15,7 +15,7 @@ This module is never applied locally. Plan and apply run only in GitHub Actions.
 | `webhook_url` | `<http api endpoint>/ring/webhook` |
 | `push_websocket_url` | the WebSocket stage's `wss://…/demo` invoke URL |
 | `push_endpoint` | `https://<ws api id>.execute-api.<region>.amazonaws.com/demo` |
-| `snapshot_bucket`, `snapshot_bucket_arn`, `snapshot_origin` | the bucket, its ARN, `https://<bucket regional domain>` |
+| `snapshot_bucket`, `snapshot_bucket_arn`, `snapshot_origin` | the bucket, its ARN, `https://<bucket>.s3.<region>.amazonaws.com` (the presigned host) |
 | `event_bus_name`, `tokens_secret_arn` | |
 | `secret_grants` | map function → list of secret ARNs it may read (for tests and the README) |
 
@@ -129,7 +129,7 @@ No modules.
 | <a name="output_secret_grants"></a> [secret\_grants](#output\_secret\_grants) | Per function, the secret ARNs it may read - spec §3's table, as applied. |
 | <a name="output_snapshot_bucket"></a> [snapshot\_bucket](#output\_snapshot\_bucket) | Bucket holding doorbell snapshots under snapshots/. |
 | <a name="output_snapshot_bucket_arn"></a> [snapshot\_bucket\_arn](#output\_snapshot\_bucket\_arn) | ARN of the snapshot bucket; the MCP runtime may read snapshots/* only. |
-| <a name="output_snapshot_origin"></a> [snapshot\_origin](#output\_snapshot\_origin) | Origin of presigned snapshot URLs; the visit widget declares it as a resource domain (R8). |
+| <a name="output_snapshot_origin"></a> [snapshot\_origin](#output\_snapshot\_origin) | Origin of presigned snapshot URLs; the visit widget declares it as a resource domain (R8). Built from the bucket name and region, the virtual-hosted host the SDK presigns against, so it does not depend on a provider attribute's format. |
 | <a name="output_token_exchange_url"></a> [token\_exchange\_url](#output\_token\_exchange\_url) | Ring Developer Portal: Token Exchange URL. |
 | <a name="output_tokens_secret_arn"></a> [tokens\_secret\_arn](#output\_tokens\_secret\_arn) | Secret the token-exchange, link and token-refresh functions write the Ring tokens to. |
 | <a name="output_webhook_url"></a> [webhook\_url](#output\_webhook\_url) | Ring Developer Portal: Webhook URL. |

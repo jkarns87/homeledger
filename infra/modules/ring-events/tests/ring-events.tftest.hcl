@@ -59,7 +59,7 @@ mock_provider "aws" {
   }
   override_resource {
     target = aws_s3_bucket.snapshots
-    values = { arn = "arn:aws:s3:::demo-homeledger-snapshots-123456789012", bucket = "demo-homeledger-snapshots-123456789012", bucket_regional_domain_name = "demo-homeledger-snapshots-123456789012.s3.us-east-1.amazonaws.com" }
+    values = { arn = "arn:aws:s3:::demo-homeledger-snapshots-123456789012", bucket = "demo-homeledger-snapshots-123456789012" }
   }
   override_resource {
     target = aws_secretsmanager_secret.tokens
@@ -324,6 +324,26 @@ run "routes_target_their_functions_and_the_urls_are_exact" {
   assert {
     condition     = output.push_websocket_url == "wss://wsapi01.execute-api.us-east-1.amazonaws.com/demo" && output.push_endpoint == "https://wsapi01.execute-api.us-east-1.amazonaws.com/demo"
     error_message = "the simulator's WebSocket URL and push's management endpoint"
+  }
+}
+
+run "lambda_proxy_integrations_invoke_with_post" {
+  command = apply
+  assert {
+    condition     = aws_apigatewayv2_integration.ws.integration_method == "POST"
+    error_message = "AWS invokes a Lambda proxy integration with POST only; the WebSocket integration must say so"
+  }
+  assert {
+    condition     = length(aws_apigatewayv2_integration.http) == 3 && alltrue([for i in values(aws_apigatewayv2_integration.http) : i.integration_method == "POST"])
+    error_message = "every HTTP Lambda proxy integration must use POST, whatever the route's own method"
+  }
+}
+
+run "the_snapshot_origin_is_the_presigned_url_host" {
+  command = apply
+  assert {
+    condition     = output.snapshot_origin == "https://demo-homeledger-snapshots-123456789012.s3.us-east-1.amazonaws.com"
+    error_message = "the origin is built from the bucket name and region, the host the SDK presigns against"
   }
 }
 

@@ -70,17 +70,31 @@ describe('WebSocket authorizer (spec §7: the Cognito client-credentials JWT)', 
 describe('connections', () => {
   const at = Date.parse('2026-10-06T13:00:00.000Z');
 
-  it('records a connection with a two-hour expiry, forgets it on disconnect, and stores nothing for a keepalive', async () => {
+  it('records a connection with a two-hour expiry and forgets it on disconnect', async () => {
     const repo = createMemoryRepository('hh_test');
     expect(CONNECTION_TTL_SECONDS).toBe(7_200);
     expect(await handleConnection({ repo, nowMs: () => at }, { requestContext: { routeKey: '$connect', connectionId: 'Ab1=' } })).toEqual({ statusCode: 200 });
-    // A keepalive from another socket id must not become a connection row.
-    expect(await handleConnection({ repo, nowMs: () => at }, { requestContext: { routeKey: '$default', connectionId: 'Zz9=' } })).toEqual({ statusCode: 200 });
     expect(await repo.listConnections(at / 1000)).toEqual([{ connectionId: 'Ab1=', connectedAt: '2026-10-06T13:00:00.000Z', expiresAt: at / 1000 + 7_200 }]);
     expect(await handleConnection({ repo, nowMs: () => at }, { requestContext: { routeKey: '$disconnect', connectionId: 'Ab1=' } })).toEqual({
       statusCode: 200
     });
     expect(await repo.listConnections(at / 1000)).toEqual([]);
+  });
+
+  it('re-records the connection on every keepalive, so a row a smoke reseed wiped heals within five minutes', async () => {
+    // API Gateway routes $default only for a socket that passed $connect's
+    // authorizer and is still open, so any id that arrives here is live.
+    const repo = createMemoryRepository('hh_test');
+    const later = at + 300_000;
+    await handleConnection({ repo, nowMs: () => at }, { requestContext: { routeKey: '$connect', connectionId: 'Ab1=' } });
+    await repo.resetHousehold();
+    expect(await repo.listConnections(at / 1000)).toEqual([]);
+    expect(await handleConnection({ repo, nowMs: () => later }, { requestContext: { routeKey: '$default', connectionId: 'Ab1=' } })).toEqual({
+      statusCode: 200
+    });
+    expect(await repo.listConnections(later / 1000)).toEqual([
+      { connectionId: 'Ab1=', connectedAt: '2026-10-06T13:05:00.000Z', expiresAt: later / 1000 + 7_200 }
+    ]);
   });
 
   it('refuses a route it does not know', async () => {

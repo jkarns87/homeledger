@@ -15,9 +15,10 @@ resource "aws_apigatewayv2_authorizer" "ws" {
 }
 
 resource "aws_apigatewayv2_integration" "ws" {
-  api_id           = aws_apigatewayv2_api.ws.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.fn["ws-connections"].invoke_arn
+  api_id             = aws_apigatewayv2_api.ws.id
+  integration_type   = "AWS_PROXY"
+  integration_method = "POST"
+  integration_uri    = aws_lambda_function.fn["ws-connections"].invoke_arn
 }
 
 resource "aws_apigatewayv2_route" "ws" {

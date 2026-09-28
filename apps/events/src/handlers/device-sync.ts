@@ -3,7 +3,7 @@ import { createDynamoRepository, derivedId, newId, pushPayload, type Device, typ
 import { raiseSystemAlert } from '../aws/alerts.js';
 import { HOMELEDGER_SOURCE, createEventPublisher } from '../aws/bus.js';
 import { createSecretsPort } from '../aws/secrets.js';
-import { createTokenStore, linkedAccessToken } from '../aws/tokens.js';
+import { RingNotLinkedError, createTokenStore, linkedAccessToken } from '../aws/tokens.js';
 import { requireEnv } from '../env.js';
 import { createRingApi, type RingApi, type RingDeviceStatus } from '../ring/client.js';
 
@@ -52,13 +52,23 @@ export interface DeviceEventDeps {
 
 const SYNC_ON = new Set(['device_added', 'device_removed', 'device_online', 'device_offline', 'app_integration_added', 'Scheduled Event']);
 
-export async function handleDeviceEvent(deps: DeviceEventDeps, detailType: string): Promise<'synced' | 'unlinked' | 'ignored'> {
+/**
+ * 'not-linked': no linked tokens (before the first link, after an unlink, or
+ * after a lapse). That is a state, not a failure: throwing would make Lambda
+ * retry, dead-letter, and raise a false alert every night.
+ */
+export async function handleDeviceEvent(deps: DeviceEventDeps, detailType: string): Promise<'synced' | 'unlinked' | 'not-linked' | 'ignored'> {
   if (detailType === 'app_integration_removed') {
     await deps.raiseUnlinked();
     return 'unlinked';
   }
   if (!SYNC_ON.has(detailType)) return 'ignored';
-  await deps.sync();
+  try {
+    await deps.sync();
+  } catch (err) {
+    if (err instanceof RingNotLinkedError) return 'not-linked';
+    throw err;
+  }
   return 'synced';
 }
 

@@ -34,8 +34,8 @@ output "snapshot_bucket_arn" {
 }
 
 output "snapshot_origin" {
-  description = "Origin of presigned snapshot URLs; the visit widget declares it as a resource domain (R8)."
-  value       = "https://${aws_s3_bucket.snapshots.bucket_regional_domain_name}"
+  description = "Origin of presigned snapshot URLs; the visit widget declares it as a resource domain (R8). Built from the bucket name and region, the virtual-hosted host the SDK presigns against, so it does not depend on a provider attribute's format."
+  value       = "https://${aws_s3_bucket.snapshots.bucket}.s3.${local.region}.amazonaws.com"
 }
 
 output "event_bus_name" {
