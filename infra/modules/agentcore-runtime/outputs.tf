@@ -23,3 +23,8 @@ output "environment_variables" {
   value       = try(aws_bedrockagentcore_agent_runtime.this[0].environment_variables, {})
   sensitive   = true
 }
+
+output "snapshot_read_resources" {
+  description = "Object ARNs the runtime may read - exactly snapshots/* of the snapshot bucket, or nothing. Exposed because tests can read outputs, not a mocked policy document."
+  value       = local.snapshot_read_resources
+}

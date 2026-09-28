@@ -136,6 +136,7 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      RING_CLIENT_ID: ${{ vars.RING_CLIENT_ID }}
       # The address the plan is allowed to destroy, and nothing else. Compared
       # after the count index is stripped, so `[0]` does not have to be guessed.
       RUNTIME_ADDRESS: module.agentcore_runtime.aws_bedrockagentcore_agent_runtime.this
@@ -176,6 +177,15 @@ jobs:
           echo "Teardown requested by ${GITHUB_ACTOR} on ${GITHUB_REF_NAME} (${GITHUB_SHA})"
 
       - uses: actions/checkout@v4
+
+      # module.ring_events zips apps/events' bundles at plan time (archive_file),
+      # so they must exist before Terraform reads the configuration.
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @homeledger/core build && pnpm --filter @homeledger/events build
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -230,7 +240,7 @@ jobs:
         working-directory: infra/live/demo/platform
         run: |
           set -euo pipefail
-          terraform plan -no-color -input=false -var 'image_uri=' -out=tfplan
+          terraform plan -no-color -input=false -var 'image_uri=' -var "ring_client_id=$RING_CLIENT_ID" -out=tfplan
           terraform show -no-color tfplan | tee plan.txt
           terraform show -json tfplan > tfplan.json
 
@@ -315,6 +325,7 @@ jobs:
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      RING_CLIENT_ID: ${{ vars.RING_CLIENT_ID }}
     steps:
       - name: Announce
         env:
@@ -331,6 +342,15 @@ jobs:
           echo "Bring-up requested by ${GITHUB_ACTOR} on ${GITHUB_REF_NAME} (${GITHUB_SHA})"
 
       - uses: actions/checkout@v4
+
+      # module.ring_events zips apps/events' bundles at plan time (archive_file),
+      # so they must exist before Terraform reads the configuration.
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.15.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @homeledger/core build && pnpm --filter @homeledger/events build
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -387,7 +407,7 @@ jobs:
         working-directory: infra/live/demo/platform
         env:
           IMAGE_URI: ${{ steps.image.outputs.uri }}
-        run: terraform apply -auto-approve -input=false -var "image_uri=$IMAGE_URI"
+        run: terraform apply -auto-approve -input=false -var "image_uri=$IMAGE_URI" -var "ring_client_id=$RING_CLIENT_ID"
 
       # Bring-up has to leave a working system, not a half-applied one, so the
       # two outputs the bridge and the smoke both read are checked rather than

@@ -2,8 +2,9 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
-  account_id = data.aws_caller_identity.current.account_id
-  region     = data.aws_region.current.region
+  account_id              = data.aws_caller_identity.current.account_id
+  region                  = data.aws_region.current.region
+  snapshot_read_resources = var.snapshot_bucket_arn == "" ? [] : ["${var.snapshot_bucket_arn}/snapshots/*"]
 }
 
 # ---------- Execution role (from the AgentCore Runtime permissions doc) ----------
@@ -87,6 +88,14 @@ data "aws_iam_policy_document" "this" {
       sid       = "RetrieveFromKnowledgeBase"
       actions   = ["bedrock:Retrieve"]
       resources = [statement.value]
+    }
+  }
+  dynamic "statement" {
+    for_each = length(local.snapshot_read_resources) == 0 ? [] : [local.snapshot_read_resources]
+    content {
+      sid       = "ReadSnapshots"
+      actions   = ["s3:GetObject"]
+      resources = statement.value
     }
   }
 }

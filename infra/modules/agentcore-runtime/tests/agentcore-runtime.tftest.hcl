@@ -97,3 +97,28 @@ run "accepts_a_knowledge_base_arn" {
     error_message = "the runtime must still be created when a knowledge base arn is supplied"
   }
 }
+
+run "reads_snapshots_under_the_snapshots_prefix_only" {
+  command = plan
+  variables {
+    snapshot_bucket_arn = "arn:aws:s3:::demo-homeledger-snapshots-123456789012"
+  }
+  # length()+index rather than a bare list `==` (see FL-059): terraform test's
+  # equality operator treats a computed list(string) output and a `[...]`
+  # tuple literal as different types and fails the assertion even when their
+  # elements match. length() plus an indexed element comparison pins the same
+  # exact value - one element, and exactly that ARN - without hitting the
+  # list/tuple category check.
+  assert {
+    condition     = length(output.snapshot_read_resources) == 1 && output.snapshot_read_resources[0] == "arn:aws:s3:::demo-homeledger-snapshots-123456789012/snapshots/*"
+    error_message = "the runtime may read snapshots/* and nothing else in the bucket"
+  }
+}
+
+run "no_snapshot_bucket_no_s3_access" {
+  command = plan
+  assert {
+    condition     = length(output.snapshot_read_resources) == 0
+    error_message = "with no bucket the runtime gets no S3 statement"
+  }
+}

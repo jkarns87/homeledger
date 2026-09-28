@@ -3,8 +3,11 @@
 Root module for HomeLedger's demo AWS footprint: ECR repository, DynamoDB
 table, Cognito user pool (via the `cognito-m2m` module, JWT issuer for the
 AgentCore authorizer), and the AgentCore execution role and runtime (via the
-`agentcore-runtime` module). One root equals one state file; later layers
-(events, simulator) become sibling roots under `infra/live/demo/`.
+`agentcore-runtime` module). One root equals one state file. Plan 4 put the
+Ring pipeline in this root as `module.ring_events`, not a sibling root: the
+MCP runtime's role and environment need its snapshot bucket, and the table
+needed a TTL (Plan 4 R6). `apps/events` must be built before any plan
+(`pnpm --filter @homeledger/events build`); deploy.yml and teardown.yml do it.
 
 ## Blast radius
 
@@ -106,6 +109,7 @@ is not read automatically by the Actions workflow, which passes
 | Name | Version |
 | ---- | ------- |
 | <a name="requirement_terraform"></a> [terraform](#requirement\_terraform) | >= 1.10.0 |
+| <a name="requirement_archive"></a> [archive](#requirement\_archive) | >= 2.7.0, < 3.0.0 |
 | <a name="requirement_aws"></a> [aws](#requirement\_aws) | ~> 6.21 |
 | <a name="requirement_random"></a> [random](#requirement\_random) | >= 3.6.0, < 4.0.0 |
 
@@ -123,6 +127,7 @@ is not read automatically by the Actions workflow, which passes
 | <a name="module_agentcore_runtime"></a> [agentcore\_runtime](#module\_agentcore\_runtime) | ../../../modules/agentcore-runtime | n/a |
 | <a name="module_cognito"></a> [cognito](#module\_cognito) | ../../../modules/cognito-m2m | n/a |
 | <a name="module_knowledge_base"></a> [knowledge\_base](#module\_knowledge\_base) | ../../../modules/knowledge-base | n/a |
+| <a name="module_ring_events"></a> [ring\_events](#module\_ring\_events) | ../../../modules/ring-events | n/a |
 
 ## Resources
 
@@ -136,6 +141,10 @@ is not read automatically by the Actions workflow, which passes
 | [random_password.request_state](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/password) | resource |
 | [aws_caller_identity.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/caller_identity) | data source |
 | [aws_region.current](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
+| [aws_secretsmanager_secret.anthropic_key](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/secretsmanager_secret) | data source |
+| [aws_secretsmanager_secret.link_passphrase](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/secretsmanager_secret) | data source |
+| [aws_secretsmanager_secret.ring_client_secret](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/secretsmanager_secret) | data source |
+| [aws_secretsmanager_secret.ring_hmac_key](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/secretsmanager_secret) | data source |
 
 ## Inputs
 
@@ -146,11 +155,15 @@ is not read automatically by the Actions workflow, which passes
 | <a name="input_dev_tools_enabled"></a> [dev\_tools\_enabled](#input\_dev\_tools\_enabled) | Whether the deployed runtime registers developer-only MCP tools (currently echo\_confirm) via HOMELEDGER\_DEV\_TOOLS. Defaults to true for the demo: echo\_confirm is the concrete proof that the elicitation round trip works end to end through AgentCore, and the demo deliberately ships it enabled rather than hidden. | `bool` | `true` | no |
 | <a name="input_embedding_model_arn"></a> [embedding\_model\_arn](#input\_embedding\_model\_arn) | Override for the knowledge base embedding model ARN. Empty uses Titan Text Embeddings v2 in the deployment region. | `string` | `""` | no |
 | <a name="input_env"></a> [env](#input\_env) | Deployment environment name. Only "demo" exists today; later layers (events, simulator) will live under infra/live/demo/ alongside this root. | `string` | `"demo"` | no |
+| <a name="input_events_artifacts_dir"></a> [events\_artifacts\_dir](#input\_events\_artifacts\_dir) | apps/events build output, relative to this root. deploy.yml builds it before every plan and apply. | `string` | `"../../../../apps/events/dist"` | no |
 | <a name="input_household_id"></a> [household\_id](#input\_household\_id) | Household id seeded into the MCP server's environment as HOUSEHOLD\_ID. | `string` | `"hh_harlow"` | no |
 | <a name="input_idle_session_timeout_seconds"></a> [idle\_session\_timeout\_seconds](#input\_idle\_session\_timeout\_seconds) | Idle runtime session timeout passed to the AgentCore runtime, in seconds. | `number` | `1800` | no |
 | <a name="input_image_uri"></a> [image\_uri](#input\_image\_uri) | Full ECR image URI with tag, from scripts/build-image.sh. Empty on the first apply, which then creates only ECR, the table, Cognito, and the execution role. | `string` | `""` | no |
 | <a name="input_region"></a> [region](#input\_region) | AWS region to deploy into. | `string` | `"us-east-1"` | no |
+| <a name="input_ring_client_id"></a> [ring\_client\_id](#input\_ring\_client\_id) | Ring app Client ID - not a secret (spec §3). Passed from the RING\_CLIENT\_ID repository variable by deploy.yml and teardown.yml. | `string` | `""` | no |
 | <a name="input_secret_recovery_window_in_days"></a> [secret\_recovery\_window\_in\_days](#input\_secret\_recovery\_window\_in\_days) | Recovery window applied to both Secrets Manager secrets in this root (the Cognito client secret and the requestState signing key). Defaults to 0, which is a DEMO-ONLY choice: it makes a destroy delete both secrets immediately and unrecoverably so their names free up and the stack can be re-applied, which is what a teardown/bring-up round trip between hackathon test windows needs. Any non-disposable environment must set 7-30 instead and accept that a destroy is then not a round trip, because a scheduled-for-deletion secret keeps its name reserved for the whole window. The cognito-m2m module itself defaults to the safe 30; this root is the thing that opts in. | `number` | `0` | no |
+| <a name="input_sensor_appliance_id"></a> [sensor\_appliance\_id](#input\_sensor\_appliance\_id) | Appliance whose inspection a flood or freeze advances (Plan 4 R12). | `string` | `"appl_waterheater22222"` | no |
+| <a name="input_sensors_enabled"></a> [sensors\_enabled](#input\_sensors\_enabled) | Spec §6 flag for the live sensor path. | `bool` | `true` | no |
 
 ## Outputs
 
@@ -169,5 +182,11 @@ is not read automatically by the Actions workflow, which passes
 | <a name="output_knowledge_base_id"></a> [knowledge\_base\_id](#output\_knowledge\_base\_id) | Bedrock Knowledge Base id used by ask\_manual and by the manuals ingestion script. |
 | <a name="output_manuals_bucket"></a> [manuals\_bucket](#output\_manuals\_bucket) | S3 bucket holding manual PDFs and their metadata sidecars. |
 | <a name="output_manuals_prefix"></a> [manuals\_prefix](#output\_manuals\_prefix) | Key prefix inside the manuals bucket that the knowledge base ingests. |
+| <a name="output_push_websocket_url"></a> [push\_websocket\_url](#output\_push\_websocket\_url) | HOMELEDGER\_PUSH\_URL for the simulator. |
+| <a name="output_ring_account_link_url"></a> [ring\_account\_link\_url](#output\_ring\_account\_link\_url) | Ring Developer Portal: Account Link URL. |
+| <a name="output_ring_event_bus_name"></a> [ring\_event\_bus\_name](#output\_ring\_event\_bus\_name) | The Ring pipeline's event bus. |
+| <a name="output_ring_token_exchange_url"></a> [ring\_token\_exchange\_url](#output\_ring\_token\_exchange\_url) | Ring Developer Portal: Token Exchange URL. |
+| <a name="output_ring_webhook_url"></a> [ring\_webhook\_url](#output\_ring\_webhook\_url) | Ring Developer Portal: Webhook URL. |
+| <a name="output_snapshot_bucket"></a> [snapshot\_bucket](#output\_snapshot\_bucket) | Doorbell snapshot bucket. |
 | <a name="output_table_name"></a> [table\_name](#output\_table\_name) | Name of the DynamoDB table backing the HomeLedger repository. |
 <!-- END_TF_DOCS -->
