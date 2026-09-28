@@ -126,6 +126,11 @@ jobs:
           context: .
           file: apps/mcp-server/Dockerfile
           push: false
+          # Loaded into the runner's local Docker so the Trivy step below can
+          # scan it by tag; without `load: true` buildx keeps the result in
+          # its own cache only, invisible to `docker` and to trivy-action.
+          load: true
+          tags: homeledger-mcp:ci
           # Layer cache, so the expensive early layers (base image, `pnpm
           # install`) are only paid for when the lockfile or a package.json
           # actually changes. `ignore-error` because this job exists to catch a
@@ -133,6 +138,21 @@ jobs:
           # be what fails a pull request.
           cache-from: type=gha
           cache-to: type=gha,mode=max,ignore-error=true
+
+      # This job is a required check (docs/RUNBOOK.md §8.3): a HIGH/CRITICAL
+      # fixed finding fails the pull request. `ignore-unfixed` keeps the gate
+      # meaningful — a finding with no available fix cannot be acted on by
+      # bumping anything here, and would otherwise block every pull request
+      # until upstream ships a patch.
+      - name: Trivy (mcp-server image)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: homeledger-mcp:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          vuln-type: os,library
 
   terraform:
     runs-on: ubuntu-24.04
