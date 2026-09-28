@@ -1,0 +1,21 @@
+{
+  "source": "Ring knowledge base: amazon_vision_api/device_discovery.md (Response Structure), relationships trimmed to status only",
+  "substitutions": "<device_id>=dev-doorbell-1 named Front Door; <device_id_2>=dev-flood-1 named Water Heater",
+  "payload": {
+    "meta": { "time": "2026-10-06T12:00:00Z" },
+    "data": [
+      {
+        "type": "devices",
+        "id": "dev-doorbell-1",
+        "attributes": { "name": "Front Door" },
+        "relationships": { "status": { "data": { "type": "device-status", "id": "st-1" }, "links": { "related": "/v1/devices/dev-doorbell-1/status" } } }
+      },
+      {
+        "type": "devices",
+        "id": "dev-flood-1",
+        "attributes": { "name": "Water Heater" },
+        "relationships": { "status": { "data": { "type": "device-status", "id": "st-2" }, "links": { "related": "/v1/devices/dev-flood-1/status" } } }
+      }
+    ]
+  }
+}

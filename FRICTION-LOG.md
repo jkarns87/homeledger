@@ -684,3 +684,13 @@ Format per entry: **Area** · **Expected** · **Actual** · **Impact** · **Work
 - **The generalisable form.** A proxy that relays an upstream failure re-encodes it in its own vocabulary. Tests that forge the failure at the origin prove the client understands the origin, not the proxy it will actually talk to — forge it at the boundary the client sees.
 - **Source:** `apps/simulator/src/server/mcp.ts` (`isLostSessionError`) · `apps/simulator/test/mcp.test.ts` (the two FL-057 tests) · `apps/mcp-bridge/src/errors.ts` (`wrappedRuntimeStatus`) · RUNBOOK §4.6 check 6 · FL-039, FL-055.
 - **Status:** Fixed, pinned by a wire-shape socket test, and verified live on 2026-09-27 (FL-055 check 6).
+
+### FL-058 · Ring Partner API documentation · Four of the Ring design's assumptions were wrong, and the fixes were in documentation the research could not render
+
+- **Expected:** The Ring design (spec 2026-09-26, built on research 2026-09-21) describes the link, the webhook signature, the envelope and the sensor events well enough to code against.
+- **Actual:** Read through Ring's public knowledge server on 2026-09-27, the documentation contradicts it in four places: linking is a Token Exchange URL plus an Account Link URL with a mandatory partner sign-in and a URL-safe-Base64 nonce, not one POST; the webhook signature is `sha256=<hex>`, not Base64; the event type, device and timestamp live in `data.type`, `data.attributes.source` and epoch milliseconds, not the field names assumed; and sensor webhooks (`flood_detected` and the rest) are documented after all. The research had marked most of these "Unverified" because those sections of the web page did not render — the gap was real, and it was closed by a different reader of the same documentation.
+- **Impact:** Built to the spec as written, the webhook receiver would have rejected every genuine Ring delivery with a 401 (which Ring never retries), and the link endpoint would have waited for a POST Ring never sends.
+- **Workaround / decision:** Spec §12 amendment (A1–A6) and Plan 4's rulings R1–R12. Fixtures under `apps/events/test/fixtures/ring/` are Ring's own examples with the placeholders substituted, source path in every file.
+- **The generalisable form.** "Unverified" in research is a debt with a due date: the day code is written against it. Pay it by reading the primary source, not by building an adapter flexible enough to not need to know.
+- **Source:** Ring knowledge base paths listed in the spec's §12 · `docs/superpowers/research/2026-09-21-ring-partner-api.md` §10 (the unverified list) · Plan 4 header.
+- **Status:** Resolved in the design. The live run (Plan 4 Task 18) is what verifies it against Ring rather than against Ring's documentation.

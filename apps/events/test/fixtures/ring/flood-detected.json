@@ -1,0 +1,13 @@
+{
+  "source": "Ring knowledge base: amazon_vision_api/sensors/overview.md (Sensor Events) with data.type from amazon_vision_api/sensors/flood_freeze_sensor.md",
+  "substitutions": "<request_id>=req-fl-0001, <account_id>=acct-123, <device_id>=dev-flood-1, data.id per the documented <device_id>_<event_type>_<timestamp> form, timestamp 2026-10-06T21:15Z",
+  "payload": {
+    "meta": { "version": "1.1", "time": "2026-10-06T21:15:01.279Z", "request_id": "req-fl-0001", "account_id": "acct-123" },
+    "data": {
+      "id": "dev-flood-1_flood_detected_1791321300000",
+      "type": "flood_detected",
+      "attributes": { "source": "dev-flood-1", "source_type": "devices", "timestamp": 1791321300000 },
+      "relationships": { "devices": { "links": { "self": "/v1/devices/dev-flood-1" } } }
+    }
+  }
+}

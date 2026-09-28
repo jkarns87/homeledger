@@ -1,0 +1,13 @@
+{
+  "source": "Ring knowledge base: amazon_vision_api/notifications/device_addition.md (Webhook Payload)",
+  "substitutions": "<request_id>=req-da-0001, <account_id>=acct-123, <event_id>=evt-da-0001, <device_id>=dev-flood-1",
+  "payload": {
+    "meta": { "version": "1.1", "time": "2026-10-06T12:00:00Z", "request_id": "req-da-0001", "account_id": "acct-123" },
+    "data": {
+      "id": "evt-da-0001",
+      "type": "device_added",
+      "attributes": { "source": "dev-flood-1", "source_type": "devices", "timestamp": 1699457230000 },
+      "relationships": { "devices": { "links": { "self": "/v1/devices/dev-flood-1" } } }
+    }
+  }
+}

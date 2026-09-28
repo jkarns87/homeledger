@@ -1,0 +1,13 @@
+{
+  "source": "Ring knowledge base: amazon_vision_api/notifications/button_press.md (Webhook Payload)",
+  "substitutions": "<request_id>=req-bp-0001, <account_id>=acct-123, <event_id>=evt-bp-0001, <device_id>=dev-doorbell-1, meta.time and data.attributes.timestamp set to 2026-10-06T13:20Z",
+  "payload": {
+    "meta": { "version": "1.1", "time": "2026-10-06T13:20:01Z", "request_id": "req-bp-0001", "account_id": "acct-123" },
+    "data": {
+      "id": "evt-bp-0001",
+      "type": "button_press",
+      "attributes": { "source": "dev-doorbell-1", "source_type": "devices", "timestamp": 1791292800000 },
+      "relationships": { "devices": { "links": { "self": "/v1/devices/dev-doorbell-1" } } }
+    }
+  }
+}

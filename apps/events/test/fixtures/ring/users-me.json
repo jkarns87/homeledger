@@ -1,0 +1,5 @@
+{
+  "source": "Ring knowledge base: amazon_vision_api/users.md (GET /v1/users/me response)",
+  "substitutions": "<account_id>=acct-123; name and email are Ring's own example values",
+  "payload": { "data": { "type": "users", "id": "acct-123", "attributes": { "first_name": "John", "last_name": "Doe", "email": "johndoe@example.com" } } }
+}
