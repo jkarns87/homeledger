@@ -2,6 +2,7 @@ import type {
   Alert,
   Appliance,
   ApplianceCategoryValue,
+  Connection,
   Device,
   Doc,
   Event,
@@ -29,6 +30,8 @@ export function createMemoryRepository(_householdId: string): Repository {
   const visits = new Map<string, Visit>();
   const alerts = new Map<string, Alert>();
   const devices = new Map<string, Device>();
+  const published = new Set<string>(); // ringEventIds already on the bus
+  const connections = new Map<string, Connection>();
 
   return {
     async getHousehold() {
@@ -51,6 +54,8 @@ export function createMemoryRepository(_householdId: string): Repository {
       visits.clear();
       alerts.clear();
       devices.clear();
+      published.clear();
+      connections.clear();
     },
     async putAppliance(a) {
       appliances.set(a.id, a);
@@ -120,6 +125,48 @@ export function createMemoryRepository(_householdId: string): Repository {
     },
     async listDevices() {
       return [...devices.values()].sort((x, y) => x.name.localeCompare(y.name));
+    },
+    async getDevice(ringDeviceId) {
+      return devices.get(ringDeviceId) ?? null;
+    },
+    async claimEvent(e) {
+      if (!events.has(e.ringEventId)) {
+        events.set(e.ringEventId, e);
+        return 'new';
+      }
+      if (published.has(e.ringEventId)) return 'published';
+      events.set(e.ringEventId, e);
+      return 'retry';
+    },
+    async markEventPublished(ringEventId) {
+      published.add(ringEventId);
+    },
+    async markVisitArrived(visitId, arrivedAt, ringEventId) {
+      const v = visits.get(visitId);
+      if (!v || v.status !== 'scheduled') return 'not-scheduled';
+      visits.set(visitId, { ...v, status: 'arrived', arrivedAt, ringEventIds: [...v.ringEventIds, ringEventId] });
+      return 'arrived';
+    },
+    async recordVisitSnapshot(visitId, snapshot) {
+      const v = visits.get(visitId);
+      if (!v) throw new Error(`No visit ${visitId}`);
+      visits.set(visitId, { ...v, ...snapshot });
+    },
+    async findOpenAlert(ringDeviceId, sensorType) {
+      return (
+        [...alerts.values()]
+          .filter(a => a.ringDeviceId === ringDeviceId && a.sensorType === sensorType && a.status === 'open')
+          .sort((x, y) => y.at.localeCompare(x.at))[0] ?? null
+      );
+    },
+    async putConnection(c) {
+      connections.set(c.connectionId, c);
+    },
+    async deleteConnection(connectionId) {
+      connections.delete(connectionId);
+    },
+    async listConnections(nowEpochSeconds) {
+      return [...connections.values()].filter(c => c.expiresAt > nowEpochSeconds);
     }
   };
 }
