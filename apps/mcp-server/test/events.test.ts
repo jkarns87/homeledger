@@ -111,4 +111,45 @@ describe('recent_events', () => {
     const r = await h.client.callTool({ name: 'recent_events', arguments: {} });
     expect((r.content as Array<{ text?: string }>)[0]?.text).toBe('Nothing happened in the last 24 hours.');
   });
+
+  it('lists only door events as door rows, and speaks a system alert in its own words', async () => {
+    const h = await modernClient();
+    close = h.close;
+    await h.deps.repo.putEvent({
+      id: 'evt_aaaaaaaaaaaaaaaa',
+      ringEventId: 'req-fl-0001',
+      type: 'flood_detected',
+      subType: null,
+      deviceId: 'dev-flood-1',
+      deviceName: 'Water Heater',
+      at: '2026-09-13T11:10:00.000Z',
+      rawS3Key: null
+    });
+    await h.deps.repo.putEvent({
+      id: 'evt_bbbbbbbbbbbbbbbb',
+      ringEventId: 'req-bp-0001',
+      type: 'button_press',
+      subType: null,
+      deviceId: 'dev-doorbell-1',
+      deviceName: 'Front Door',
+      at: '2026-09-13T11:20:00.000Z',
+      rawS3Key: null
+    });
+    await h.deps.repo.putAlert({
+      id: 'alert_aaaaaaaaaaaaaaaa',
+      sensorType: 'system',
+      severity: 'high',
+      ringDeviceId: null,
+      message: 'Ring access lapsed, so doorbell and sensor events have stopped. Link the Ring account again from the Ring app.',
+      deviceName: 'HomeLedger',
+      at: '2026-09-13T11:30:00.000Z',
+      maintenanceRef: null,
+      status: 'open'
+    });
+    const sc = (await h.client.callTool({ name: 'recent_events', arguments: {} })).structuredContent as { events: Array<{ kind: string; summary: string }> };
+    expect(sc.events.map(e => [e.kind, e.summary])).toEqual([
+      ['alert', 'Ring access lapsed, so doorbell and sensor events have stopped. Link the Ring account again from the Ring app.'],
+      ['door', 'Someone rang the Front Door']
+    ]);
+  });
 });

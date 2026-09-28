@@ -27,6 +27,10 @@ export interface ServerDeps {
   requestStateKey: string;
   /** Total budget for book_service's simulated availability check, in milliseconds. */
   availabilityDelayMs: number;
+  /** Presigns a snapshot key for get_visit (spec §5). Absent locally and in tests that do not need it; get_visit then returns snapshotUrl null. */
+  snapshotUrl?: (key: string) => Promise<string>;
+  /** The origin presigned snapshot URLs live on; the visit widget declares it for the host's CSP (Plan 4 R8). */
+  snapshotOrigin?: string;
 }
 
 export const SERVER_INFO = { name: 'homeledger', version: '0.1.0' } as const;

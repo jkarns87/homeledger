@@ -12,6 +12,7 @@ import {
   type Repository
 } from '@homeledger/core';
 import type { ServerDeps } from './server.js';
+import { createSnapshotPresigner } from './snapshots.js';
 
 const MIN_REQUEST_STATE_KEY_BYTES = 32;
 
@@ -120,7 +121,17 @@ export async function depsFromEnv(env: NodeJS.ProcessEnv): Promise<ServerDeps> {
   const retriever = resolveRetriever(env);
   const requestStateKey = resolveRequestStateKey(env);
   const availabilityDelayMs = Number(env.AVAILABILITY_DELAY_MS ?? 600);
-  const common = { now, devTools, retriever, requestStateKey, availabilityDelayMs };
+  const snapshotBucket = env.SNAPSHOT_BUCKET?.trim();
+  const snapshotOrigin = env.SNAPSHOT_ORIGIN?.trim() || undefined;
+  const common = {
+    now,
+    devTools,
+    retriever,
+    requestStateKey,
+    availabilityDelayMs,
+    ...(snapshotBucket ? { snapshotUrl: createSnapshotPresigner({ bucket: snapshotBucket, region: env.AWS_REGION }) } : {}),
+    ...(snapshotOrigin ? { snapshotOrigin } : {})
+  };
   const withZone = (repo: Repository): ServerDeps => ({ repo, householdTimeZone: memoiseTimeZone(() => resolveHouseholdTimeZone(repo)), ...common });
   if (env.MEMORY_REPO === '1') {
     const repo = createMemoryRepository(householdId);

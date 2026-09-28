@@ -117,6 +117,30 @@ describe('widget resources', () => {
     const html = (calendar.contents[0] as { text: string }).text;
     expect(html).toContain("on('toolcancelled', resetPending)");
   });
+
+  it('declares the snapshot origin on the visit widget only, so a compliant host lets the photo load (R8, FL-030)', async () => {
+    const h = await modernClient({ snapshotOrigin: 'https://demo-homeledger-snapshots-123456789012.s3.us-east-1.amazonaws.com' });
+    close = h.close;
+    const visit = (await h.client.readResource({ uri: WIDGET_URIS.visit })).contents[0] as { _meta?: unknown };
+    expect(visit._meta).toEqual({ ui: { csp: { resourceDomains: ['https://demo-homeledger-snapshots-123456789012.s3.us-east-1.amazonaws.com'] } } });
+    const calendar = (await h.client.readResource({ uri: WIDGET_URIS.calendar })).contents[0] as { _meta?: unknown };
+    expect(calendar._meta).toBeUndefined();
+  });
+
+  it('declares nothing when no snapshot bucket is configured', async () => {
+    const h = await modernClient();
+    close = h.close;
+    expect(((await h.client.readResource({ uri: WIDGET_URIS.visit })).contents[0] as { _meta?: unknown })._meta).toBeUndefined();
+  });
+
+  it('draws the match note, the snapshot note, and re-measures once the photo has loaded', async () => {
+    const h = await modernClient();
+    close = h.close;
+    const html = ((await h.client.readResource({ uri: WIDGET_URIS.visit })).contents[0] as { text: string }).text;
+    expect(html).toContain("if (data.matchNote) textRow(detail, 'muted', data.matchNote);");
+    expect(html).toContain("if (data.snapshotNote && !data.snapshotUrl) textRow(detail, 'muted', data.snapshotNote);");
+    expect(html).toContain('shot.onload = function () { window.homeledger.reportSize(); };');
+  });
 });
 
 describe('tool widget metadata', () => {

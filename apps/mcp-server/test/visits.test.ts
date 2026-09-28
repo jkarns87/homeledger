@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { hasJson } from '../src/voice.js';
 import { modernClient } from './harness.js';
 
@@ -62,7 +62,9 @@ describe('get_visit', () => {
   });
 
   it('speaks an arrived visit differently', async () => {
-    const h = await modernClient();
+    const h = await modernClient({
+      snapshotUrl: async key => `https://demo-homeledger-snapshots-123456789012.s3.us-east-1.amazonaws.com/${key}?X-Amz-Expires=600`
+    });
     close = h.close;
     const appliance = (await h.deps.repo.listAppliances({ category: 'water_heater' }))[0]!;
     await h.deps.repo.putVisit({
@@ -75,22 +77,115 @@ describe('get_visit', () => {
       windowStart: '2026-09-15T13:00:00.000Z',
       windowEnd: '2026-09-15T15:00:00.000Z',
       status: 'arrived',
-      ringEventIds: ['ring-evt-1'],
-      snapshotKey: 'snapshots/hh_test/visit_b.jpg',
-      description: null,
-      snapshotStatus: null,
-      snapshotLatencyMs: null,
+      ringEventIds: ['req-bp-0001'],
+      snapshotKey: 'snapshots/hh_test/visit_bbbbbbbbbbbbbbbb.jpg',
+      description: 'A person holding a toolbox stands at the front door.',
+      snapshotStatus: 'ok',
+      snapshotLatencyMs: 4200,
       arrivedAt: '2026-09-15T13:07:00.000Z',
       createdAt: '2026-09-13T12:00:00.000Z'
     });
     const r = await h.client.callTool({ name: 'get_visit', arguments: { visitId: 'visit_bbbbbbbbbbbbbbbb' } });
-    expect((r.content as Array<{ text?: string }>)[0]?.text).toBe('Kettle Creek Water Heaters arrived for the water heater on Tuesday, September 15.');
-    const sc = r.structuredContent as { visit: { arrivedAt: string | null; arrivedAtLabel: string | null }; snapshotUrl: string | null };
-    expect(sc.snapshotUrl).toBeNull();
-    // 13:07Z is 8:07 AM Central. The widget shows this line verbatim, so the
-    // raw instant it replaced is also asserted to still be stored as UTC.
+    expect((r.content as Array<{ text?: string }>)[0]?.text).toBe(
+      'Kettle Creek Water Heaters arrived for the water heater on Tuesday, September 15. From the doorbell: A person holding a toolbox stands at the front door.'
+    );
+    const sc = r.structuredContent as Record<string, unknown> & { visit: { arrivedAt: string | null; arrivedAtLabel: string | null } };
+    expect(sc.snapshotUrl).toBe(
+      'https://demo-homeledger-snapshots-123456789012.s3.us-east-1.amazonaws.com/snapshots/hh_test/visit_bbbbbbbbbbbbbbbb.jpg?X-Amz-Expires=600'
+    );
+    expect(sc.snapshotStatus).toBe('ok');
+    expect(sc.snapshotNote).toBe('Photo from the doorbell at the moment of the ring.');
+    expect(sc.matchNote).toBe(
+      'Matches your Tuesday, September 15, 8:00 AM to 10:00 AM CDT visit from Kettle Creek Water Heaters. HomeLedger matched it by the time of the ring, not by the photo.'
+    );
+    expect(sc.snapshotLatencyMs).toBe(4200);
+    expect(sc.description).toBe('A person holding a toolbox stands at the front door.');
     expect(sc.visit.arrivedAt).toBe('2026-09-15T13:07:00.000Z');
     expect(sc.visit.arrivedAtLabel).toBe('Tuesday, September 15, 8:07 AM CDT');
+  });
+
+  it('says why there is no photo, and never presigns a key that does not exist', async () => {
+    const presign = vi.fn(async (key: string) => `https://x/${key}`);
+    const h = await modernClient({ snapshotUrl: presign });
+    close = h.close;
+    const appliance = (await h.deps.repo.listAppliances({ category: 'water_heater' }))[0]!;
+    await h.deps.repo.putVisit({
+      id: 'visit_cccccccccccccccc',
+      providerId: 'prov_kettle_water',
+      providerName: 'Kettle Creek Water Heaters',
+      category: 'water_heater',
+      applianceId: appliance.id,
+      issue: 'no hot water',
+      windowStart: '2026-09-15T13:00:00.000Z',
+      windowEnd: '2026-09-15T15:00:00.000Z',
+      status: 'arrived',
+      ringEventIds: ['req-bp-0002'],
+      snapshotKey: null,
+      description: null,
+      snapshotStatus: 'forbidden',
+      snapshotLatencyMs: 900,
+      arrivedAt: '2026-09-15T13:07:00.000Z',
+      createdAt: '2026-09-13T12:00:00.000Z'
+    });
+    const r = await h.client.callTool({ name: 'get_visit', arguments: { visitId: 'visit_cccccccccccccccc' } });
+    expect((r.content as Array<{ text?: string }>)[0]?.text).toBe(
+      'Kettle Creek Water Heaters arrived for the water heater on Tuesday, September 15. Ring did not allow HomeLedger to fetch a photo from that moment.'
+    );
+    expect((r.structuredContent as { snapshotUrl: unknown }).snapshotUrl).toBeNull();
+    expect(presign).not.toHaveBeenCalled();
+  });
+
+  it('shows the visit without a link when presigning fails, rather than failing the call', async () => {
+    const h = await modernClient({ snapshotUrl: async () => Promise.reject(new Error('ExpiredToken')) });
+    close = h.close;
+    const appliance = (await h.deps.repo.listAppliances({ category: 'water_heater' }))[0]!;
+    await h.deps.repo.putVisit({
+      id: 'visit_dddddddddddddddd',
+      providerId: 'prov_kettle_water',
+      providerName: 'Kettle Creek Water Heaters',
+      category: 'water_heater',
+      applianceId: appliance.id,
+      issue: 'no hot water',
+      windowStart: '2026-09-15T13:00:00.000Z',
+      windowEnd: '2026-09-15T15:00:00.000Z',
+      status: 'arrived',
+      ringEventIds: ['req-bp-0003'],
+      snapshotKey: 'snapshots/hh_test/visit_dddddddddddddddd.jpg',
+      description: 'A van is parked at the curb.',
+      snapshotStatus: 'ok',
+      snapshotLatencyMs: 3000,
+      arrivedAt: '2026-09-15T13:07:00.000Z',
+      createdAt: '2026-09-13T12:00:00.000Z'
+    });
+    const r = await h.client.callTool({ name: 'get_visit', arguments: { visitId: 'visit_dddddddddddddddd' } });
+    expect(r.isError).toBeFalsy();
+    expect((r.structuredContent as { snapshotUrl: unknown; description: unknown }).snapshotUrl).toBeNull();
+    expect((r.structuredContent as { description: unknown }).description).toBe('A van is parked at the curb.');
+  });
+
+  it('reads a visit stored before Plan 4 — no snapshot fields at all — as having none', async () => {
+    const h = await modernClient();
+    close = h.close;
+    const appliance = (await h.deps.repo.listAppliances({ category: 'water_heater' }))[0]!;
+    const legacy = {
+      id: 'visit_eeeeeeeeeeeeeeee',
+      providerId: 'prov_kettle_water',
+      providerName: 'Kettle Creek Water Heaters',
+      category: 'water_heater',
+      applianceId: appliance.id,
+      issue: 'no hot water',
+      windowStart: '2026-09-15T13:00:00.000Z',
+      windowEnd: '2026-09-15T15:00:00.000Z',
+      status: 'scheduled',
+      ringEventIds: [],
+      snapshotKey: null,
+      description: null,
+      arrivedAt: null,
+      createdAt: '2026-09-13T12:00:00.000Z'
+    };
+    await h.deps.repo.putVisit(legacy as unknown as Parameters<typeof h.deps.repo.putVisit>[0]);
+    const sc = (await h.client.callTool({ name: 'get_visit', arguments: { visitId: 'visit_eeeeeeeeeeeeeeee' } })).structuredContent as Record<string, unknown>;
+    expect([sc.snapshotStatus, sc.snapshotNote, sc.matchNote, sc.snapshotLatencyMs]).toEqual([null, null, null, null]);
   });
 
   it('crosses midnight in the household zone without losing the second day', async () => {

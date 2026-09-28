@@ -11,6 +11,11 @@ const EventRow = z.object({
   visitId: z.string().nullable()
 });
 
+// Since Plan 4 the webhook stores every Ring event it receives (spec §4);
+// sensor events reach the household as alerts, and device or account events
+// as nothing, so only these two types are door rows.
+const DOOR_TYPES = new Set(['button_press', 'motion_detected']);
+
 export function registerEventTools(server: McpServer, deps: ServerDeps): void {
   server.registerTool(
     'recent_events',
@@ -38,21 +43,23 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
           summary: `${v.providerName} ${v.status === 'scheduled' ? 'is scheduled' : v.status} for the ${v.issue}`,
           visitId: v.id
         })),
-        ...doors.map(e => ({
-          kind: 'door' as const,
-          at: e.at,
-          deviceName: e.deviceName,
-          summary:
-            e.type === 'button_press'
-              ? `Someone rang the ${e.deviceName}`
-              : `${e.subType === 'human' ? 'A person' : e.subType === 'vehicle' ? 'A vehicle' : 'Motion'} at the ${e.deviceName}`,
-          visitId: null
-        })),
+        ...doors
+          .filter(e => DOOR_TYPES.has(e.type))
+          .map(e => ({
+            kind: 'door' as const,
+            at: e.at,
+            deviceName: e.deviceName,
+            summary:
+              e.type === 'button_press'
+                ? `Someone rang the ${e.deviceName}`
+                : `${e.subType === 'human' ? 'A person' : e.subType === 'vehicle' ? 'A vehicle' : 'Motion'} at the ${e.deviceName}`,
+            visitId: null
+          })),
         ...alerts.map(a => ({
           kind: 'alert' as const,
           at: a.at,
           deviceName: a.deviceName,
-          summary: `${a.sensorType} alert from the ${a.deviceName}`,
+          summary: a.message ?? `${a.sensorType} alert from the ${a.deviceName}`,
           visitId: null
         }))
       ].sort((x, y) => y.at.localeCompare(x.at));
