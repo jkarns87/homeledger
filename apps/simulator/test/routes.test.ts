@@ -144,45 +144,39 @@ describe('POST /api/agent/turn', () => {
     expect(events.map(e => e.type)).toEqual(['turn-started', 'assistant-text', 'turn-finished']);
   });
 
-  it(
-    'completes a three-question booking with each answer POSTed while the turn stream is still open',
-    async () => {
-      // THE deadlock guard. If handleTurn buffered the response, `drain` would
-      // yield nothing until the turn ended, the turn would wait for answers
-      // that can only be sent from inside `drain`, and this test would time
-      // out rather than fail — which is exactly how FL-033's naive proxy
-      // failed. The timeout below is the assertion that it does not.
-      const convo = await conversation(
-        scriptedModel([
-          () => [toolUse('c1', 'list_appliances', { category: 'water_heater' })],
-          messages => [
-            toolUse('c2', 'book_service', { applianceId: /appl_[a-z0-9]{16}/.exec(JSON.stringify(messages))?.[0] ?? 'appl_missing', issue: 'leak' })
-          ],
-          () => [{ type: 'text', text: 'Booked.' } as Anthropic.ContentBlock]
-        ])
-      );
-      const response = await handleTurn(convo, post({ text: 'book a plumber for the water heater' }));
-      let turnId = '';
-      const answers: Array<Promise<Response>> = [];
-      const events = await drain(response, event => {
-        if (event.type === 'turn-started') turnId = event.turnId;
-        if (event.type !== 'elicitation-opened') return;
-        const content = event.field === 'provider' ? { provider: 'prov_kettle_water' } : event.field === 'window' ? { window: 'win_1' } : { confirm: true };
-        answers.push(handleAnswer(convo, post({ turnId, elicitationId: event.elicitationId, action: 'accept', content })));
-      });
+  it('completes a three-question booking with each answer POSTed while the turn stream is still open', { timeout: 15000 }, async () => {
+    // THE deadlock guard. If handleTurn buffered the response, `drain` would
+    // yield nothing until the turn ended, the turn would wait for answers
+    // that can only be sent from inside `drain`, and this test would time
+    // out rather than fail — which is exactly how FL-033's naive proxy
+    // failed. The timeout below is the assertion that it does not.
+    const convo = await conversation(
+      scriptedModel([
+        () => [toolUse('c1', 'list_appliances', { category: 'water_heater' })],
+        messages => [toolUse('c2', 'book_service', { applianceId: /appl_[a-z0-9]{16}/.exec(JSON.stringify(messages))?.[0] ?? 'appl_missing', issue: 'leak' })],
+        () => [{ type: 'text', text: 'Booked.' } as Anthropic.ContentBlock]
+      ])
+    );
+    const response = await handleTurn(convo, post({ text: 'book a plumber for the water heater' }));
+    let turnId = '';
+    const answers: Array<Promise<Response>> = [];
+    const events = await drain(response, event => {
+      if (event.type === 'turn-started') turnId = event.turnId;
+      if (event.type !== 'elicitation-opened') return;
+      const content = event.field === 'provider' ? { provider: 'prov_kettle_water' } : event.field === 'window' ? { window: 'win_1' } : { confirm: true };
+      answers.push(handleAnswer(convo, post({ turnId, elicitationId: event.elicitationId, action: 'accept', content })));
+    });
 
-      expect(events.filter(e => e.type === 'elicitation-opened').map(e => (e.type === 'elicitation-opened' ? e.field : ''))).toEqual([
-        'provider',
-        'window',
-        'confirm'
-      ]);
-      for (const answer of answers) expect((await answer).status).toBe(202);
-      const booked = events.find(e => e.type === 'tool-succeeded' && e.tool === 'book_service');
-      expect(booked && booked.type === 'tool-succeeded' && (booked.structured as { status: string }).status).toBe('scheduled');
-      expect(events.filter(e => e.type === 'progress').map(e => (e.type === 'progress' ? e.progress : -1))).toEqual([0, 1, 2, 3]);
-    },
-    { timeout: 15000 }
-  );
+    expect(events.filter(e => e.type === 'elicitation-opened').map(e => (e.type === 'elicitation-opened' ? e.field : ''))).toEqual([
+      'provider',
+      'window',
+      'confirm'
+    ]);
+    for (const answer of answers) expect((await answer).status).toBe(202);
+    const booked = events.find(e => e.type === 'tool-succeeded' && e.tool === 'book_service');
+    expect(booked && booked.type === 'tool-succeeded' && (booked.structured as { status: string }).status).toBe('scheduled');
+    expect(events.filter(e => e.type === 'progress').map(e => (e.type === 'progress' ? e.progress : -1))).toEqual([0, 1, 2, 3]);
+  });
 
   it('keeps the history so a second turn sees the first', async () => {
     const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'One.' } as Anthropic.ContentBlock]]));
@@ -253,52 +247,46 @@ describe('POST /api/agent/turn', () => {
     expect(convo.registry.size).toBe(0);
   });
 
-  it(
-    'closes the registry entry when the browser cancels the stream, well under the elicitation timeout',
-    async () => {
-      // The controller ruling: `cancel() -> registry.close(turnId)` is the
-      // ONLY external close in production, and it exists so a disconnected
-      // browser does not leave an open question waiting out the full
-      // elicitation timeout. Waiting the full timeout would let this pass
-      // even with `cancel()` gutted, because the question's own timeout
-      // would eventually remove the entry anyway - so this polls for well
-      // under it (200 ms against a 3000 ms elicitationTimeoutMs) and fails
-      // rather than waits if the entry is still there.
-      const convo = await conversation(
-        scriptedModel([
-          () => [toolUse('c1', 'list_appliances', { category: 'water_heater' })],
-          messages => [
-            toolUse('c2', 'book_service', { applianceId: /appl_[a-z0-9]{16}/.exec(JSON.stringify(messages))?.[0] ?? 'appl_missing', issue: 'leak' })
-          ],
-          () => [{ type: 'text', text: 'Booked.' } as Anthropic.ContentBlock]
-        ])
-      );
-      const response = await handleTurn(convo, post({ text: 'book a plumber for the water heater' }));
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      const decode = createSseDecoder();
-      let turnId = '';
-      readLoop: for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        for (const event of decode(decoder.decode(value, { stream: true }))) {
-          if (event.type === 'turn-started') turnId = event.turnId;
-          if (event.type === 'elicitation-opened') break readLoop;
-        }
+  it('closes the registry entry when the browser cancels the stream, well under the elicitation timeout', { timeout: 15000 }, async () => {
+    // The controller ruling: `cancel() -> registry.close(turnId)` is the
+    // ONLY external close in production, and it exists so a disconnected
+    // browser does not leave an open question waiting out the full
+    // elicitation timeout. Waiting the full timeout would let this pass
+    // even with `cancel()` gutted, because the question's own timeout
+    // would eventually remove the entry anyway - so this polls for well
+    // under it (200 ms against a 3000 ms elicitationTimeoutMs) and fails
+    // rather than waits if the entry is still there.
+    const convo = await conversation(
+      scriptedModel([
+        () => [toolUse('c1', 'list_appliances', { category: 'water_heater' })],
+        messages => [toolUse('c2', 'book_service', { applianceId: /appl_[a-z0-9]{16}/.exec(JSON.stringify(messages))?.[0] ?? 'appl_missing', issue: 'leak' })],
+        () => [{ type: 'text', text: 'Booked.' } as Anthropic.ContentBlock]
+      ])
+    );
+    const response = await handleTurn(convo, post({ text: 'book a plumber for the water heater' }));
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    const decode = createSseDecoder();
+    let turnId = '';
+    readLoop: for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const event of decode(decoder.decode(value, { stream: true }))) {
+        if (event.type === 'turn-started') turnId = event.turnId;
+        if (event.type === 'elicitation-opened') break readLoop;
       }
-      expect(turnId).not.toBe('');
-      expect(convo.registry.has(turnId)).toBe(true);
+    }
+    expect(turnId).not.toBe('');
+    expect(convo.registry.has(turnId)).toBe(true);
 
-      await reader.cancel();
+    await reader.cancel();
 
-      const deadline = Date.now() + 200;
-      while (convo.registry.has(turnId) && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 5));
-      }
-      expect(convo.registry.has(turnId)).toBe(false);
-    },
-    { timeout: 15000 }
-  );
+    const deadline = Date.now() + 200;
+    while (convo.registry.has(turnId) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    expect(convo.registry.has(turnId)).toBe(false);
+  });
 });
 
 describe('POST /api/agent/answer', () => {
@@ -505,25 +493,21 @@ describe('checkOrigin, the Host-derived default (fix round 2)', () => {
     expect(checkOrigin(request, undefined)).toBeUndefined();
   });
 
-  it(
-    "a real route (handleTurn) accepts a browser at 127.0.0.1 even though Next's request.url says localhost",
-    async () => {
-      // Mutation (a): revert to `allowOrigin ?? new URL(request.url).origin`
-      // and this must fail - `request.url`'s origin is `http://localhost:3000`,
-      // which never equals the browser's real `Origin: http://127.0.0.1:3000`.
-      const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
-      const request = new Request('http://localhost:3000/api/agent/turn', {
-        method: 'POST',
-        headers: { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000', 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'hi' })
-      });
-      const response = await handleTurn(convo, request);
-      expect(response.status).toBe(200);
-      await drain(response, () => {});
-      expect(convo.history).toHaveLength(2);
-    },
-    { timeout: 15000 }
-  );
+  it("a real route (handleTurn) accepts a browser at 127.0.0.1 even though Next's request.url says localhost", { timeout: 15000 }, async () => {
+    // Mutation (a): revert to `allowOrigin ?? new URL(request.url).origin`
+    // and this must fail - `request.url`'s origin is `http://localhost:3000`,
+    // which never equals the browser's real `Origin: http://127.0.0.1:3000`.
+    const convo = await conversation(scriptedModel([() => [{ type: 'text', text: 'ok' } as Anthropic.ContentBlock]]));
+    const request = new Request('http://localhost:3000/api/agent/turn', {
+      method: 'POST',
+      headers: { host: '127.0.0.1:3000', origin: 'http://127.0.0.1:3000', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hi' })
+    });
+    const response = await handleTurn(convo, request);
+    expect(response.status).toBe(200);
+    await drain(response, () => {});
+    expect(convo.history).toHaveLength(2);
+  });
 
   it('a real route (handleTurn) refuses a DNS-rebinding Host even though its Origin agrees with the same lie', async () => {
     // Mutation (b): drop the loopback-Host requirement (derive `expected`
@@ -625,26 +609,22 @@ describe('GET /api/debug', () => {
     expect(JSON.stringify(body.log)).not.toContain('appliances');
   });
 
-  it(
-    'reports the protocol as not negotiated rather than a stale one, when the transport has none to give',
-    async () => {
-      // Fix round 1, Important 1: the report claimed this was covered by
-      // Task 6's `mcp.test.ts`, which asserts `HomeLedgerMcp.protocolVersion`
-      // directly and never imports `http.ts` - so a `handleDebug` that hard-
-      // codes the literal `conversation.mcp.protocolVersion` reads from
-      // passed every test in this file too. This fixture overrides just the
-      // one getter, on an object whose prototype is the real, connected
-      // `HomeLedgerMcp` (so `endpointUrl`, `sessionId`, `rebuilds` and
-      // `jsonRpcLog` still resolve normally through it) - a JS-level
-      // substitution, not a mock of the whole class, so nothing here can be
-      // satisfied by a value `handleDebug` invents on its own.
-      const convo = await conversation(scriptedModel([]));
-      const unnegotiated = { ...convo, mcp: Object.create(convo.mcp, { protocolVersion: { get: () => undefined } }) };
-      const body = (await (await import('../src/server/http.js')).handleDebug(unnegotiated, debugRequest()).json()) as { protocolVersion: unknown };
-      expect(body.protocolVersion).toBeNull();
-    },
-    { timeout: 15000 }
-  );
+  it('reports the protocol as not negotiated rather than a stale one, when the transport has none to give', { timeout: 15000 }, async () => {
+    // Fix round 1, Important 1: the report claimed this was covered by
+    // Task 6's `mcp.test.ts`, which asserts `HomeLedgerMcp.protocolVersion`
+    // directly and never imports `http.ts` - so a `handleDebug` that hard-
+    // codes the literal `conversation.mcp.protocolVersion` reads from
+    // passed every test in this file too. This fixture overrides just the
+    // one getter, on an object whose prototype is the real, connected
+    // `HomeLedgerMcp` (so `endpointUrl`, `sessionId`, `rebuilds` and
+    // `jsonRpcLog` still resolve normally through it) - a JS-level
+    // substitution, not a mock of the whole class, so nothing here can be
+    // satisfied by a value `handleDebug` invents on its own.
+    const convo = await conversation(scriptedModel([]));
+    const unnegotiated = { ...convo, mcp: Object.create(convo.mcp, { protocolVersion: { get: () => undefined } }) };
+    const body = (await (await import('../src/server/http.js')).handleDebug(unnegotiated, debugRequest()).json()) as { protocolVersion: unknown };
+    expect(body.protocolVersion).toBeNull();
+  });
 
   it('refuses a foreign origin, the same as turn and answer', async () => {
     // Fix round 1, ruling on Minor 4: `handleDebug` took no `Request` and so

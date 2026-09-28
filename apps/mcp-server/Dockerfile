@@ -14,6 +14,14 @@ FROM --platform=linux/arm64 node:22-bookworm-slim
 ENV NODE_ENV=production PORT=8000
 WORKDIR /app
 COPY --from=build /out /app
+# The base image's globally-installed npm CLI (and the corepack/npx shims
+# that ship with it) is dead weight here: the container only ever runs
+# `node dist/index.js`, nothing shells out to npm or npx at runtime. It also
+# carries its own bundled transitive dependencies (brace-expansion,
+# ip-address, pacote, picomatch, sigstore) that trivy flags as HIGH in this
+# image on an otherwise-clean scan. Removed as root, before USER node, since
+# /usr/local is not writable by the unprivileged user.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 USER node
 EXPOSE 8000
 CMD ["node", "dist/index.js"]

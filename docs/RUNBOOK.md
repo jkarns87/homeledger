@@ -760,6 +760,18 @@ mode here — a required check that never reports — is invisible in exactly th
 report. `gh pr view --json statusCheckRollup` answers "what ran"; only the protection API answers "what is
 required". The command above is the only one that settles it.
 
+**Three kinds of security scanning now run, and only one of them is on this list.** `codeql.yml` runs
+CodeQL (`javascript-typescript` and `actions`) on every pull request, every push to `main`, and weekly on a
+schedule; it is a brand-new check and is deliberately *not* required — adding it to the list above is a
+repository setting, and it is Joey's call, the same reasoning as `plan` above, not a reflection of the
+scan's usefulness. The dependency-audit gate is not a separate check at all: it is a step inside `test`
+(`pnpm audit --audit-level high`, right after `pnpm install --frozen-lockfile`), so it already inherits
+`test`'s required status — a high or critical advisory fails the pull request, a moderate one is visible in
+the log but does not. The image vulnerability scan is likewise not separate: it is a step inside `image`
+itself (`aquasecurity/trivy-action`, `severity: HIGH,CRITICAL`, `ignore-unfixed: true`), so it inherits
+`image`'s required status directly — a fixed HIGH/CRITICAL finding in the built container fails the same
+required check the build-only step always has.
+
 ### 8.4 Dispatching a deploy by hand
 
 ```bash

@@ -18,6 +18,14 @@
   "devDependencies": {
     "prettier": "^3.7.4",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "^4.1.11"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "^8.5.23"
+    },
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
