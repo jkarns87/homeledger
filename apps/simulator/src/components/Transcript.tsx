@@ -9,11 +9,13 @@ function ToolRow({ entry, theme }: { entry: Extract<Entry, { kind: 'tool' }>; th
   return (
     <div className={`card tool ${entry.status}`} data-testid={`tool-${entry.id}`} data-status={entry.status}>
       <div className="row">
-        <span className="name">{entry.tool}</span>
+        <span className="tool-title" title={entry.tool}>
+          {entry.title}
+        </span>
         <span className="pill">{entry.status === 'running' ? 'working' : entry.status === 'ok' ? `${entry.ms ?? 0} ms` : 'failed'}</span>
       </div>
       {entry.status === 'ok' && entry.spoken !== '' ? <p className="spoken">{entry.spoken}</p> : null}
-      {entry.status === 'failed' ? <FailureCard tool={entry.tool} message={entry.message} /> : null}
+      {entry.status === 'failed' ? <FailureCard tool={entry.title} message={entry.message} /> : null}
       {entry.status === 'ok' && entry.widgetUri ? (
         <WidgetFrame uri={entry.widgetUri} content={entry.content} structured={entry.structured} theme={theme} />
       ) : null}

@@ -196,6 +196,7 @@ After the Ask segment (+0:15), cut the optional booking readback to make room.
 1. Set the Ring Alarm back to its usual mode.
 2. Pull the timings (§7) and replace the "8 s" caption with the real number.
 3. Record FL entries only for anything that surprised you, at the next free number.
+   - Capture the last two Devpost gallery images while the cards are on screen: the arrival card with its photo, and the flood alert card. Screenshot the simulator's `.device` element into `docs/assets/devpost/raw/`. Frame each with `docs/assets/devpost/frame.html` as `09-arrive.png` and `10-alert.png`, and upload them after `08-architecture.png`. If the Connection drawer is open, mask the account id in the invocation URL first; it appears nowhere else in the repo.
 4. Move the verified Ring and sensor sentences above PENDING in `docs/submission/devpost-story.md`, using the numbers from Session B.
 
 ## 7. Timing and trace commands

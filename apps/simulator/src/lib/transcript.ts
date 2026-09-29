@@ -7,6 +7,8 @@ export type Entry =
       kind: 'tool';
       id: string;
       tool: string;
+      /** What the card shows: the server's title for the tool, or its wire name when the server gave none. */
+      title: string;
       status: 'running' | 'ok' | 'failed';
       spoken: string;
       message: string;
@@ -75,6 +77,11 @@ function toolNameOf(entries: Entry[], callId: string): string {
 }
 
 /** Replaces the tool entry with this id, or appends one when the start was never seen. */
+/** The title the call's start carried; the wire name when its start was never seen. */
+function titleOf(previous: Entry | undefined, tool: string): string {
+  return previous?.kind === 'tool' ? previous.title : tool;
+}
+
 function upsertTool(entries: Entry[], id: string, make: (previous: Entry | undefined) => Entry): Entry[] {
   const index = entries.findIndex(entry => entry.kind === 'tool' && entry.id === id);
   if (index === -1) return [...entries, make(undefined)];
@@ -121,6 +128,7 @@ export function reduceTurn(state: AgentState, event: TurnEvent): AgentState {
           kind: 'tool',
           id: event.callId,
           tool: event.tool,
+          title: event.title ?? event.tool,
           status: 'running',
           spoken: '',
           message: '',
@@ -135,10 +143,11 @@ export function reduceTurn(state: AgentState, event: TurnEvent): AgentState {
       return {
         ...state,
         progress: state.progress?.callId === event.callId ? null : state.progress,
-        entries: upsertTool(state.entries, event.callId, () => ({
+        entries: upsertTool(state.entries, event.callId, previous => ({
           kind: 'tool',
           id: event.callId,
           tool: event.tool,
+          title: titleOf(previous, event.tool),
           content: event.content,
           status: 'ok',
           spoken: event.spoken,
@@ -153,10 +162,11 @@ export function reduceTurn(state: AgentState, event: TurnEvent): AgentState {
       return {
         ...state,
         progress: state.progress?.callId === event.callId ? null : state.progress,
-        entries: upsertTool(state.entries, event.callId, () => ({
+        entries: upsertTool(state.entries, event.callId, previous => ({
           kind: 'tool',
           id: event.callId,
           tool: event.tool,
+          title: titleOf(previous, event.tool),
           status: 'failed',
           spoken: '',
           message: event.message,

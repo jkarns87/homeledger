@@ -2,6 +2,8 @@ import type Anthropic from '@anthropic-ai/sdk';
 
 export interface McpToolDescriptor {
   name: string;
+  /** The server's human-readable name for the tool (MCP `title`), shown on the tool's card; absent when the server declares none. */
+  title?: string | undefined;
   description?: string | undefined;
   inputSchema: Record<string, unknown>;
   _meta?: unknown;

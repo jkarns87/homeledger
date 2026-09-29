@@ -42,7 +42,7 @@ describe('reduceTurn', () => {
 
   it('flips a running call to ok and keeps its content, its widget and its timing', () => {
     const state = run([
-      { type: 'tool-started', callId: 'c1', tool: 'maintenance_due', args: { horizonDays: 30 } },
+      { type: 'tool-started', callId: 'c1', tool: 'maintenance_due', title: 'Maintenance due', args: { horizonDays: 30 } },
       {
         type: 'tool-succeeded',
         callId: 'c1',
@@ -59,6 +59,8 @@ describe('reduceTurn', () => {
         kind: 'tool',
         id: 'c1',
         tool: 'maintenance_due',
+        // The server's title rides from the start event to the finished card.
+        title: 'Maintenance due',
         status: 'ok',
         spoken: 'Two are due.',
         message: '',
@@ -90,7 +92,18 @@ describe('reduceTurn', () => {
   it('records a result for a call it never saw start rather than dropping it', () => {
     const state = run([{ type: 'tool-failed', callId: 'ghost', tool: 'get_visit', message: 'Session not found.', ms: 4 }]);
     expect(state.entries).toHaveLength(1);
-    expect(state.entries[0]).toMatchObject({ kind: 'tool', id: 'ghost', status: 'failed' });
+    // With no start there is no title to carry, so the card falls back to the wire name.
+    expect(state.entries[0]).toMatchObject({ kind: 'tool', id: 'ghost', status: 'failed', title: 'get_visit' });
+  });
+
+  it('labels a card with the wire name when the server declares no title, and keeps a title through a failure', () => {
+    const untitled = run([{ type: 'tool-started', callId: 'c1', tool: 'echo_confirm', args: {} }]);
+    expect(untitled.entries[0]).toMatchObject({ tool: 'echo_confirm', title: 'echo_confirm', status: 'running' });
+    const failed = run([
+      { type: 'tool-started', callId: 'c1', tool: 'book_service', title: 'Book a service visit', args: {} },
+      { type: 'tool-failed', callId: 'c1', tool: 'book_service', message: 'Session not found.', ms: 9 }
+    ]);
+    expect(failed.entries[0]).toMatchObject({ tool: 'book_service', title: 'Book a service visit', status: 'failed' });
   });
 
   it('holds one pending question at a time and clears it when it closes', () => {

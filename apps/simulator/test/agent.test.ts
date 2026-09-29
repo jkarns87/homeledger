@@ -161,6 +161,9 @@ describe('runTurn', () => {
     expect(events.map(e => e.type)).toEqual(['turn-started', 'tool-started', 'tool-succeeded', 'assistant-text', 'turn-finished']);
     const success = events.find(e => e.type === 'tool-succeeded');
     expect(success && success.type === 'tool-succeeded' && success.widgetUri).toBe('ui://homeledger/appliances');
+    // The start carries the server's own title for the tool, read from tools/list, for the card to show.
+    const started = events.find(e => e.type === 'tool-started');
+    expect(started && started.type === 'tool-started' && [started.tool, started.title]).toEqual(['list_appliances', 'List appliances']);
 
     // The tool result really reached the model, as a tool_result block keyed to the call.
     const fedBack = messages[2];

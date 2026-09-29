@@ -18,7 +18,8 @@ export type PushStatus = 'off' | 'connecting' | 'connected' | 'reconnecting';
 export type TurnEvent =
   | { type: 'turn-started'; turnId: string }
   | { type: 'assistant-text'; text: string }
-  | { type: 'tool-started'; callId: string; tool: string; args: Record<string, unknown> }
+  /** `title` is the tool's human-readable name from the server (MCP `title`), for display; `tool` stays the wire name. */
+  | { type: 'tool-started'; callId: string; tool: string; title?: string; args: Record<string, unknown> }
   /** `content` is the result's whole content array, the shape the MCP Apps view protocol expects beside `structuredContent`; `spoken` is its first text block, flattened for the transcript. */
   | { type: 'tool-succeeded'; callId: string; tool: string; spoken: string; content: unknown; structured: unknown; widgetUri: string | null; ms: number }
   | { type: 'tool-failed'; callId: string; tool: string; message: string; ms: number }

@@ -94,10 +94,11 @@ export const JSON_RPC_LOG_LIMIT = 100;
  * what Global Constraint 30 forbids.
  */
 export function toDescriptors(
-  tools: ReadonlyArray<{ name: string; description?: string | undefined; inputSchema: unknown; _meta?: unknown }>
+  tools: ReadonlyArray<{ name: string; title?: string | undefined; description?: string | undefined; inputSchema: unknown; _meta?: unknown }>
 ): McpToolDescriptor[] {
   return tools.map(tool => ({
     name: tool.name,
+    title: tool.title,
     description: tool.description,
     inputSchema: tool.inputSchema as Record<string, unknown>,
     _meta: tool._meta
@@ -404,7 +405,9 @@ export class HomeLedgerMcp {
 
   async listTools(): Promise<McpToolDescriptor[]> {
     const result = await (await this.require()).listTools();
-    return toDescriptors(result.tools as ReadonlyArray<{ name: string; description?: string | undefined; inputSchema: unknown; _meta?: unknown }>);
+    return toDescriptors(
+      result.tools as ReadonlyArray<{ name: string; title?: string | undefined; description?: string | undefined; inputSchema: unknown; _meta?: unknown }>
+    );
   }
 
   /**
