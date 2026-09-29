@@ -338,6 +338,10 @@ export function createDynamoRepository(opts: {
         null
       );
     },
+    async findLatestAlert(ringDeviceId, sensorType) {
+      const all = await queryPrefix<Alert>('ALERT#');
+      return all.filter(a => a.ringDeviceId === ringDeviceId && a.sensorType === sensorType).sort((x, y) => y.at.localeCompare(x.at))[0] ?? null;
+    },
     async putConnection(c) {
       await put(sk.connection(c.connectionId), 'connection', c, { ttl: c.expiresAt });
     },

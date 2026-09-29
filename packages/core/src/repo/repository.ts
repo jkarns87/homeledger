@@ -62,6 +62,8 @@ export interface Repository {
   /** Throws `No visit <id>` when the visit does not exist. */
   recordVisitSnapshot(visitId: string, snapshot: VisitSnapshot): Promise<void>;
   findOpenAlert(ringDeviceId: string, sensorType: AlertSensorTypeValue): Promise<Alert | null>;
+  /** The newest alert for one device and sensor type, whatever its status. */
+  findLatestAlert(ringDeviceId: string, sensorType: AlertSensorTypeValue): Promise<Alert | null>;
   putConnection(c: Connection): Promise<void>;
   deleteConnection(connectionId: string): Promise<void>;
   /** Connections whose expiresAt is after `nowEpochSeconds`. TTL deletion lags by up to two days, so expiry is enforced on read. */

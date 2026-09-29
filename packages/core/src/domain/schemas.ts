@@ -131,7 +131,10 @@ export const AlertSchema = z.object({
   deviceName: z.string().min(1),
   at: isoDateTime,
   maintenanceRef: z.object({ applianceId: prefixed('appl'), taskType: TaskType }).nullable(),
-  status: z.enum(['open', 'acknowledged', 'resolved'])
+  status: z.enum(['open', 'acknowledged', 'resolved']),
+  // When the sensor cleared. Absent on rows written before it existed, null
+  // on an alert that re-opened (FL-063).
+  resolvedAt: isoDateTime.nullable().optional()
 });
 
 export const DeviceSchema = z.object({

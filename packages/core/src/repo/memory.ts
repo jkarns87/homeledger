@@ -159,6 +159,11 @@ export function createMemoryRepository(_householdId: string): Repository {
           .sort((x, y) => y.at.localeCompare(x.at))[0] ?? null
       );
     },
+    async findLatestAlert(ringDeviceId, sensorType) {
+      return (
+        [...alerts.values()].filter(a => a.ringDeviceId === ringDeviceId && a.sensorType === sensorType).sort((x, y) => y.at.localeCompare(x.at))[0] ?? null
+      );
+    },
     async putConnection(c) {
       connections.set(c.connectionId, c);
     },
