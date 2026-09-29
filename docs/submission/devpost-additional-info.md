@@ -2,7 +2,7 @@
 
 Same rule as the story: text above each field's `PENDING` note is true today and can be pasted. Pending additions are listed under the field with what verifies them.
 
-Last verified: 2026-09-21 (branch `docs-stable-endpoint`, off `main` at `ee3517d`; deployed runtime smoke green after a full teardown/bring-up round trip, run 35616643237)
+Last verified: 2026-09-29 (`main` at `0f03401`; Ring claims from the live checklist run of 2026-09-29 and smoke run 36596323750; runtime lifecycle claims from run 35616643237)
 
 ---
 
@@ -24,7 +24,7 @@ Last verified: 2026-09-21 (branch `docs-stable-endpoint`, off `main` at `ee3517d
 | Open Source: Project Repository URL | https://github.com/jkarns87/homeledger |
 | Open Source: GitHub Username | jkarns87 |
 | Friction Log (URL field) | https://github.com/jkarns87/homeledger/blob/main/FRICTION-LOG.md |
-| Project Testing Link | PENDING: simulator URL after Amplify deploy. Not built in Plan 2 and deferred to a later plan; the simulator's Strands agent needs Bedrock model access, which is blocked account-wide (FL-019, FL-032). |
+| Project Testing Link | https://github.com/jkarns87/homeledger — the simulator is not hosted (a public endpoint would spend the owner's model quota on anyone's traffic); `docs/RUNBOOK.md` §4 runs the server and simulator locally, and §4.7 links a Ring account. |
 | Upload a File | (none) |
 | Three eligibility checkboxes | Check all three |
 
@@ -46,10 +46,10 @@ The runtime's lifecycle has been exercised, not just deployed. Terraform updates
 
 **Amazon ECR, Terraform, and GitHub Actions.** ECR holds the image by commit SHA. Everything is Terraform: a root for the demo environment (`infra/live/demo/platform`) and reusable modules for the runtime, the issuer, and the Knowledge Base, each with plan-time tests against a mocked provider. GitHub Actions assumes an OIDC role (no long-lived keys), plans on pull requests, and on merge builds the ARM64 image, pushes it, and applies (`.github/workflows/deploy.yml`).
 
+**AWS Lambda, Amazon API Gateway, Amazon EventBridge — the Ring pipeline, live.** Twelve Node 22 arm64 Lambdas in `apps/events`, built with esbuild and deployed by the `infra/modules/ring-events` Terraform module. Ring's signed webhooks and its account-link redirects reach an API Gateway HTTP API (`/ring/webhook`, `/ring/token`, `/ring/link`); the webhook Lambda verifies the HMAC over the raw body, claims each request id once with a DynamoDB transaction, and publishes to a custom EventBridge bus. Rules route doorbell presses to a visit correlator (which fetches the snapshot from Ring into S3 and has Claude describe it), sensor events to a rule-table Lambda, and HomeLedger's own `visit.arrived` and `alert.raised` events to a push Lambda that posts to an API Gateway WebSocket API behind a Cognito JWT authorizer. EventBridge Scheduler runs the sensor status poll every two minutes, the Ring token refresh every thirty, and a nightly device sync. Every rule and schedule target has a dead-letter queue, drained by a Lambda that turns a dead letter into an alert on the display. Secrets Manager holds the Ring client secret, HMAC key and tokens, read at runtime and never written to Terraform state. Verified live on 2026-09-29 with a real doorbell and a real flood sensor: 7.9 seconds from the button press to the card on the display, flood alerts by webhook in 2–5 seconds, and the token refreshing itself unattended overnight.
+
 PENDING (each with what verifies it; move up when that happens):
 - Bedrock model access: "Titan Text Embeddings v2 indexes appliance manuals from S3 and `ask_manual` returns real passages with page numbers." Verified only by a smoke run where the `ask_manual` check enforces instead of printing `SKIPPED`. The infrastructure claim above is already true and is a different claim.
-- A later plan: "Strands Agents SDK (TypeScript) on Amazon Bedrock is the simulator's agent and the MCP client to the server; it exercises the legacy branch and elicitation through `elicitationCallback`." "AWS Amplify Hosting serves the Next.js simulator." Not built in Plan 2; also blocked on Bedrock model access.
-- Plan 3: "AWS Lambda (Node 22, arm64) receives Ring webhooks behind an API Gateway HTTP API, verifies HMAC, and publishes to an Amazon EventBridge bus; rule-targeted Lambdas correlate visits, fetch snapshots to S3, describe them with Amazon Nova, and push cards over an API Gateway WebSocket API. AWS Secrets Manager holds Ring tokens, the webhook secret, and the Cognito client secret. CloudWatch Logs with retention for every function and the runtime."
 - Load smoke: "Measured p95 under [N] s through AgentCore cold across 20 sequential calls."
 
 ---
@@ -101,7 +101,10 @@ Each drawn from an entry in FRICTION-LOG.md.
 - **Ring Partner API documentation and developer community**: event model, snapshot semantics, the sensor device family; developer registration and the staging trial ticket.
 - **Devpost**: registration, forum clarification with the organizer.
 
-PENDING: Strands Agents SDK, Amazon Bedrock model invocation (blocked account-wide), real Knowledge Base retrieval, Ring Partner API (live), Amplify Hosting.
+- **Ring Partner API** (live, 2026-09-29): one-way account linking through the Token Exchange and Account Link URLs, signed webhooks, `/v1/devices` and device status, and the image download endpoint for snapshots. Ring's public knowledge MCP server was the reference that corrected the design in four places before the first line of code.
+- **Anthropic API**: Claude as the simulator's agent and as the vision model that writes each snapshot's one sentence.
+
+PENDING: Amazon Bedrock model invocation (blocked account-wide), real Knowledge Base retrieval.
 
 ## Feedback Question 2: What worked well?
 
@@ -111,7 +114,9 @@ PENDING: Strands Agents SDK, Amazon Bedrock model invocation (blocked account-wi
 - **DynamoDB Local**: the contract suite ran unchanged against it; single-table design with two GSIs covered every query.
 - **Ring documentation**: per-device capability discovery instead of a model list, HMAC-signed webhooks, dated release notes, and staff who answer on the community forum.
 
-PENDING: Strands, real Knowledge Base retrieval, live Ring events.
+- **Ring Partner API, live**: the signed webhooks arrived 2–5 seconds after the device event, the documented v1.1 envelope matched what arrived, the token refresh held a link overnight with no intervention, and the snapshot came back on the first request.
+
+PENDING: real Knowledge Base retrieval.
 
 ## Feedback Question 3: What needs work?
 
@@ -135,10 +140,12 @@ PENDING: Strands, real Knowledge Base retrieval, live Ring events.
 - **Ring**: developer registration with government ID [verification in progress on 2026-09-14]; the staging trial ticket adds an unknown wait before webhooks fire.
 - **DynamoDB Local**: one compose file, zero friction.
 
-PENDING: update Ring with the actual verification and ticket turnaround; add Strands.
+- **Ring, the rest of the way**: once registered, linking a real account took one sitting — two URLs in the Developer Portal, the Test page's authorisation, and a sign-in page of our own. The friction was naming, not access: Ring's monitoring "test mode" is called practice mode, and two product lines share "2nd Gen" names (FL-063).
 
 ## Feedback Question 5: Would you build with these devices and services again?
 
 Yes, with conditions. The MCP TypeScript SDK v2 and DynamoDB, without reservation. AgentCore Runtime, yes — it is deployed, it has served both protocol generations including three-round elicitation and progress notifications through a real session, and the whole build has run through CI with no local credentials. Bedrock Knowledge Bases, unproven here and therefore no opinion worth giving: the infrastructure applied first try, and I have never seen it answer a query. Ring, yes for doorbell events, which are generally available and well documented; sensors only once early access has a request path. Alexa+, yes the day the MCP Toolkit opens to individual developers, because the server built to its published contract already exists and passes the documented handshake.
 
-PENDING: revise after Strands, real retrieval, and live Ring events.
+Ring, revised after the live run: yes for both doorbell events and the Sidewalk sensors — every event the demo needs arrived by webhook within seconds, and the one surprise (a probe that flickers wet and dry) was ours to handle.
+
+PENDING: revise after real retrieval.
