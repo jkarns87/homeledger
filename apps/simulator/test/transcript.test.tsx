@@ -441,6 +441,37 @@ describe('Transcript', () => {
     expect(document.body.textContent).not.toContain('"items"');
   });
 
+  it("heads the card with the server's title for the tool, keeping the wire name as its tooltip", () => {
+    const state = [
+      { type: 'tool-started', callId: 'c1', tool: 'maintenance_due', title: 'Maintenance due', args: {} },
+      {
+        type: 'tool-succeeded',
+        callId: 'c1',
+        tool: 'maintenance_due',
+        spoken: 'Two tasks are due.',
+        content: [{ type: 'text', text: 'Two tasks are due.' }],
+        structured: {},
+        widgetUri: null,
+        ms: 900
+      }
+    ].reduce(reduceTurn, INITIAL_STATE);
+    render(<Transcript state={state} theme="dark" />);
+    const heading = screen.getByText('Maintenance due');
+    expect(heading.getAttribute('title')).toBe('maintenance_due');
+    expect(screen.getByTestId('tool-c1').textContent).not.toContain('maintenance_due');
+  });
+
+  it('names a failed call by its title too, since the failure card is read by the household', () => {
+    const state = [
+      { type: 'tool-started', callId: 'c1', tool: 'get_visit', title: 'Get a service visit', args: {} },
+      { type: 'tool-failed', callId: 'c1', tool: 'get_visit', message: 'Visit not found.', ms: 12 }
+    ].reduce(reduceTurn, INITIAL_STATE);
+    render(<Transcript state={state} theme="dark" />);
+    const card = screen.getByTestId('tool-c1');
+    expect(card.textContent).toContain('Get a service visit failed');
+    expect(card.textContent).not.toContain('get_visit failed');
+  });
+
   it('renders a failed call as a failure naming the tool and the reason', () => {
     const state = [
       { type: 'tool-started', callId: 'c1', tool: 'ask_manual', args: {} },

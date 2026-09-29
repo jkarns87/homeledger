@@ -137,6 +137,11 @@ body {
   gap: 8px;
 }
 
+.tool-title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
 .name {
   font-weight: 600;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

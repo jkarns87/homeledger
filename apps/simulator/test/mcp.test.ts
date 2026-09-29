@@ -136,13 +136,16 @@ describe('toDescriptors', () => {
     // dropped field on the way through, and that is what this pins, against
     // an input written for the purpose rather than against the real nine.
     const input = [
-      { name: 'zebra', description: 'z', inputSchema: { type: 'object' }, _meta: { ui: { resourceUri: 'ui://homeledger/appliances' } } },
+      { name: 'zebra', title: 'Zebra', description: 'z', inputSchema: { type: 'object' }, _meta: { ui: { resourceUri: 'ui://homeledger/appliances' } } },
       { name: 'alpha', description: undefined, inputSchema: { type: 'object' } },
       { name: 'middle', description: 'm', inputSchema: { type: 'object' } }
     ];
     expect(toDescriptors(input).map(t => t.name)).toEqual(['zebra', 'alpha', 'middle']);
     expect(toDescriptors(input)[0]?._meta).toEqual({ ui: { resourceUri: 'ui://homeledger/appliances' } });
     expect(toDescriptors(input)[1]?.description).toBeUndefined();
+    // The display title rides through too; a tool that declares none keeps none.
+    expect(toDescriptors(input)[0]?.title).toBe('Zebra');
+    expect(toDescriptors(input)[1]?.title).toBeUndefined();
   });
 });
 

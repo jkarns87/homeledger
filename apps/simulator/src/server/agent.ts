@@ -115,7 +115,8 @@ async function askThePerson(deps: TurnDeps, turnId: string, callId: string, prom
 
 async function runOneCall(deps: TurnDeps, turnId: string, call: Anthropic.ToolUseBlock): Promise<Anthropic.ToolResultBlockParam> {
   const args = (typeof call.input === 'object' && call.input !== null ? call.input : {}) as Record<string, unknown>;
-  deps.emit({ type: 'tool-started', callId: call.id, tool: call.name, args });
+  const title = deps.tools.find(candidate => candidate.name === call.name)?.title;
+  deps.emit({ type: 'tool-started', callId: call.id, tool: call.name, ...(title ? { title } : {}), args });
   const started = deps.now();
   const rebuildsBefore = deps.mcp.rebuilds;
   const handler = (prompt: ElicitPrompt) => askThePerson(deps, turnId, call.id, prompt);
