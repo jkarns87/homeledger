@@ -354,3 +354,11 @@ run "rejects_a_fractional_poll_interval" {
   }
   expect_failures = [var.sensor_poll_minutes]
 }
+
+run "token_exchange_outlasts_its_two_ring_calls" {
+  command = plan
+  assert {
+    condition     = aws_lambda_function.fn["token-exchange"].timeout == 30
+    error_message = "token exchange makes two sequential Ring calls of up to 10 s each (RING_HTTP_TIMEOUT_MS); 15 s could cut the second off, and Ring allows 60 s for the exchange"
+  }
+}
