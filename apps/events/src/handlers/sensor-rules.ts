@@ -21,7 +21,7 @@ import { flagEnv, requireEnv } from '../env.js';
 import type { RingEventDetail } from './visit-correlator.js';
 
 export interface SensorDeps {
-  repo: Pick<Repository, 'getDevice' | 'putDevice' | 'putAlert' | 'findOpenAlert' | 'getMaintenance' | 'putMaintenance' | 'getAppliance'>;
+  repo: Pick<Repository, 'getDevice' | 'putDevice' | 'putAlert' | 'findOpenAlert' | 'findLatestAlert' | 'getMaintenance' | 'putMaintenance' | 'getAppliance'>;
   publish: EventPublisher;
   newAlertId: () => string;
   today: () => Promise<string>;
@@ -39,9 +39,16 @@ export interface SensorObservation {
 export interface SensorOutcome {
   raised: string[];
   resolved: string[];
+  reopened: string[];
 }
 
 const DEFAULT_INSPECTION_DAYS = 180;
+/**
+ * A probe that is wet but not steadily bridged reads wet, dry, wet within
+ * seconds; live, one damp cloth raised three alerts in a minute (FL-063). A
+ * raise this soon after the same alert cleared re-opens it, with no second push.
+ */
+export const REOPEN_WINDOW_MS = 120_000;
 
 export function householdToday(repo: Pick<Repository, 'getHousehold'>, now: () => string): () => Promise<string> {
   return async () => todayInZone(now(), (await repo.getHousehold())?.timezone ?? SEED_TIMEZONE);
@@ -52,13 +59,22 @@ async function applyChange(deps: SensorDeps, change: SensorChanged, location: st
   if (decision.action === 'resolve') {
     const open = await deps.repo.findOpenAlert(change.ringDeviceId, decision.sensorType);
     if (open) {
-      await deps.repo.putAlert({ ...open, status: 'resolved' });
+      await deps.repo.putAlert({ ...open, status: 'resolved', resolvedAt: change.at });
       out.resolved.push(open.id);
     }
     return;
   }
   // Idempotent raise: an open alert of this type for this device already covers it.
   if (await deps.repo.findOpenAlert(change.ringDeviceId, decision.sensorType)) return;
+  const latest = await deps.repo.findLatestAlert(change.ringDeviceId, decision.sensorType);
+  if (latest?.status === 'resolved' && latest.resolvedAt) {
+    const sinceCleared = Date.parse(change.at) - Date.parse(latest.resolvedAt);
+    if (sinceCleared >= 0 && sinceCleared <= REOPEN_WINDOW_MS) {
+      await deps.repo.putAlert({ ...latest, status: 'open', resolvedAt: null });
+      out.reopened.push(latest.id);
+      return;
+    }
+  }
   let maintenanceRef: Alert['maintenanceRef'] = null;
   if (decision.maintenanceNote) {
     const appliance = await deps.repo.getAppliance(deps.sensorApplianceId);
@@ -96,7 +112,7 @@ export async function applySensorObservation(deps: SensorDeps, obs: SensorObserv
     source: obs.source
   });
   const location = device?.name ?? obs.deviceName;
-  const out: SensorOutcome = { raised: [], resolved: [] };
+  const out: SensorOutcome = { raised: [], resolved: [], reopened: [] };
   for (const change of changes) await applyChange(deps, change, location, out);
   await deps.repo.putDevice({
     ...(device ?? { id: derivedId('dev', obs.ringDeviceId), ringDeviceId: obs.ringDeviceId, name: obs.deviceName, online: true, lastSeenAt: null }),
@@ -116,7 +132,7 @@ export async function handleSensorEvent(
   const mapped = SENSOR_EVENT_TYPES[detail.type];
   if (!mapped || !detail.deviceId) return 'not-a-sensor-event';
   if (mapped.kind === 'contact') {
-    const out: SensorOutcome = { raised: [], resolved: [] };
+    const out: SensorOutcome = { raised: [], resolved: [], reopened: [] };
     await applyChange(deps, { ringDeviceId: detail.deviceId, kind: 'contact', state: mapped.state, at: detail.at, source: 'webhook' }, detail.deviceName, out);
     return out;
   }

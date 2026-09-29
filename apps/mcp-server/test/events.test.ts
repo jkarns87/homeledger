@@ -110,7 +110,9 @@ describe('recent_events', () => {
         deviceName: 'Garage sensor',
         summary: 'freeze alert from the Garage sensor',
         visitId: null,
-        alertId: 'alert_aaaaaaaaaaaaaaaa'
+        alertId: 'alert_aaaaaaaaaaaaaaaa',
+        alertStatus: 'open',
+        resolvedAt: null
       },
       {
         kind: 'visit',
@@ -118,9 +120,20 @@ describe('recent_events', () => {
         deviceName: null,
         summary: 'Reliable Plumbing is scheduled for the leak',
         visitId: 'visit_aaaaaaaaaaaaaaaa',
-        alertId: null
+        alertId: null,
+        alertStatus: null,
+        resolvedAt: null
       },
-      { kind: 'door', at: '2026-09-13T09:30:00.000Z', deviceName: 'Front Door', summary: 'Someone rang the Front Door', visitId: null, alertId: null }
+      {
+        kind: 'door',
+        at: '2026-09-13T09:30:00.000Z',
+        deviceName: 'Front Door',
+        summary: 'Someone rang the Front Door',
+        visitId: null,
+        alertId: null,
+        alertStatus: null,
+        resolvedAt: null
+      }
     ]);
     const text = (r.content as Array<{ text?: string }>)[0]?.text ?? '';
     expect(hasJson(text)).toBe(false);
@@ -172,5 +185,63 @@ describe('recent_events', () => {
       ['alert', 'Ring access lapsed, so doorbell and sensor events have stopped. Link the Ring account again from the Ring app.'],
       ['door', 'Someone rang the Front Door']
     ]);
+  });
+
+  it('says whether each alert is still active or when it cleared, and reports an arrival at the moment it happened (FL-063)', async () => {
+    const h = await modernClient({ now: () => '2026-09-13T16:00:00.000Z' });
+    close = h.close;
+    const applianceId = (await h.deps.repo.listAppliances({ category: 'water_heater' }))[0]!.id;
+    // Window 8-10 AM Central; the doorbell saw them at 10:41 AM, after it.
+    await h.deps.repo.putVisit({
+      id: 'visit_aaaaaaaaaaaaaaaa',
+      providerId: 'p1',
+      providerName: 'Anode and Company',
+      category: 'water_heater',
+      applianceId,
+      issue: 'water heater inspection',
+      windowStart: '2026-09-13T13:00:00.000Z',
+      windowEnd: '2026-09-13T15:00:00.000Z',
+      status: 'arrived',
+      ringEventIds: ['req-bp-0001'],
+      snapshotKey: null,
+      description: null,
+      snapshotStatus: 'ok',
+      snapshotLatencyMs: 3908,
+      arrivedAt: '2026-09-13T15:41:24.102Z',
+      createdAt: '2026-09-12T10:00:00.000Z'
+    });
+    const flood = {
+      sensorType: 'flood' as const,
+      severity: 'high' as const,
+      ringDeviceId: 'dev-flood-1',
+      message: null,
+      deviceName: 'Water Heater',
+      maintenanceRef: null
+    };
+    await h.deps.repo.putAlert({
+      ...flood,
+      id: 'alert_aaaaaaaaaaaaaaaa',
+      at: '2026-09-13T15:49:42.323Z',
+      status: 'resolved',
+      resolvedAt: '2026-09-13T15:49:46.977Z'
+    });
+    await h.deps.repo.putAlert({ ...flood, id: 'alert_bbbbbbbbbbbbbbbb', at: '2026-09-13T15:50:33.425Z', status: 'open' });
+    // A row resolved before clearing times were recorded.
+    await h.deps.repo.putAlert({ ...flood, id: 'alert_cccccccccccccccc', at: '2026-09-13T15:30:00.000Z', status: 'resolved' });
+    const r = await h.client.callTool({ name: 'recent_events', arguments: {} });
+    const sc = r.structuredContent as {
+      events: Array<{ kind: string; at: string; alertId: string | null; alertStatus: string | null; resolvedAt: string | null }>;
+    };
+    expect(sc.events.map(e => [e.kind, e.at, e.alertStatus, e.resolvedAt])).toEqual([
+      ['alert', '2026-09-13T15:50:33.425Z', 'open', null],
+      ['alert', '2026-09-13T15:49:42.323Z', 'resolved', '2026-09-13T15:49:46.977Z'],
+      ['visit', '2026-09-13T15:41:24.102Z', null, null],
+      ['alert', '2026-09-13T15:30:00.000Z', 'resolved', null]
+    ]);
+    const text = (r.content as Array<{ text?: string }>)[0]?.text ?? '';
+    expect(text).toContain('flood alert from the Water Heater at 10:50 AM CDT (still active)');
+    expect(text).toContain('flood alert from the Water Heater at 10:49 AM CDT (cleared at 10:49 AM CDT)');
+    expect(text).toContain('Anode and Company arrived for the water heater inspection at 10:41 AM CDT');
+    expect(text).toContain('flood alert from the Water Heater at 10:30 AM CDT (cleared)');
   });
 });

@@ -10,13 +10,24 @@ const EventRow = z.object({
   summary: z.string(),
   visitId: z.string().nullable(),
   // The alert's id for kind 'alert', so a pushed alert id can be matched to its row.
-  alertId: z.string().nullable()
+  alertId: z.string().nullable(),
+  // An alert's state, so an alert that has already cleared is not reported as
+  // ongoing (FL-063). Null for visit and door rows.
+  alertStatus: z.enum(['open', 'acknowledged', 'resolved']).nullable(),
+  resolvedAt: z.string().nullable()
 });
 
 // Since Plan 4 the webhook stores every Ring event it receives (spec §4);
 // sensor events reach the household as alerts, and device or account events
 // as nothing, so only these two types are door rows.
 const DOOR_TYPES = new Set(['button_press', 'motion_detected']);
+
+function alertState(e: z.infer<typeof EventRow>, zone: string): string {
+  if (e.alertStatus === 'open') return ' (still active)';
+  if (e.alertStatus === 'acknowledged') return ' (acknowledged)';
+  if (e.alertStatus === 'resolved') return e.resolvedAt ? ` (cleared at ${speakZonedClock(e.resolvedAt, zone)})` : ' (cleared)';
+  return '';
+}
 
 export function registerEventTools(server: McpServer, deps: ServerDeps): void {
   server.registerTool(
@@ -40,11 +51,15 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
       const events: z.infer<typeof EventRow>[] = [
         ...visits.map(v => ({
           kind: 'visit' as const,
-          at: v.windowStart,
+          // An arrival is reported at the moment the doorbell saw it, not at
+          // the start of its booked window (FL-063).
+          at: v.arrivedAt ?? v.windowStart,
           deviceName: null,
           summary: `${v.providerName} ${v.status === 'scheduled' ? 'is scheduled' : v.status} for the ${v.issue}`,
           visitId: v.id,
-          alertId: null
+          alertId: null,
+          alertStatus: null,
+          resolvedAt: null
         })),
         ...doors
           .filter(e => DOOR_TYPES.has(e.type))
@@ -57,7 +72,9 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
                 ? `Someone rang the ${e.deviceName}`
                 : `${e.subType === 'human' ? 'A person' : e.subType === 'vehicle' ? 'A vehicle' : 'Motion'} at the ${e.deviceName}`,
             visitId: null,
-            alertId: null
+            alertId: null,
+            alertStatus: null,
+            resolvedAt: null
           })),
         ...alerts.map(a => ({
           kind: 'alert' as const,
@@ -65,7 +82,9 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
           deviceName: a.deviceName,
           summary: a.message ?? `${a.sensorType} alert from the ${a.deviceName}`,
           visitId: null,
-          alertId: a.id
+          alertId: a.id,
+          alertStatus: a.status,
+          resolvedAt: a.resolvedAt ?? null
         }))
       ].sort((x, y) => y.at.localeCompare(x.at));
       // `at` is a stored UTC instant and the spoken line is the only place it
@@ -79,7 +98,7 @@ export function registerEventTools(server: McpServer, deps: ServerDeps): void {
         events.length === 0
           ? `Nothing happened in the last ${hours} hours.`
           : speakList(
-              events.map(e => `${e.summary} at ${speakZonedClock(e.at, zone)}`),
+              events.map(e => `${e.summary} at ${speakZonedClock(e.at, zone)}${alertState(e, zone)}`),
               'event'
             );
       return { content: [{ type: 'text', text }], structuredContent: { events } };

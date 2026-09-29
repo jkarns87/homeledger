@@ -51,7 +51,7 @@ beforeEach(async () => {
 describe('flood and freeze (spec §6 rule table, amendment §12.4)', () => {
   it('raises a high flood alert, advances the water heater’s inspection, remembers the state, and pushes', async () => {
     const out = await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected'));
-    expect(out).toEqual({ raised: ['alert_abcdefghijklmnoa'], resolved: [] });
+    expect(out).toEqual({ raised: ['alert_abcdefghijklmnoa'], resolved: [], reopened: [] });
     expect(await repo.listAlerts('2026-10-06T00:00:00.000Z')).toEqual([
       {
         id: 'alert_abcdefghijklmnoa',
@@ -108,16 +108,60 @@ describe('flood and freeze (spec §6 rule table, amendment §12.4)', () => {
   it('resolves the open alert when the water clears, and leaves the maintenance item for a person to close', async () => {
     await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected'));
     const out = await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_cleared', '2026-10-06T21:40:00.000Z'));
-    expect(out).toEqual({ raised: [], resolved: ['alert_abcdefghijklmnoa'] });
+    expect(out).toEqual({ raised: [], resolved: ['alert_abcdefghijklmnoa'], reopened: [] });
     expect((await repo.listAlerts('2026-10-06T00:00:00.000Z'))[0]?.status).toBe('resolved');
     expect((await repo.getMaintenance('appl_waterheater22222', 'inspection'))?.notes).toBe('Check for a leak near the Water Heater.');
     expect(bus.entries).toHaveLength(1);
   });
 
+  it('records when the alert cleared', async () => {
+    await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected'));
+    await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_cleared', '2026-10-06T21:15:05.000Z'));
+    expect((await repo.listAlerts('2026-10-06T00:00:00.000Z'))[0]).toMatchObject({ status: 'resolved', resolvedAt: '2026-10-06T21:15:05.000Z' });
+  });
+
+  it('re-opens the alert, without a second push, when water returns within two minutes of clearing (FL-063)', async () => {
+    // The live sequence: wet, dry 5 s later, wet 5 s after that, dry again.
+    await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected', '2026-10-06T21:15:00.000Z'));
+    await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_cleared', '2026-10-06T21:15:05.000Z'));
+    const again = await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected', '2026-10-06T21:15:10.000Z'));
+    expect(again).toEqual({ raised: [], resolved: [], reopened: ['alert_abcdefghijklmnoa'] });
+    const alerts = await repo.listAlerts('2026-10-06T00:00:00.000Z');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({ status: 'open', resolvedAt: null, at: '2026-10-06T21:15:00.000Z' });
+    expect(bus.entries).toHaveLength(1);
+    // And the next clear resolves that same alert.
+    const dry = await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_cleared', '2026-10-06T21:15:15.000Z'));
+    expect(dry).toEqual({ raised: [], resolved: ['alert_abcdefghijklmnoa'], reopened: [] });
+  });
+
+  it('raises a new alert, and pushes, when water returns more than two minutes after clearing', async () => {
+    await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected', '2026-10-06T21:15:00.000Z'));
+    await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_cleared', '2026-10-06T21:15:05.000Z'));
+    // 120 s is still inside the window; 120.001 s is not.
+    const edge = await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected', '2026-10-06T21:17:05.000Z'));
+    expect(edge).toMatchObject({ reopened: ['alert_abcdefghijklmnoa'] });
+    await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_cleared', '2026-10-06T21:17:06.000Z'));
+    const later = await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected', '2026-10-06T21:19:06.001Z'));
+    expect(later).toEqual({ raised: ['alert_abcdefghijklmnob'], resolved: [], reopened: [] });
+    expect(bus.entries).toHaveLength(2);
+  });
+
+  it('raises a new alert after one resolved before clearing times were recorded', async () => {
+    // Rows resolved before resolvedAt existed carry none: a raise after one is a new alert.
+    await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected', '2026-10-06T21:15:00.000Z'));
+    const [row] = await repo.listAlerts('2026-10-06T00:00:00.000Z');
+    const { resolvedAt: _dropped, ...legacy } = { ...row!, status: 'resolved' as const, resolvedAt: undefined };
+    await repo.putAlert(legacy);
+    await repo.putDevice({ ...(await repo.getDevice('dev-flood-1'))!, sensorState: { flood: false, freeze: false } });
+    const out = await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected', '2026-10-06T21:15:10.000Z'));
+    expect(out).toEqual({ raised: ['alert_abcdefghijklmnob'], resolved: [], reopened: [] });
+  });
+
   it('treats freeze independently of flood', async () => {
     await handleSensorEvent({ ...deps(), enabled: true }, flood('flood_detected'));
     const out = await handleSensorEvent({ ...deps(), enabled: true }, flood('freeze_detected'));
-    expect(out).toEqual({ raised: ['alert_abcdefghijklmnob'], resolved: [] });
+    expect(out).toEqual({ raised: ['alert_abcdefghijklmnob'], resolved: [], reopened: [] });
     expect((await repo.getDevice('dev-flood-1'))?.sensorState).toEqual({ flood: true, freeze: true });
     expect((await repo.getMaintenance('appl_waterheater22222', 'inspection'))?.notes).toBe('Check pipe insulation near the Water Heater.');
   });
@@ -142,10 +186,10 @@ describe('flood and freeze (spec §6 rule table, amendment §12.4)', () => {
   it('raises an informational contact alert with no maintenance, and resolves it on close', async () => {
     const door: RingEventDetail = { ...flood('contact_sensor_faulted'), deviceId: 'dev-contact-1', deviceName: 'Back Door' };
     const out = await handleSensorEvent({ ...deps(), enabled: true }, door);
-    expect(out).toEqual({ raised: ['alert_abcdefghijklmnoa'], resolved: [] });
+    expect(out).toEqual({ raised: ['alert_abcdefghijklmnoa'], resolved: [], reopened: [] });
     expect((await repo.listAlerts('2026-10-06T00:00:00.000Z'))[0]).toMatchObject({ sensorType: 'contact', severity: 'info', maintenanceRef: null });
     const closed = await handleSensorEvent({ ...deps(), enabled: true }, { ...door, type: 'contact_sensor_cleared' });
-    expect(closed).toEqual({ raised: [], resolved: ['alert_abcdefghijklmnoa'] });
+    expect(closed).toEqual({ raised: [], resolved: ['alert_abcdefghijklmnoa'], reopened: [] });
   });
 
   it('does nothing while the sensor path is switched off (spec §6 flag), and ignores other types', async () => {
