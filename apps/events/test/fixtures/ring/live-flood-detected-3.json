@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "version": "1.1",
+    "time": "2026-09-29T15:50:35.507066314Z",
+    "request_id": "5404e270-bcbc-4cf5-a96e-82aa86fed438-1790697033425-water_detecte",
+    "account_id": "ava1.ring.account.REDACTEDACCOUNT1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  },
+  "data": {
+    "id": "ava1.ring.device.REDACTEDDEVICE1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX_flood_detected_1790697033425",
+    "type": "flood_detected",
+    "attributes": {
+      "source": "ava1.ring.device.REDACTEDDEVICE1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "source_type": "devices",
+      "timestamp": 1790697033425
+    },
+    "relationships": {
+      "devices": {
+        "links": {
+          "self": "/v1/devices/ava1.ring.device.REDACTEDDEVICE1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        }
+      }
+    }
+  }
+}

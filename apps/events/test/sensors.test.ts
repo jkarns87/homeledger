@@ -4,7 +4,8 @@ import { applySensorObservation, handleSensorEvent, householdToday, type SensorD
 import { pollSensors } from '../src/handlers/sensor-poller.js';
 import type { RingEventDetail } from '../src/handlers/visit-correlator.js';
 import { RingApiError } from '../src/ring/client.js';
-import { recordingPublisher } from './fakes.js';
+import { decodeWebhook } from '../src/ring/envelope.js';
+import { fixture, recordingPublisher } from './fakes.js';
 
 const AT = '2026-10-06T21:15:00.000Z'; // 4:15 PM Central
 let repo: Repository;
@@ -277,5 +278,68 @@ describe('reconciliation poll (R2)', () => {
         now: () => AT
       })
     ).toBe('disabled');
+  });
+});
+
+describe('live Ring flood replay (captured 2026-09-29, FL-063)', () => {
+  const LIVE_FILES = [
+    'live-flood-detected-1',
+    'live-flood-cleared-1',
+    'live-flood-detected-2',
+    'live-flood-cleared-2',
+    'live-flood-detected-3',
+    'live-flood-cleared-3'
+  ];
+  const LIVE_RECEIVED_AT = '2026-09-29T16:00:00.000Z';
+  const LIVE_DEVICE_NAME = 'Live Water Sensor';
+
+  it('replays the six live flood webhooks through decodeWebhook and handleSensorEvent, and ends with one resolved alert', async () => {
+    // Decode every live capture with the real envelope decoder first, in delivery order, so the
+    // detail below is built from what production actually parsed — not from data invented for the test.
+    const decoded = LIVE_FILES.map(file => {
+      const result = decodeWebhook(fixture(file), LIVE_RECEIVED_AT);
+      if (!result.ok) throw new Error(`fixture ${file} failed to decode: ${result.reason}`);
+      return result.event;
+    });
+    const ringDeviceId = decoded[0]!.deviceId!;
+    expect(decoded.every(e => e.deviceId === ringDeviceId)).toBe(true); // all six are the same redacted sensor
+
+    await repo.putDevice({
+      id: 'dev_liveflood2222222',
+      ringDeviceId,
+      name: LIVE_DEVICE_NAME,
+      kind: 'sensor',
+      online: true,
+      lastSeenAt: null,
+      sensorState: null
+    });
+
+    // handleSensorEvent takes a RingEventDetail, which is what the webhook Lambda publishes to the
+    // bus (apps/events/src/handlers/webhook.ts, handleWebhook) — decodeWebhook's own RingWebhook plus
+    // deviceName. Production does not export that mapping as its own function, so it is reproduced
+    // here field for field rather than invented: requestId, accountId, eventId, type, subType,
+    // deviceId and at pass straight through, and deviceName is the same lookup handleWebhook does.
+    let last: Awaited<ReturnType<typeof handleSensorEvent>> | undefined;
+    for (const event of decoded) {
+      const detail: RingEventDetail = {
+        requestId: event.requestId,
+        accountId: event.accountId,
+        eventId: event.eventId,
+        type: event.type,
+        subType: event.subType,
+        deviceId: event.deviceId,
+        deviceName: LIVE_DEVICE_NAME,
+        at: event.at
+      };
+      last = await handleSensorEvent({ ...deps(), enabled: true }, detail);
+    }
+
+    const alerts = await repo.listAlerts('2026-09-29T00:00:00.000Z');
+    expect(alerts).toHaveLength(1);
+    const lastClearedAt = decoded[decoded.length - 1]!.at;
+    expect(alerts[0]).toMatchObject({ status: 'resolved', resolvedAt: lastClearedAt, sensorType: 'flood', ringDeviceId });
+    // Two raises within the 120 s FL-063 window re-open the same alert instead of pushing again.
+    expect(bus.entries).toEqual([{ source: 'homeledger.events', detailType: 'alert.raised', detail: { cardType: 'alert.raised', id: alerts[0]!.id } }]);
+    expect(last).toEqual({ raised: [], resolved: [alerts[0]!.id], reopened: [] });
   });
 });

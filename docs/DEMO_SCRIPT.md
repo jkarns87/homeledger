@@ -105,7 +105,7 @@ The prompts are exact; type them as written. The "Expect" lines are what must ha
 ### 7. Under the hood (2:27–2:40)
 
 - **SCR:** open the debug drawer. Hold on the negotiated protocol, the session id, and a few `tools/call` lines with their timings.
-- **Still:** an architecture diagram. None exists in the repo yet, so draw one before Session A (§5) and add it to the README too. It shows the simulator, AgentCore Runtime with the Cognito JWT, DynamoDB, the Ring Partner API → API Gateway → Lambda → EventBridge → WebSocket path, and S3.
+- **Still:** `docs/assets/architecture.png`, a 1920×1080 slide showing the two paths as a loop: every turn goes display → MCP server on AgentCore → household record, and every home event goes Ring → API Gateway + Lambda → EventBridge → correlator or rules → WebSocket push → display. Its source is `docs/assets/architecture-slide.html`.
 - **VO:** "Every turn is a real Streamable HTTP call to Bedrock AgentCore Runtime with a Cognito token. Everything's Terraform, applied only from GitHub Actions."
 
 ### 8. Close (2:40–2:47)
@@ -129,7 +129,6 @@ After the Ask segment (+0:15), cut the optional booking readback to make room.
 |---|---|---|
 | Wed Sep 30 | **Rehearsal A**: run §6.1 and §6.2, then Segments 3–4 off the record. Book the first window, **Fri Oct 2, 8–10 AM CT**. | Settles the prompts, the pacing and the recorder settings. |
 | Fri Oct 2 | **Rehearsal B**: Segments 5–6 in the window. Pull the timings (§7). | Proves the mounted doorbell, the helper's position and the sensor dish. |
-| by Mon Oct 12 | Architecture diagram for Segment 7 and the README. | Not in the repo yet. |
 | Tue Oct 13 | **Session A (record)**: Segments 2–4 and 7. Book **Thu Oct 15, 8–10 AM CT** on camera. Then, off camera, book a backup with Kettle Creek for **Fri Oct 16, 8–10 AM CT**. | Record before 7 PM CT. Don't run `smoke.yml` after this point: it reseeds the household and wipes the booking. |
 | Thu Oct 15 | **Session B (record)**: Segments 1, 5 and 6, pressing 8:15–9:30 AM CT. Record VO the same day. | If the arrival take fails, re-shoot Fri Oct 16 against the backup visit. The backup provider's name appears on the card; rename the provider in VO and captions to match, or re-record Segment 4's pick. |
 | Fri Oct 16 to Sun Oct 18 | Edit, captions, upload unlisted, review. | |

@@ -7,6 +7,33 @@ Built for the Build, Ship, Shape: Amazon Developer Hackathon (Alexa+ and Ring tr
 - Design: `docs/superpowers/specs/2026-09-13-homeledger-design.md`
 - Friction log: `FRICTION-LOG.md`
 
+## How it works
+
+Every conversational turn is a real MCP call to the deployed server. Every card that appears on the display without being asked starts as a real Ring event.
+
+```mermaid
+flowchart LR
+  subgraph turn["1 · Every turn"]
+    display["Kitchen display<br/>simulated Alexa+ surface<br/>Next.js · Claude agent"]
+    server["HomeLedger MCP server<br/>Bedrock AgentCore Runtime<br/>9 tools · elicitation · 4 widgets"]
+    record[("Household record<br/>DynamoDB")]
+    display -- "MCP · Streamable HTTP<br/>Cognito JWT" --> server -- "read · write" --> record
+  end
+  subgraph event["2 · Every home event"]
+    devices["Ring doorbell<br/>Flood & Freeze sensor (Sidewalk)"]
+    ring["Ring Partner API<br/>signed webhooks · status polled every 2 min"]
+    ingest["API Gateway + Lambda<br/>verify signature · claim once"]
+    bus{{"EventBridge"}}
+    handlers["Visit correlator · sensor rules<br/>match the booked visit · snapshot<br/>Claude describes, never who"]
+    push["Push<br/>API Gateway WebSocket"]
+    devices --> ring --> ingest --> bus --> handlers --> push
+  end
+  handlers -- "arrival · snapshot · alert" --> record
+  push -- "card" --> display
+```
+
+The same picture as a 1920×1080 slide, for the demo video, is [`docs/assets/architecture.png`](docs/assets/architecture.png); its source is [`docs/assets/architecture-slide.html`](docs/assets/architecture-slide.html). Everything on the AWS side is Terraform, applied only from GitHub Actions through OIDC.
+
 ## Prerequisites
 
 Node 22 and pnpm 10 for everything. Docker for the local DynamoDB and the container build. AWS CLI v2 to sign in, which you need only for "Deployed, through the bridge" below.

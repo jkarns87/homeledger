@@ -4,9 +4,14 @@ import type { TokenRecord, TokenStore } from '../src/aws/tokens.js';
 import type { RingApi, RingDeviceStatus } from '../src/ring/client.js';
 import { webhookSignature } from '../src/ring/hmac.js';
 
-/** A Ring fixture's `payload` (Task 1). The wrapper's `source` names the Ring document it came from. */
+/**
+ * A Ring fixture's `payload` (Task 1). The wrapper's `source` names the Ring document it came from.
+ * A live-captured fixture (Task 18) carries no wrapper — it is the raw webhook body redacted in
+ * place — so a file with no top-level `payload` key is returned as-is.
+ */
 export function fixture<T = unknown>(name: string): T {
-  return (JSON.parse(readFileSync(new URL(`./fixtures/ring/${name}.json`, import.meta.url), 'utf8')) as { payload: T }).payload;
+  const parsed = JSON.parse(readFileSync(new URL(`./fixtures/ring/${name}.json`, import.meta.url), 'utf8')) as { payload?: T };
+  return parsed.payload ?? (parsed as unknown as T);
 }
 
 export interface RecordedRequest {

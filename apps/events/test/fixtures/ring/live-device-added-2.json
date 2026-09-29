@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "version": "1.1",
+    "time": "2026-09-29T00:51:50.622290749Z",
+    "request_id": "a4d327ad-a8e3-4ae0-af48-c74b281c8e8e",
+    "account_id": "ava1.ring.account.REDACTEDACCOUNT1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  },
+  "data": {
+    "id": "ava1.ring.device.REDACTEDDEVICE2XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX_device_added_1790643110256",
+    "type": "device_added",
+    "attributes": {
+      "source": "ava1.ring.device.REDACTEDDEVICE2XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "source_type": "devices",
+      "timestamp": 1790643110256
+    },
+    "relationships": {
+      "devices": {
+        "links": {
+          "self": "/v1/devices/ava1.ring.device.REDACTEDDEVICE2XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        }
+      }
+    }
+  }
+}
