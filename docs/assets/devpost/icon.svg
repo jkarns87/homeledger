@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>HomeLedger</title>
+  <!-- A house whose walls are a ledger page: three entries, the last one done. -->
+  <rect width="512" height="512" rx="112" fill="#13212e"/>
+  <path d="M256 92 L420 222 L420 410 Q420 426 404 426 L108 426 Q92 426 92 410 L92 222 Z"
+        fill="#f6f1e7" stroke="#f6f1e7" stroke-width="20" stroke-linejoin="round"/>
+  <path d="M72 238 L256 92 L440 238" fill="none" stroke="#f2a23a" stroke-width="30"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#13212e" stroke-width="22" stroke-linecap="round">
+    <line x1="150" y1="262" x2="362" y2="262"/>
+    <line x1="150" y1="318" x2="362" y2="318"/>
+    <line x1="210" y1="374" x2="362" y2="374"/>
+  </g>
+  <path d="M142 372 L162 392 L196 352" fill="none" stroke="#2f8f5b" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
