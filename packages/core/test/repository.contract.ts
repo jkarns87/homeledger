@@ -281,7 +281,14 @@ export function runRepositoryContract(name: string, make: () => Promise<Reposito
       expect(await repo.findOpenAlert('dev-flood-3', 'flood')).toBeNull();
       // The newest of any status, and the clearing time survives the round trip.
       await repo.putAlert(
-        alert({ id: 'alert_cccccccccccccccc', sensorType: 'flood', ringDeviceId: 'dev-flood-1', at: '2026-10-06T23:00:00.000Z', status: 'resolved', resolvedAt: '2026-10-06T23:00:05.000Z' })
+        alert({
+          id: 'alert_cccccccccccccccc',
+          sensorType: 'flood',
+          ringDeviceId: 'dev-flood-1',
+          at: '2026-10-06T23:00:00.000Z',
+          status: 'resolved',
+          resolvedAt: '2026-10-06T23:00:05.000Z'
+        })
       );
       expect(await repo.findLatestAlert('dev-flood-1', 'flood')).toMatchObject({ id: 'alert_cccccccccccccccc', resolvedAt: '2026-10-06T23:00:05.000Z' });
       expect(await repo.findLatestAlert('dev-flood-3', 'flood')).toBeNull();

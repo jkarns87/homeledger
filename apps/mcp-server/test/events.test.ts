@@ -218,12 +218,20 @@ describe('recent_events', () => {
       deviceName: 'Water Heater',
       maintenanceRef: null
     };
-    await h.deps.repo.putAlert({ ...flood, id: 'alert_aaaaaaaaaaaaaaaa', at: '2026-09-13T15:49:42.323Z', status: 'resolved', resolvedAt: '2026-09-13T15:49:46.977Z' });
+    await h.deps.repo.putAlert({
+      ...flood,
+      id: 'alert_aaaaaaaaaaaaaaaa',
+      at: '2026-09-13T15:49:42.323Z',
+      status: 'resolved',
+      resolvedAt: '2026-09-13T15:49:46.977Z'
+    });
     await h.deps.repo.putAlert({ ...flood, id: 'alert_bbbbbbbbbbbbbbbb', at: '2026-09-13T15:50:33.425Z', status: 'open' });
     // A row resolved before clearing times were recorded.
     await h.deps.repo.putAlert({ ...flood, id: 'alert_cccccccccccccccc', at: '2026-09-13T15:30:00.000Z', status: 'resolved' });
     const r = await h.client.callTool({ name: 'recent_events', arguments: {} });
-    const sc = r.structuredContent as { events: Array<{ kind: string; at: string; alertId: string | null; alertStatus: string | null; resolvedAt: string | null }> };
+    const sc = r.structuredContent as {
+      events: Array<{ kind: string; at: string; alertId: string | null; alertStatus: string | null; resolvedAt: string | null }>;
+    };
     expect(sc.events.map(e => [e.kind, e.at, e.alertStatus, e.resolvedAt])).toEqual([
       ['alert', '2026-09-13T15:50:33.425Z', 'open', null],
       ['alert', '2026-09-13T15:49:42.323Z', 'resolved', '2026-09-13T15:49:46.977Z'],
