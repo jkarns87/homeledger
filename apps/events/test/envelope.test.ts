@@ -84,3 +84,83 @@ describe('decodeWebhook is total: odd input is data, never a crash (spec §4 ste
     for (const body of [null, [], 'button_press', 42]) expect(decodeWebhook(body, RECEIVED).ok).toBe(false);
   });
 });
+
+describe('decodeWebhook over live Ring payloads (captured 2026-09-29)', () => {
+  const RECEIVED_LIVE = '2026-09-29T16:00:00.000Z';
+
+  type LiveBody = { meta: { request_id: string }; data: { id: string; attributes: { source: string; source_type: string; timestamp: number } } };
+
+  // Every live capture except the app-integration one is sourced from a device; that one's source is the account.
+  const liveCases: Array<{ file: string; type: string; accountIsSource: boolean }> = [
+    { file: 'live-app-integration-added-1', type: 'app_integration_added', accountIsSource: true },
+    { file: 'live-device-added-1', type: 'device_added', accountIsSource: false },
+    { file: 'live-device-added-2', type: 'device_added', accountIsSource: false },
+    { file: 'live-button-press-1', type: 'button_press', accountIsSource: false },
+    { file: 'live-button-press-2', type: 'button_press', accountIsSource: false },
+    { file: 'live-flood-detected-1', type: 'flood_detected', accountIsSource: false },
+    { file: 'live-flood-detected-2', type: 'flood_detected', accountIsSource: false },
+    { file: 'live-flood-detected-3', type: 'flood_detected', accountIsSource: false },
+    { file: 'live-flood-cleared-1', type: 'flood_cleared', accountIsSource: false },
+    { file: 'live-flood-cleared-2', type: 'flood_cleared', accountIsSource: false },
+    { file: 'live-flood-cleared-3', type: 'flood_cleared', accountIsSource: false }
+  ];
+
+  for (const { file, type, accountIsSource } of liveCases) {
+    it(`decodes ${file} (${type})`, () => {
+      const body = fixture<LiveBody>(file);
+      const r = decodeWebhook(body, RECEIVED_LIVE);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.event.type).toBe(type);
+      expect(r.event.requestId).toBe(body.meta.request_id);
+      expect(r.event.deviceId).toBe(accountIsSource ? null : body.data.attributes.source);
+      expect(r.event.at).toBe(new Date(body.data.attributes.timestamp).toISOString());
+    });
+  }
+
+  // Observation 1 (Task 18 checklist): the live run showed the six flood events' meta.request_id
+  // truncated to exactly 64 characters. What that truncation does to the trailing word depends on
+  // which word it is: "water_detected" (14 chars) loses its final "d" and lands mid-word, but
+  // "water_cleared" (13 chars) already fits inside the 64-char budget whole, so a cleared event's
+  // id ends on a complete word even though it is truncated to the same total length.
+  it('truncates a sensor event’s meta.request_id to exactly 64 characters (detected ends mid-word; cleared does not need to)', () => {
+    const detected = ['live-flood-detected-1', 'live-flood-detected-2', 'live-flood-detected-3'];
+    const cleared = ['live-flood-cleared-1', 'live-flood-cleared-2', 'live-flood-cleared-3'];
+    const requestId = (file: string) => fixture<LiveBody>(file).meta.request_id;
+
+    const allSix = [...detected, ...cleared].map(requestId);
+    for (const id of allSix) expect(id).toHaveLength(64);
+    expect(new Set(allSix).size).toBe(allSix.length); // distinct across all six live sensor events
+
+    for (const file of detected) {
+      const id = requestId(file);
+      expect(id.endsWith('water_detecte')).toBe(true); // truncated: the closing "d" of "detected" is cut off
+      expect(id.endsWith('water_detected')).toBe(false);
+    }
+    for (const file of cleared) {
+      expect(requestId(file).endsWith('water_cleared')).toBe(true); // the complete word — "cleared" is one letter shorter, so it fits
+    }
+  });
+
+  // Observation 2: a device event's data.id is `<device id>_<kind>_<ms timestamp>`, not an opaque
+  // event id. The "<kind>" segment is Ring's internal name for the event, which is not always the
+  // same string as the outer data.type — a button press's kind is "ding", not "button_press".
+  it('builds data.id for a device event as <device id>_<kind>_<ms timestamp>, not an opaque event id', () => {
+    const cases: Array<{ file: string; kind: string }> = [
+      { file: 'live-button-press-1', kind: 'ding' },
+      { file: 'live-button-press-2', kind: 'ding' },
+      { file: 'live-device-added-1', kind: 'device_added' },
+      { file: 'live-device-added-2', kind: 'device_added' },
+      { file: 'live-flood-detected-1', kind: 'flood_detected' },
+      { file: 'live-flood-detected-2', kind: 'flood_detected' },
+      { file: 'live-flood-detected-3', kind: 'flood_detected' },
+      { file: 'live-flood-cleared-1', kind: 'flood_cleared' },
+      { file: 'live-flood-cleared-2', kind: 'flood_cleared' },
+      { file: 'live-flood-cleared-3', kind: 'flood_cleared' }
+    ];
+    for (const { file, kind } of cases) {
+      const body = fixture<LiveBody>(file);
+      expect(body.data.id).toBe(`${body.data.attributes.source}_${kind}_${body.data.attributes.timestamp}`);
+    }
+  });
+});
