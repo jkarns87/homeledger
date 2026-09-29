@@ -4,7 +4,7 @@ locals {
   # dead-letter queue and two retries. Spec §3 fixes the secret columns.
   functions = {
     "webhook"          = { timeout = 10, memory = 256, table = true, bus = true, snapshots = false, async = false, secrets_read = ["hmac"], secrets_write = [] }
-    "token-exchange"   = { timeout = 15, memory = 256, table = false, bus = false, snapshots = false, async = false, secrets_read = ["client_secret", "tokens"], secrets_write = ["tokens"] }
+    "token-exchange"   = { timeout = 30, memory = 256, table = false, bus = false, snapshots = false, async = false, secrets_read = ["client_secret", "tokens"], secrets_write = ["tokens"] }
     "link"             = { timeout = 30, memory = 256, table = true, bus = false, snapshots = false, async = false, secrets_read = ["hmac", "passphrase", "tokens"], secrets_write = ["tokens"] }
     "device-sync"      = { timeout = 60, memory = 256, table = true, bus = true, snapshots = false, async = true, secrets_read = ["tokens"], secrets_write = [] }
     "visit-correlator" = { timeout = 120, memory = 512, table = true, bus = true, snapshots = true, async = true, secrets_read = ["tokens", "anthropic"], secrets_write = [] }
