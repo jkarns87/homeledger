@@ -174,3 +174,9 @@ Section 4.6 of the runbook starts the simulated Alexa+ display against that serv
 The deployed stack on Amazon Bedrock AgentCore Runtime is live for the whole judging window and is what the video shows. It sits behind a Cognito client-credentials authorizer, so it is not open to anonymous traffic; if a judge wants to call it directly, message me through Devpost and I will issue a client id and secret for the judging period. The Ring doorbell and flood sensor are on my own account at my house, so the arrival and alert flows are demonstrated in the video; the signed webhook path can be exercised against the deployed stack with the synthetic delivery in runbook section 9, and the recorded Ring payloads are in the repo as redacted fixtures.
 
 Tests: `pnpm test` runs the unit and contract suites, including both MCP client generations against the server in-process.
+
+## Describe your contribution (added 2026-10-22)
+
+Solo entry. I made every product and architecture decision, chose the tracks and the device set, designed the data model and the tool contract, and did all of the physical and operational work: the AWS account and OIDC bootstrap, the Ring hardware and account linking, the sensor and doorbell trials, the live runs against the deployed stack, the demo shoot, and the submission. I wrote the specs and plans the code was built from and reviewed every pull request before it merged.
+
+Claude Code was my pair for the implementation and I say so plainly: it wrote most of the TypeScript, Terraform and tests from those specs, drafted the friction log entries from the evidence, drove the simulator during the screen recordings, and assembled the video. The judgment calls in the friction log are mine; several of them, like the teardown-ARN finding and the Bedrock access-versus-quota distinction, came out of me running the operational paths myself and seeing what the platform did.
