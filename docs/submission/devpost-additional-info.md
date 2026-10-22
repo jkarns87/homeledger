@@ -8,6 +8,8 @@ Last verified: 2026-09-29 (`main` at `0f03401`; Ring claims from the live checkl
 
 ---
 
+> **Submitted 2026-10-22.** Devpost: https://devpost.com/software/homeledger. Video: https://www.youtube.com/watch?v=1_abh8-s2LI. Gallery: 10 images (01–10). Story synced byte-for-byte from `devpost-story.md`, including the staged-window disclosure.
+
 ## Simple fields
 
 | Field | Answer |
@@ -147,3 +149,36 @@ PENDING: real Knowledge Base retrieval.
 Yes, with conditions. The MCP TypeScript SDK v2 and DynamoDB, without reservation. AgentCore Runtime, yes — it is deployed, it has served both protocol generations including three-round elicitation and progress notifications through a real session, and the whole build has run through CI with no local credentials. Bedrock Knowledge Bases, unproven here and therefore no opinion worth giving: the infrastructure applied first try, and I have never seen it answer a query. Ring, yes, for both doorbell events and the Sidewalk sensors: in the live run every event the demo needs arrived by webhook within seconds of the device seeing it, and the one surprise (a probe that flickers wet and dry) was ours to handle. Alexa+, yes the day the MCP Toolkit opens to individual developers, because the server built to its published contract already exists and passes the documented handshake.
 
 PENDING: revise after real retrieval.
+
+## Which AI tools have you leveraged while working on this project? (added 2026-10-22, required at submit)
+
+Claude Code was the working partner for the whole project: design review, the TypeScript, the Terraform, the tests, the friction log, and in the last 48 hours the demo itself (it drove the simulator for the screen recordings, cut the video with ffmpeg, and generated the captions). Claude on the Anthropic API is the agent inside the simulated Alexa+ display, and Claude also writes the one-sentence description of each doorbell snapshot. The voice-over is Amazon Polly's generative Matthew voice. Amazon Bedrock Knowledge Bases with Titan Text Embeddings v2 back the manuals tool; that infrastructure is provisioned but blocked on this account, as the Disclosures say. Ring's documentation MCP server was used to check Partner API details against the spec.
+
+## Describe the level of learning you/your team derived from the project
+
+A lot, and most of it is written down: the friction log in the repo has 64 entries, each with what I expected, what happened, and what I decided. The big ones: serving two MCP protocol generations from one handler and proving elicitation works through the SDK's legacy shim; what AgentCore Runtime actually does with the Host header, session pinning, and a runtime ARN that rotates on recreate with no alias layer; that a Bedrock Knowledge Base can be fully provisioned and still unusable, because retrieval has to embed the query too; that a smoke test can pass against a broken system if a fixture happens to match; that Ring has no live snapshot and its HDR phone footage will blank a video if you don't convert it; and that a model asked about current state will answer from the previous turn unless the prompt forces a fresh call. I came in knowing AWS and Terraform well and MCP only from the spec. I leave knowing where the spec, the SDK, the platform docs, and the platforms themselves disagree.
+
+## Did you gain AI value that you can use in your career?
+
+Yes, two kinds. First, how to run a coding agent on real infrastructure work: plan in writing, keep a friction log the agent reads, apply only from CI, and make it prove each step against the live system instead of trusting a green test. That is directly reusable in my day job in DevOps. Second, rules for building tools that an assistant calls: return spoken text and typed data separately, state current status explicitly on anything safety-shaped, make a failed call report failure rather than an empty answer, and watch for the skipped call, where the model reuses a stale result. Both came out of things going wrong on camera, which is the only way I would have learned them this fast.
+
+## Testing instructions or credentials the judges need to test your project, if any (added 2026-10-22)
+
+No credentials are needed. Everything a judge can drive runs locally in about fifteen minutes, with Node 22 and pnpm 10 and nothing else: `docs/RUNBOOK.md`, section 4.
+
+1. `git clone https://github.com/jkarns87/homeledger && cd homeledger && pnpm install && pnpm --filter @homeledger/core build`
+2. `HOUSEHOLD_ID=hh_harlow MEMORY_REPO=1 HOMELEDGER_DEV_TOOLS=1 PORT=8010 pnpm --filter @homeledger/mcp-server dev` (in-memory data, seeded at startup; it prints three JSON lines and listens on `http://127.0.0.1:8010/mcp`)
+3. Connect any MCP client to that URL. Claude Code: `claude mcp add --transport http homeledger-local http://127.0.0.1:8010/mcp`. Or the MCP Inspector: `npx @modelcontextprotocol/inspector`.
+4. Try: "What maintenance is overdue?", "What does error code F21 mean on the washer?", "Book a service visit for the water heater." The booking asks three questions through MCP elicitation and reports progress 0 to 3. Nine tools should be listed, in the frozen order the tests assert.
+
+Section 4.6 of the runbook starts the simulated Alexa+ display against that server; it needs an Anthropic API key of your own for the agent.
+
+The deployed stack on Amazon Bedrock AgentCore Runtime is live for the whole judging window and is what the video shows. It sits behind a Cognito client-credentials authorizer, so it is not open to anonymous traffic; if a judge wants to call it directly, message me through Devpost and I will issue a client id and secret for the judging period. The Ring doorbell and flood sensor are on my own account at my house, so the arrival and alert flows are demonstrated in the video; the signed webhook path can be exercised against the deployed stack with the synthetic delivery in runbook section 9, and the recorded Ring payloads are in the repo as redacted fixtures.
+
+Tests: `pnpm test` runs the unit and contract suites, including both MCP client generations against the server in-process.
+
+## Describe your contribution (added 2026-10-22)
+
+Solo entry. I made every product and architecture decision, chose the tracks and the device set, designed the data model and the tool contract, and did all of the physical and operational work: the AWS account and OIDC bootstrap, the Ring hardware and account linking, the sensor and doorbell trials, the live runs against the deployed stack, the demo shoot, and the submission. I wrote the specs and plans the code was built from and reviewed every pull request before it merged.
+
+Claude Code was my pair for the implementation and I say so plainly: it wrote most of the TypeScript, Terraform and tests from those specs, drafted the friction log entries from the evidence, drove the simulator during the screen recordings, and assembled the video. The judgment calls in the friction log are mine; several of them, like the teardown-ARN finding and the Bedrock access-versus-quota distinction, came out of me running the operational paths myself and seeing what the platform did.

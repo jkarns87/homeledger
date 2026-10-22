@@ -24,3 +24,6 @@ blob-report/
 .claude/worktrees/
 .superpowers/
 infra/modules/ring-events/.build/
+
+# Demo video working files (takes, voice-over, cut); 335 MB, kept out of git
+/demo/
