@@ -8,6 +8,8 @@ Last verified: 2026-09-29 (`main` at `0f03401`; Ring claims from the live checkl
 
 ---
 
+> **Submitted 2026-10-22.** Devpost: https://devpost.com/software/homeledger. Video: https://www.youtube.com/watch?v=1_abh8-s2LI. Gallery: 10 images (01–10). Story synced byte-for-byte from `devpost-story.md`, including the staged-window disclosure.
+
 ## Simple fields
 
 | Field | Answer |
