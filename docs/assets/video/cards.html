@@ -1,0 +1,101 @@
+<!doctype html>
+<!--
+  Source for the demo video's title cards and lower-third captions
+  (docs/DEMO_SCRIPT.md, segments 2, 5 and 8). Each .card is a fixed
+  1920x1080 canvas with no external assets. Render with
+  docs/assets/video/render-cards.mjs, which writes one PNG per card into
+  this folder. Captions render with a transparent background so the editor
+  can lay them over footage.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HomeLedger video cards</title>
+<style>
+  :root {
+    --ink: #13212e;
+    --muted: #51606f;
+    --accent: #2f6db3;
+    --bg: #ffffff;
+  }
+  html, body { margin: 0; background: #888; }
+  .card {
+    position: relative; width: 1920px; height: 1080px; background: var(--bg);
+    font-family: "Inter", "Helvetica Neue", Arial, sans-serif; color: var(--ink);
+    margin: 0 0 40px 0; overflow: hidden;
+  }
+  .card.clear { background: transparent; }
+
+  /* Title and close: centred stack */
+  .stack {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; padding: 0 160px;
+  }
+  .stack h1 { margin: 0; font-size: 132px; font-weight: 800; letter-spacing: -3px; line-height: 1; }
+  .stack .tag { margin-top: 36px; font-size: 54px; font-weight: 600; color: var(--accent); }
+  .stack .line { margin-top: 28px; font-size: 34px; color: var(--muted); line-height: 1.35; max-width: 1400px; }
+  .stack .url { margin-top: 0; font-size: 84px; font-weight: 700; letter-spacing: -1px; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .stack .meta { margin-top: 40px; font-size: 40px; color: var(--muted); }
+  .stack .meta b { color: var(--ink); font-weight: 600; }
+  .rule { width: 160px; height: 6px; background: var(--accent); border-radius: 3px; margin-top: 48px; }
+
+  /* Lower thirds */
+  .lower {
+    position: absolute; left: 96px; bottom: 96px; display: inline-flex; flex-direction: column;
+    background: rgba(19, 33, 46, 0.92); color: #fff; border-left: 10px solid var(--accent);
+    padding: 26px 44px 28px 36px; border-radius: 6px;
+  }
+  .lower b { font-size: 52px; font-weight: 700; letter-spacing: -0.5px; }
+  .lower span { font-size: 30px; color: #c9d4df; margin-top: 8px; }
+
+  footer {
+    position: absolute; left: 96px; right: 96px; bottom: 56px; font-size: 24px; color: var(--muted);
+    display: flex; justify-content: space-between;
+  }
+</style>
+</head>
+<body>
+
+<!-- 1. Title (segment 2) -->
+<div class="card" id="title">
+  <div class="stack">
+    <h1>HomeLedger</h1>
+    <div class="tag">Your home's mental record keeper.</div>
+    <div class="line">A self-hosted MCP server for an Alexa+ assistant. It tracks upkeep, books repairs, and knows when the plumber is at your Ring doorbell.</div>
+    <div class="rule"></div>
+  </div>
+  <footer><span>Build, Ship, Shape 2026 · Alexa+ · Ring · AWS Builder</span><span>Simulated display. Real server, doorbell and sensor.</span></footer>
+</div>
+
+<!-- 2. Close (segment 8) -->
+<div class="card" id="close">
+  <div class="stack">
+    <div class="url">github.com/jkarns87/homeledger</div>
+    <div class="meta"><b>MIT</b> &nbsp;·&nbsp; Friction log: <b>61 entries</b> &nbsp;·&nbsp; Terraform, applied only from GitHub Actions</div>
+    <div class="rule"></div>
+    <div class="line" style="margin-top:40px">The code, the tests, and everything that surprised me along the way.</div>
+  </div>
+</div>
+
+<!-- 3. Caption: day and time (segment 5) -->
+<div class="card clear" id="caption-friday">
+  <div class="lower"><b>Thursday, 2:12 PM</b><span>Booked window: 2 to 4 PM</span></div>
+</div>
+
+<!-- 4. Caption: press-to-card timing (segment 5). Replace the number from the Session B logs. -->
+<div class="card clear" id="caption-timing">
+  <div class="lower"><b>Press to card: 5.5 s</b><span>Measured live from the Ring webhook to the display push</span></div>
+</div>
+
+<!-- 5. Caption: alert (segment 6) -->
+<div class="card clear" id="caption-alert">
+  <div class="lower"><b>Flood sensor, beside the water heater</b><span>Amazon Sidewalk · Ring Partner API webhook</span></div>
+</div>
+
+<!-- 6. Caption: disclosure for the moved visit window (segment 5) -->
+<div class="card clear" id="caption-disclosure">
+  <div class="lower"><b>Filmed Thursday against a visit window moved up in the database</b><span>So the arrival could be shot before the deadline. The press, the signed webhook, the match and the photo are real.</span></div>
+</div>
+
+</body>
+</html>

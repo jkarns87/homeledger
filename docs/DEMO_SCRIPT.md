@@ -17,7 +17,7 @@ The submission video for Build, Ship, Shape (Alexa+ primary, Ring secondary, AWS
 
 | Fact | Consequence for the shoot |
 |---|---|
-| `book_service` only offers three windows, 8–10 AM Central, two to four days after the booking date (`availabilityWindows`, `apps/mcp-server/src/tools/service.ts`). | The booking and the arrival can't be filmed in one take. Book on day D; the doorbell scene is filmed on the morning of D+2, inside the booked window. The video says so ("Thursday morning"). |
+| `book_service` only offers three windows, 8–10 AM Central, two to four days after the booking date (`availabilityWindows`, `apps/mcp-server/src/tools/service.ts`). | The booking and the arrival can't be filmed in one take. Book on day D; the doorbell scene is filmed on the morning of D+2, inside the booked window. The video says so ("Friday morning"). |
 | The windows are computed from the **UTC** date of the booking. | Film the booking before 7 PM Central (00:00 UTC). Later than that, the windows shift a day. |
 | A press counts as an arrival within the visit window plus or minus 30 minutes (`ARRIVAL_SLACK_MS`). | Press between **7:30 and 10:30 AM Central** (8:30–11:30 AM Eastern). Aim for 8:15–9:30 AM Central. |
 | `ask_manual` can't retrieve anything while the account's Bedrock block stands. Smoke on 2026-09-29 still printed `ask_manual: SKIPPED`. | The manual Q&A is **not** in the video. If the block lifts before the shoot and a smoke run enforces `assertManualPassages`, add the 15-second optional segment in §4. |
@@ -59,7 +59,7 @@ The prompts are exact; type them as written. The "Expect" lines are what must ha
 
 ### 2. Title (0:10–0:22)
 
-- **Title card:** **HomeLedger**, subtitle "Your home's operating record, for an Alexa+ assistant."
+- **Title card:** `docs/assets/video/title.png`. **HomeLedger**, subtitle "Your home's mental record keeper." (the Devpost catch phrase), one descriptive line under it.
 - **VO:** "HomeLedger is a self-hosted MCP server that keeps a home's record: appliances, maintenance, service visits, and what the doorbell and sensors see. The display is a simulated Alexa+ surface; the server, the doorbell and the sensor are real."
 
 ### 3. Ask (0:22–0:52)
@@ -78,28 +78,30 @@ The prompts are exact; type them as written. The "Expect" lines are what must ha
      1. the provider card, with three sample providers;
      2. **pick Anode and Company**, which matches the hook;
      3. the arrival-window card with three windows, in Central time;
-     4. **pick the first window** (Thursday 8 to 10 AM);
+     4. **pick the first window** (Friday 8 to 10 AM);
      5. the progress meter, 0 to 3, "checking availability";
      6. the confirmation card; **confirm**;
      7. the visit card.
    - VO, over the cards: "Booking pauses the conversation three times through MCP elicitation: who, when, and a final yes. The same handler serves the 2025 protocol the Alexa+ docs describe and the current one. The providers are labelled sample data. The visit is real, and it's in the database."
 2. Optional, if time allows: type `When is the plumber coming?`
-   - Expect: `get_visit` or `recent_events`, returning the Thursday window. Cut this first if over time.
+   - Expect: `get_visit` or `recent_events`, returning the Friday window. Cut this first if over time.
 
 ### 5. Arrive (1:32–2:02), filmed in Session B
 
-- **Caption:** "Thursday, 8:40 AM"
+- **Caption:** "Friday, 8:40 AM" (`docs/assets/video/caption-friday.png`)
 - **CAM:** the helper walks up and presses the bell. Hold on the door for 2 seconds.
 - **SCR:** hold on the idle display. The notice arrives within about 10 seconds, then the assistant's sentence, then the visit card with the photo and one sentence describing what's visible.
 - **VO:** "The press is a real Ring event. A signed webhook reaches API Gateway; a Lambda checks the signature and hands it to EventBridge. The visit correlator matches it to Thursday's window, pulls the frame from Ring's recording, and Claude writes one sentence about what's visible, never who. The card is pushed to the display over a WebSocket. From button to card is about eight seconds."
-- **Caption, lower third:** "Press to card: 8 s (measured live, 2026-09-29)." Replace this with the Session B timing from the logs (§7).
+- **Caption, lower third:** "Press to card: 8 s (measured live, 2026-09-29)." Replace this with the Session B timing from the logs (§7). Edit the number in `docs/assets/video/cards.html` and re-run `node docs/assets/video/render-cards.mjs`.
 
 ### 6. Alert (2:02–2:27), filmed in Session B
 
 - **CAM:** set the Flood & Freeze sensor down in a shallow dish of water beside the water heater.
 - **SCR:** the notice "Home event: an alert was raised.", then the assistant reads the flood alert and says it is **still active**. The water heater's inspection gains the note "Check for a leak near the Water Heater". The seeded inspection is already overdue, so it keeps its date rather than moving to today.
-- Then: lift the sensor out and dry the probes. Wait 20 seconds and type `Is the water heater still leaking?`
-  - Expect: `recent_events` says the alert **cleared at** its time.
+- Then: lift the sensor out and dry the probes. Wait for the clear to land (the alert row flips to `resolved`; about 75 s after lifting on 2026-10-21), then type `Check the sensor again. Has the water heater alert cleared?`
+  - Expect: `recent_events` runs again and the reply says the alert **cleared at** its time.
+  - Don't use "Is the water heater still leaking?": on 2026-10-21 the model answered that from the earlier turn without calling a tool, and said the alert was still open when the database had it resolved. "Check the sensor again" forces the lookup.
+  - Keep the probes under water until the first reply is on screen. A dip that clears within seconds (take 1, 5 s) still raises the alert, but the arc needs it active when the model reads it.
 - **VO:** "The flood sensor is on Amazon Sidewalk and reports through Ring's Partner API. The alert arrives by webhook within seconds, and a two-minute poll backs it up. It also puts a leak check on the water heater's maintenance. When the water's gone, it says so."
 
 ### 7. Under the hood (2:27–2:40)
@@ -110,7 +112,7 @@ The prompts are exact; type them as written. The "Expect" lines are what must ha
 
 ### 8. Close (2:40–2:47)
 
-- **Title card:** `github.com/jkarns87/homeledger`, with "MIT · Friction log: 60+ entries".
+- **Title card:** `docs/assets/video/close.png`. `github.com/jkarns87/homeledger`, with "MIT · Friction log: 61 entries". Source for all cards and captions: `docs/assets/video/cards.html`, rendered by `render-cards.mjs`.
 - **VO:** "The code, the tests, and a friction log of everything that surprised me are in the repo."
 
 The VO totals about 300 words, which is roughly 2:00 at a natural pace. That leaves room for the screen to breathe.
@@ -125,16 +127,14 @@ After the Ask segment (+0:15), cut the optional booking readback to make room.
 
 ## 5. Schedule
 
+Revised 2026-10-21. The original plan (rehearsals Sep 30 and Oct 2, recording Oct 13 and 15) did not happen; nothing was recorded. Booking windows start two days out, so the only arrival window left before the deadline is **Fri Oct 23, 8–10 AM CT**, and the booking that creates it must be made **today before 7 PM CT**. There is no backup day.
+
 | Date (2026) | What | Notes |
 |---|---|---|
-| Wed Sep 30 | **Rehearsal A**: run §6.1 and §6.2, then Segments 3–4 off the record. Book the first window, **Fri Oct 2, 8–10 AM CT**. | Settles the prompts, the pacing and the recorder settings. |
-| Fri Oct 2 | **Rehearsal B**: Segments 5–6 in the window. Pull the timings (§7). | Proves the mounted doorbell, the helper's position and the sensor dish. |
-| Tue Oct 13 | **Session A (record)**: Segments 2–4 and 7. Book **Thu Oct 15, 8–10 AM CT** on camera. Then, off camera, book a backup with Kettle Creek for **Fri Oct 16, 8–10 AM CT**. | Record before 7 PM CT. Don't run `smoke.yml` after this point: it reseeds the household and wipes the booking. |
-| Thu Oct 15 | **Session B (record)**: Segments 1, 5 and 6, pressing 8:15–9:30 AM CT. Record VO the same day. | If the arrival take fails, re-shoot Fri Oct 16 against the backup visit. The backup provider's name appears on the card; rename the provider in VO and captions to match, or re-record Segment 4's pick. |
-| Fri Oct 16 to Sun Oct 18 | Edit, captions, upload unlisted, review. | |
-| Sun Oct 18 | Upload public to YouTube and do a dry-run Devpost submission. | Matches the spec's dry run by Oct 18. |
-| Mon Oct 19 | AWS credit form closes. | Unrelated to the video; don't miss it. |
-| Fri Oct 23, 12:00 PT | Deadline. | |
+| Wed Oct 21, afternoon | §6.1 setup, then §6.2. One off-the-record pass of Segments 3–4 (then reseed). **Session A (record)**: Segments 2–4 and 7. Book **Fri Oct 23, 8–10 AM CT** with Anode and Company on camera. Record VO tonight. | Record the booking before **7 PM CT**. Every booking take must pick Anode and Company. Don't run `smoke.yml` after this point: it reseeds the household and wipes the booking. |
+| Thu Oct 22 | **Session B part 1**: Segment 6 (flood alert), any time; it doesn't depend on the visit. Then cut the whole video with Segments 1 and 5 as placeholders, add captions, export, and upload **unlisted** to check length and legibility. Also cut a **plan B** version that opens on the flood alert and drops Segment 5, in case Friday's press fails. | Disarm the alarm and silence the phone for the trip. |
+| Fri Oct 23, 8:15–9:30 AM CT | **Session B part 2**: Segments 1 and 5. Press, card, photo. Pull the timing (§7), re-render the timing caption. | One visit, one press that counts (see §6.3). Thursday: press once outside the window as a pipeline rehearsal. Friday: confirm "push channel connected" before cueing the helper. |
+| Fri Oct 23, by 11:00 AM CT | Drop Segments 1 and 5 into the cut, export, upload **public** to YouTube, paste the URL into Devpost, submit. | Deadline is **12:00 PT = 2:00 PM CT**. If the press hasn't produced a card by 9:45 AM CT, ship plan B. |
 
 ## 6. Actions
 
@@ -188,7 +188,7 @@ After the Ask segment (+0:15), cut the optional booking readback to make room.
 ### 6.3 During takes
 
 - One prompt per take, with a 3-second pause before typing.
-- Session B: don't retry a press within 60 seconds. A second press in the window reads as already arrived and shows nothing.
+- Session B: don't retry a press within 60 seconds. A second press in the window reads as already arrived and shows nothing. Booking the same provider and window again does **not** create a second visit: `book_service` upserts the same visit id (verified 2026-10-21, three bookings → one row `visit_x5bs22irvuygq3ym`), so there is exactly one press that counts. Before it, confirm the drawer says "push channel connected". A press the day before, outside the window, is a free pipeline rehearsal: the correlator answers `no-visit` and the visit is untouched.
 - If the arrival card doesn't arrive within 30 seconds, stop and run the §7 trace before trying again.
 
 ### 6.4 After Session B
