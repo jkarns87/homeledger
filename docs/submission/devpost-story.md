@@ -127,7 +127,7 @@ The Alexa+ client is a simulation, as the organizers permitted; the server is bu
 
 The Ring doorbell and Flood & Freeze sensor are real devices on the author's own Ring account, reached only through Ring's Partner API. Snapshot descriptions say what is visible and never who.
 
-One thing in the video is staged, and it is this: the arrival scene was filmed on Thursday October 22 against a visit whose window I moved up in the database, because `book_service` only offers windows two to four days out and the deadline was Friday noon. The booking shown on screen is the real Friday visit, untouched. The press, the signed webhook, the correlation, the snapshot and the push to the display are all real and ran unmodified. The flood alert, the booking and the maintenance scenes are not staged.
+One thing in the video is staged: the arrival scene was filmed on Thursday, October 22, against a visit whose window I moved up in the database, because `book_service` only offers windows two to four days out and the deadline was Friday noon. The booking shown on screen is the real Friday visit, untouched. The press, the signed webhook, the correlation, the snapshot, and the push to the display are all real and ran unmodified. The flood alert, booking, and maintenance scenes are not staged.
 
 `ask_manual` has never retrieved a real passage: the Knowledge Base is provisioned but unqueryable under the account's Bedrock block, and where no Knowledge Base is configured the tool serves a small in-memory fixture set. The simulator runs locally against the deployed server and is not hosted; its agent is Claude on the Anthropic API.
 
