@@ -159,3 +159,18 @@ A lot, and most of it is written down: the friction log in the repo has 64 entri
 ## Did you gain AI value that you can use in your career?
 
 Yes, two kinds. First, how to run a coding agent on real infrastructure work: plan in writing, keep a friction log the agent reads, apply only from CI, and make it prove each step against the live system instead of trusting a green test. That is directly reusable in my day job in DevOps. Second, rules for building tools that an assistant calls: return spoken text and typed data separately, state current status explicitly on anything safety-shaped, make a failed call report failure rather than an empty answer, and watch for the skipped call, where the model reuses a stale result. Both came out of things going wrong on camera, which is the only way I would have learned them this fast.
+
+## Testing instructions or credentials the judges need to test your project, if any (added 2026-10-22)
+
+No credentials are needed. Everything a judge can drive runs locally in about fifteen minutes, with Node 22 and pnpm 10 and nothing else: `docs/RUNBOOK.md`, section 4.
+
+1. `git clone https://github.com/jkarns87/homeledger && cd homeledger && pnpm install && pnpm --filter @homeledger/core build`
+2. `HOUSEHOLD_ID=hh_harlow MEMORY_REPO=1 HOMELEDGER_DEV_TOOLS=1 PORT=8010 pnpm --filter @homeledger/mcp-server dev` (in-memory data, seeded at startup; it prints three JSON lines and listens on `http://127.0.0.1:8010/mcp`)
+3. Connect any MCP client to that URL. Claude Code: `claude mcp add --transport http homeledger-local http://127.0.0.1:8010/mcp`. Or the MCP Inspector: `npx @modelcontextprotocol/inspector`.
+4. Try: "What maintenance is overdue?", "What does error code F21 mean on the washer?", "Book a service visit for the water heater." The booking asks three questions through MCP elicitation and reports progress 0 to 3. Nine tools should be listed, in the frozen order the tests assert.
+
+Section 4.6 of the runbook starts the simulated Alexa+ display against that server; it needs an Anthropic API key of your own for the agent.
+
+The deployed stack on Amazon Bedrock AgentCore Runtime is live for the whole judging window and is what the video shows. It sits behind a Cognito client-credentials authorizer, so it is not open to anonymous traffic; if a judge wants to call it directly, message me through Devpost and I will issue a client id and secret for the judging period. The Ring doorbell and flood sensor are on my own account at my house, so the arrival and alert flows are demonstrated in the video; the signed webhook path can be exercised against the deployed stack with the synthetic delivery in runbook section 9, and the recorded Ring payloads are in the repo as redacted fixtures.
+
+Tests: `pnpm test` runs the unit and contract suites, including both MCP client generations against the server in-process.
